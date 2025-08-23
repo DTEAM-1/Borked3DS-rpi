@@ -12,7 +12,6 @@
 #include "borked3ds/emu_window/emu_window_sdl2.h"
 #ifdef ENABLE_OPENGL
 #include "borked3ds/emu_window/emu_window_sdl2_gl.h"
-#include "video_core/renderer_opengl/renderer_opengl.h" //gvx64 - setup global flag to disable vao creation/binding in cli binary
 #endif
 #ifdef ENABLE_SOFTWARE_RENDERER
 #include "borked3ds/emu_window/emu_window_sdl2_sw.h"
@@ -184,7 +183,6 @@ static void OnStatusMessageReceived(const Network::StatusMessageEntry& msg) {
 
 /// Application entry point
 int main(int argc, char** argv) {
-    OpenGL::g_use_vao = false; // gvx64 - CLI binary disables VAO
     Common::Log::Initialize();
     Common::Log::SetColorConsoleBackendEnabled(true);
     Common::Log::Start();
