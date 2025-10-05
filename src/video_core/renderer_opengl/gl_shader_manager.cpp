@@ -175,6 +175,10 @@ public:
         if (new_shader) {
             result = CodeGenerator(config, args...);
             cached_shader.Create(result->c_str(), ShaderType);
+            // Added printf() statement here to dump shader source //gvx64
+//gvx64            if (ShaderType == GL_FRAGMENT_SHADER && result) { //gvx64
+//gvx64                printf("--- Generated Fragment Shader Source ---\n%s\n--------------------------------------\n", result->c_str()); //gvx64 - for printing fragment shaders to console
+//gvx64            } //gvx64
         }
         return {cached_shader.GetHandle(), std::move(result)};
     }
@@ -216,6 +220,7 @@ public:
                 return {0, std::nullopt};
             }
 
+//gvx64 printf("Generated shader source (type=%d):\n%s\n", ShaderType, program.c_str()); //gvx64 - uncomment to print shader code to console screen
             auto [iter, new_shader] = shader_cache.emplace(program, OGLShaderStage{separable});
             OGLShaderStage& cached_shader = iter->second;
             if (new_shader) {
@@ -294,6 +299,7 @@ public:
             .has_gl_oes_texture_buffer = driver.HasOesTextureBuffer(), //gvx64
             .has_gl_arm_framebuffer_fetch = driver.HasArmShaderFramebufferFetch(),
             .has_gl_arb_shader_image_load_store = !is_gles && driver.HasArbShaderImageLoadStore(),
+            .has_gl_oes_shader_image_atomic = is_gles && driver.HasOesShaderImageAtomic(), //gvx64
             .has_gl_nv_fragment_shader_interlock = driver.HasNvFragmentShaderInterlock(),
             .has_gl_intel_fragment_shader_ordering =
                 !is_gles && driver.HasIntelFragmentShaderOrdering(),

@@ -241,8 +241,10 @@ bool Driver::HasExtension(std::string_view name) const {
             return GLAD_GL_OES_vertex_array_object;
         if (ext_name == "OES_texture_view")
             return GLAD_GL_OES_texture_view;
-        if (ext_name == "OES_texture_buffer")
-            return GLAD_GL_OES_texture_buffer;
+        if (ext_name == "OES_texture_buffer") //gvx64
+            return GLAD_GL_OES_texture_buffer; //gvx64
+        if (ext_name == "OES_shader_image_atomic") //gvx64
+            return GLAD_GL_OES_shader_image_atomic; //gvx64
 
         // For any other extensions, check using glGetStringi
         GLint num_extensions;
@@ -342,6 +344,7 @@ void Driver::CheckExtensionSupport() {
     ext_texture_compression_bptc = GLAD_GL_EXT_texture_compression_bptc;
     ext_texture_buffer = !is_gles || GLAD_GL_EXT_texture_buffer;
     oes_texture_buffer = !is_gles || GLAD_GL_OES_texture_buffer; //gvx64
+    oes_shader_image_atomic = !is_gles || GLAD_GL_OES_shader_image_atomic; //gvx64
     clip_cull_distance = !is_gles || GLAD_GL_EXT_clip_cull_distance;
     ext_texture_compression_s3tc = GLAD_GL_EXT_texture_compression_s3tc;
     ext_shader_framebuffer_fetch = GLAD_GL_EXT_shader_framebuffer_fetch;

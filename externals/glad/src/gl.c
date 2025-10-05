@@ -87,7 +87,7 @@ int GLAD_GL_OES_texture_npot = 0;
 int GLAD_GL_OES_texture_view = 0;
 int GLAD_GL_OES_vertex_array_object = 0;
 int GLAD_GL_OES_texture_buffer = 0; //gvx64
-
+int GLAD_GL_OES_shader_image_atomic = 0; //gvx64
 
 PFNGLACTIVEPROGRAMEXTPROC glad_glActiveProgramEXT = NULL;
 PFNGLACTIVESHADERPROGRAMPROC glad_glActiveShaderProgram = NULL;

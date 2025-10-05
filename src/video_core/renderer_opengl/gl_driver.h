@@ -170,9 +170,14 @@ public:
         return blend_minmax_factor;
     }
 
-    /// Returns true if the implementation supports GL_EXT_texture_buffer
+    /// Returns true if the implementation supports GL_OES_texture_buffer
     bool HasOesTextureBuffer() const { //gvx64
         return oes_texture_buffer; //gvx64
+    } //gvx64
+
+    /// Returns true if the implementation supports GL_OES_shader_image_atomic
+    bool HasOesShaderImageAtomic() const { //gvx64
+        return oes_shader_image_atomic; //gvx64
     } //gvx64
 
 private:
@@ -206,6 +211,7 @@ private:
     bool intel_fragment_shader_ordering{};
     bool blend_minmax_factor{};
     bool oes_texture_buffer{}; //gvx64
+    bool oes_shader_image_atomic{}; //gvx64
 
     std::string_view gl_version{};
     std::string_view gpu_vendor{};

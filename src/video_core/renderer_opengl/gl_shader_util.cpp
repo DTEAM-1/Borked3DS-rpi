@@ -62,6 +62,10 @@ GLuint LoadShader(std::string_view source, GLenum type) {
 #extension GL_EXT_shader_image_load_store : enable
 #endif // defined(GL_EXT_shader_image_load_store)
 
+#if defined(GL_OES_shader_image_atomic) //gvx64
+#extension GL_OES_shader_image_atomic : enable //gvx64
+#endif // defined(GL_OES_shader_image_atomic) //gvx64
+
 #if defined(GL_EXT_texture_shadow_lod)
 #extension GL_EXT_texture_shadow_lod : enable
 #endif // defined(GL_EXT_texture_shadow_lod)
@@ -114,6 +118,9 @@ GLuint LoadShader(std::string_view source, GLenum type) {
                        "#if defined(GL_EXT_shader_image_load_store)\n"
                        "#extension GL_EXT_shader_image_load_store : enable\n"
                        "#endif // defined(GL_EXT_shader_image_load_store)\n"
+                       "#if defined(GL_OES_shader_image_atomic)\n" //gvx64
+                       "#extension GL_OES_shader_image_atomic : enable\n" //gvx64
+                       "#endif // defined(GL_OES_shader_image_atomic)\n" //gvx64
                        "#if defined(GL_ARB_explicit_uniform_location)\n"
                        "#extension GL_ARB_explicit_uniform_location : enable\n"
                        "#endif // defined(GL_ARB_explicit_uniform_location)\n";

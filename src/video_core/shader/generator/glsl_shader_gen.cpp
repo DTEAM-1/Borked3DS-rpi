@@ -250,7 +250,8 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
             if (separable_shader) {
                 out += fmt::format("layout(location = {}) ", i);
             }
-            out += fmt::format("vec4 vs_out_attr{} = vec4(0.0f, 0.0f, 0.0f, 1.0f);\n", i);
+//gvx64            out += fmt::format("vec4 vs_out_attr{} = vec4(0.0f, 0.0f, 0.0f, 1.0f);\n", i);
+        out += fmt::format("out vec4 vs_out_attr{};\n", i);  // Changed: 'out' and no initialization //gvx64
         }
         out += "void EmitVtx() {}\n";
     } else {
@@ -346,13 +347,8 @@ static std::string GetGSCommonSource(const PicaGSConfigState& state, bool separa
     std::string out = GetVertexInterfaceDeclaration(true, state.use_clip_planes, separable_shader);
     out += VSUniformBlockDef;
 
-    out += '\n';
-    for (u32 i = 0; i < state.vs_output_attributes; ++i) {
-        if (separable_shader) {
-            out += fmt::format("layout(location = {}) ", i);
-        }
-        out += fmt::format("vec4 vs_out_attr{} = vec4(0.0f, 0.0f, 0.0f, 1.0f);\n", i);
-    }
+    // REMOVED: The vs_out_attr declarations that were here
+    // Those are input arrays from the vertex shader, declared in GenerateFixedGeometryShader()
 
     out += R"(
 struct Vertex {
@@ -431,7 +427,7 @@ void EmitPrim(Vertex vtx0, Vertex vtx1, Vertex vtx2) {
 )";
 
     return out;
-};
+}
 
 std::string GenerateFixedGeometryShader(const PicaFixedGSConfig& config, bool separable_shader) {
     std::stringstream out;
@@ -465,6 +461,12 @@ layout(triangle_strip, max_vertices = 3) out;
 
 )";
 
+    // ADD THIS: Declare input arrays from vertex shader
+    for (u32 i = 0; i < config.state.vs_output_attributes; ++i) { //gvx64 - testing only
+        out << "in vec4 vs_out_attr" << i << "[];\n"; //gvx64
+    } //gvx64
+    out << "\n"; //gvx64
+
     out << GetGSCommonSource(config.state, separable_shader);
 
     out << R"(
@@ -476,8 +478,8 @@ void main() {
         out << fmt::format("    prim_buffer[{}].attributes = vec4[{}](", vtx,
                            config.state.gs_output_attributes);
         for (u32 i = 0; i < config.state.vs_output_attributes; ++i) {
-//gvx64            out << fmt::format("{}vs_out_attr{}[{}]", i == 0 ? "" : ", ", i, vtx);
-            out << fmt::format("{}vs_out_attr{}", i == 0 ? "" : ", ", i); //gvx64
+            out << fmt::format("{}vs_out_attr{}[{}]", i == 0 ? "" : ", ", i, vtx); //gvx64 - original implementation
+//gvx64            out << fmt::format("{}vs_out_attr{}", i == 0 ? "" : ", ", i); //gvx64
         }
         out << ");\n";
     }
@@ -487,4 +489,5 @@ void main() {
 
     return out.str();
 }
+
 } // namespace Pica::Shader::Generator::GLSL

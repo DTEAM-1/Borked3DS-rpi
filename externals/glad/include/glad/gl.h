@@ -1994,6 +1994,8 @@ GLAD_API_CALL int GLAD_GL_OES_texture_view;
 GLAD_API_CALL int GLAD_GL_OES_vertex_array_object;
 #define GL_OES_texture_buffer 1 //gvx64
 GLAD_API_CALL int GLAD_GL_OES_texture_buffer; //gvx64
+#define GL_OES_shader_image_atomic 1 //gvx64
+GLAD_API_CALL int GLAD_GL_OES_shader_image_atomic; //gxv64
 
 typedef void (GLAD_API_PTR *PFNGLACTIVEPROGRAMEXTPROC)(GLuint program);
 typedef void (GLAD_API_PTR *PFNGLACTIVESHADERPROGRAMPROC)(GLuint pipeline, GLuint program);

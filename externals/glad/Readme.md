@@ -58,4 +58,5 @@ GL_OES_texture_npot
 GL_OES_texture_view
 GL_OES_vertex_array_object
 GL_OES_texture_buffer
+GL_OES_shader_image_atomic
 ```

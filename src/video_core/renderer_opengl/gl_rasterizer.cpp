@@ -65,18 +65,18 @@ GLenum MakeAttributeType(Pica::PipelineRegs::VertexAttributeFormat format) {
 }
 
 [[nodiscard]] GLsizeiptr TextureBufferSize(const Driver& driver, bool is_lf) {
-    const bool is_gles = driver.IsOpenGLES();
-    if (is_gles) {
-        GLint max_size;
-        glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, &max_size);
+//gvx64    const bool is_gles = driver.IsOpenGLES();
+//gvx64    if (is_gles) {
+//gvx64        GLint max_size;
+//gvx64        glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, &max_size);
 
         // Use the minimum of the maximum available size and our desired size
-        if (is_lf) {
+//gvx64        if (is_lf) {
 //gvx64            printf("../src/video_core/renderer_opengl/gl_rasterizer.cpp, TextureBufferSize(const Driver& driver, bool is_lf), max_size = %08x\n", max_size); //gvx64
-            return std::min<GLsizeiptr>(max_size, 64 * 1024);
-        }
-        return std::min<GLsizeiptr>(max_size, 32 * 1024);
-    }
+//gvx64            return std::min<GLsizeiptr>(max_size, 64 * 1024);
+//gvx64        }
+//gvx64        return std::min<GLsizeiptr>(max_size, 32 * 1024);
+//gvx64    }
 
     // Use the smallest texel size from the texel views
     // which corresponds to GL_RG32F
@@ -100,15 +100,9 @@ RasterizerOpenGL::RasterizerOpenGL(Memory::MemorySystem& memory, Pica::PicaCore&
     : VideoCore::RasterizerAccelerated{memory, pica}, driver{driver_},
       shader_manager{renderer.GetRenderWindow(), driver, !driver.IsOpenGLES()},
       runtime{driver, renderer}, res_cache{memory, custom_tex_manager, runtime, regs, renderer},
-      vertex_buffer{driver, GL_ARRAY_BUFFER,
-                    static_cast<GLsizeiptr>(driver.IsOpenGLES() ? VERTEX_BUFFER_SIZE / 2
-                                                                : VERTEX_BUFFER_SIZE)},
-      uniform_buffer{driver, GL_UNIFORM_BUFFER,
-                     static_cast<GLsizeiptr>(driver.IsOpenGLES() ? UNIFORM_BUFFER_SIZE / 2
-                                                                 : UNIFORM_BUFFER_SIZE)},
-      index_buffer{
-          driver, GL_ELEMENT_ARRAY_BUFFER,
-          static_cast<GLsizeiptr>(driver.IsOpenGLES() ? INDEX_BUFFER_SIZE / 2 : INDEX_BUFFER_SIZE)},
+      vertex_buffer{driver, GL_ARRAY_BUFFER, VERTEX_BUFFER_SIZE},
+      uniform_buffer{driver, GL_UNIFORM_BUFFER, UNIFORM_BUFFER_SIZE},
+      index_buffer{driver, GL_ELEMENT_ARRAY_BUFFER, INDEX_BUFFER_SIZE},
       texture_buffer{driver, GL_TEXTURE_BUFFER_OES, TextureBufferSize(driver, false)},
       texture_lf_buffer{driver, GL_TEXTURE_BUFFER_OES, TextureBufferSize(driver, true)} {
     const bool is_gles = driver.IsOpenGLES();
@@ -180,14 +174,6 @@ RasterizerOpenGL::RasterizerOpenGL(Memory::MemorySystem& memory, Pica::PicaCore&
     glActiveTexture(TextureUnits::TextureBufferLUT_LF.Enum());
 
     if (is_gles && majorVersion == 3 && minorVersion < 2) {
-/*        // Check for GL_EXT_texture_buffer support
-        if (GLAD_GL_EXT_texture_buffer) {
-            // Use floating-point formats if supported
-            glTexBufferEXT(GL_TEXTURE_BUFFER, GL_RG32F, texture_lf_buffer.GetHandle());
-            glActiveTexture(TextureUnits::TextureBufferLUT_RG.Enum());
-            glTexBufferEXT(GL_TEXTURE_BUFFER, GL_RG32F, texture_buffer.GetHandle());
-            glActiveTexture(TextureUnits::TextureBufferLUT_RGBA.Enum());
-            glTexBufferEXT(GL_TEXTURE_BUFFER, GL_RGBA32F, texture_buffer.GetHandle());*/
         // Check for GL_OES_texture_buffer support
         if (GLAD_GL_OES_texture_buffer) {
             // Primary: Use texture buffer where available
@@ -312,6 +298,12 @@ void RasterizerOpenGL::SetupVertexArray(u8* array_ptr, GLintptr buffer_offset,
 
     std::array<bool, 16> enable_attributes{};
 
+//gvx64    static int s_log_counter = 0;
+//gvx64    if (s_log_counter++ % 100 == 0) {
+//gvx64        LOG_DEBUG(Render_OpenGL, "SetupVertexArray called with min={}, max={}",
+//gvx64                  vs_input_index_min, vs_input_index_max); //gvx64 - for debugging purposes only
+//gvx64    }
+
     for (const auto& loader : vertex_attributes.attribute_loaders) {
         if (loader.component_count == 0 || loader.byte_count == 0) {
             continue;
@@ -348,6 +340,11 @@ void RasterizerOpenGL::SetupVertexArray(u8* array_ptr, GLintptr buffer_offset,
 
         const u32 vertex_num = vs_input_index_max - vs_input_index_min + 1;
         const u32 data_size = loader.byte_count * vertex_num;
+
+//gvx64        if (s_log_counter % 100 == 0) {
+//gvx64            LOG_DEBUG(Render_OpenGL, "Copying data for loader: data_addr={:08X}, data_size={}, buffer_offset={}",
+//gvx64                      data_addr, data_size, buffer_offset); //gvx64 - debug only, remove to speed up gameplay
+//gvx64        }
 
         res_cache.FlushRegion(data_addr, data_size);
         std::memcpy(array_ptr, memory.GetPhysicalPointer(data_addr), data_size);
@@ -439,11 +436,12 @@ bool RasterizerOpenGL::AccelerateDrawBatchInternal(bool is_indexed) {
     state.draw.vertex_buffer = vertex_buffer.GetHandle();
     state.Apply();
 
-    u8* buffer_ptr;
-    GLintptr buffer_offset;
-    std::tie(buffer_ptr, buffer_offset, std::ignore) = vertex_buffer.Map(vs_input_size, 4);
-    LOG_DEBUG(Render_OpenGL, "Index buffer offset: {}", buffer_offset);
-    SetupVertexArray(buffer_ptr, buffer_offset, vs_input_index_min, vs_input_index_max);
+    // Set up vertex buffer
+    u8* vertex_buffer_ptr;
+    GLintptr vertex_buffer_offset;
+    std::tie(vertex_buffer_ptr, vertex_buffer_offset, std::ignore) = vertex_buffer.Map(vs_input_size, 4);
+
+    SetupVertexArray(vertex_buffer_ptr, vertex_buffer_offset, vs_input_index_min, vs_input_index_max);
     vertex_buffer.Unmap(vs_input_size);
 
     shader_manager.ApplyTo(state, accurate_mul);
@@ -452,6 +450,7 @@ bool RasterizerOpenGL::AccelerateDrawBatchInternal(bool is_indexed) {
     if (is_indexed) {
         bool index_u16 = regs.pipeline.index_array.format != 0;
         std::size_t index_buffer_size = regs.pipeline.num_vertices * (index_u16 ? 2 : 1);
+
         if (index_buffer_size > INDEX_BUFFER_SIZE) {
             LOG_WARNING(Render_OpenGL, "Too large index input size {}", index_buffer_size);
             return false;
@@ -460,75 +459,79 @@ bool RasterizerOpenGL::AccelerateDrawBatchInternal(bool is_indexed) {
         const u8* index_data =
             memory.GetPhysicalPointer(regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
                                       regs.pipeline.index_array.offset);
-        if (index_u16) {
-            const u16* indices = reinterpret_cast<const u16*>(index_data);
-            u16 min_idx = *std::min_element(indices, indices + regs.pipeline.num_vertices);
-            u16 max_idx = *std::max_element(indices, indices + regs.pipeline.num_vertices);
-            LOG_DEBUG(Render_OpenGL, "Index range: {} to {}, vs_input_index_min: {}", min_idx,
-                      max_idx, vs_input_index_min);
-        }
-        std::tie(buffer_ptr, buffer_offset, std::ignore) = index_buffer.Map(index_buffer_size, 4);
-        LOG_DEBUG(Render_OpenGL, "Index buffer offset: {}", buffer_offset);
-        std::memcpy(buffer_ptr, index_data, index_buffer_size);
+
+        // Set up index buffer
+        u8* index_buffer_ptr;
+        GLintptr index_buffer_offset;
+        std::tie(index_buffer_ptr, index_buffer_offset, std::ignore) = index_buffer.Map(index_buffer_size, 4);
+        std::memcpy(index_buffer_ptr, index_data, index_buffer_size);
         index_buffer.Unmap(index_buffer_size);
 
-        // Ensure vs_input_index_min is not zero before applying the negative offset
-        if (vs_input_index_min < 0 || vs_input_index_min > vs_input_index_max) {
-            LOG_ERROR(Render_OpenGL, "Invalid vertex index range");
+        // Validate vertex index range
+        if (vs_input_index_min > vs_input_index_max) {
+            LOG_ERROR(Render_OpenGL, "Invalid vertex index range: min={}, max={}", vs_input_index_min, vs_input_index_max);
             return false;
         }
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer.GetHandle());
 
-        LOG_DEBUG(Render_OpenGL, "Drawing: mode={}, count={}, type={}, offset={}, basevertex=0",
-                  primitive_mode, regs.pipeline.num_vertices,
-                  index_u16 ? "GL_UNSIGNED_SHORT" : "GL_UNSIGNED_BYTE", buffer_offset);
-
         // Use extension if available, otherwise fallback
         if (!GLAD_GL_OES_draw_elements_base_vertex) {
-            // Adjust indices by subtracting vs_input_index_min
-            // Assuming index data is accessible and modifiable:
+            // Fallback: Adjust indices by subtracting vs_input_index_min
             GLenum type = index_u16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE;
             GLsizei count = regs.pipeline.num_vertices;
-            const GLvoid* indices = reinterpret_cast<const void*>(buffer_offset);
 
-            // Map the index buffer to modify indices
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer.GetHandle());
-            void* mapped = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, buffer_offset,
-                                            count * (type == GL_UNSIGNED_SHORT ? 2 : 1),
-                                            GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
-            if (mapped) {
-                if (type == GL_UNSIGNED_SHORT) {
-                    uint16_t* idx = static_cast<uint16_t*>(mapped);
-                    for (GLsizei i = 0; i < count; ++i) {
-                        idx[i] -= vs_input_index_min;
+            // Only adjust indices if vs_input_index_min > 0
+            if (vs_input_index_min > 0) {
+                void* mapped = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, index_buffer_offset,
+                                                count * (index_u16 ? 2 : 1),
+                                                GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
+                if (mapped) {
+                    if (index_u16) {
+                        uint16_t* idx = static_cast<uint16_t*>(mapped);
+                        for (GLsizei i = 0; i < count; ++i) {
+                            if (idx[i] >= vs_input_index_min) {
+                                idx[i] -= vs_input_index_min;
+                            } else {
+                                LOG_WARNING(Render_OpenGL, "Index underflow: idx[{}]={}, min={}", i, idx[i], vs_input_index_min);
+                            }
+                        }
+                    } else {
+                        uint8_t* idx = static_cast<uint8_t*>(mapped);
+                        for (GLsizei i = 0; i < count; ++i) {
+                            if (idx[i] >= vs_input_index_min) {
+                                idx[i] -= vs_input_index_min;
+                            } else {
+                                LOG_WARNING(Render_OpenGL, "Index underflow: idx[{}]={}, min={}", i, idx[i], vs_input_index_min);
+                            }
+                        }
                     }
-                } else {
-                    uint8_t* idx = static_cast<uint8_t*>(mapped);
-                    for (GLsizei i = 0; i < count; ++i) {
-                        idx[i] -= vs_input_index_min;
-                    }
+                    glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
                 }
-                glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
             }
 
             // Draw with adjusted indices
-            glDrawElements(primitive_mode, count, type, indices);
+            glDrawElements(primitive_mode, count, type, reinterpret_cast<const void*>(index_buffer_offset));
         } else {
+            // Use the base vertex extension
             glDrawRangeElementsBaseVertexOES(primitive_mode, vs_input_index_min, vs_input_index_max,
                                           regs.pipeline.num_vertices,
                                           index_u16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE,
-                                          reinterpret_cast<const void*>(buffer_offset),
+                                          reinterpret_cast<const void*>(index_buffer_offset),
                                           -static_cast<GLint>(vs_input_index_min));
         }
     } else {
+        // Non-indexed draw
         glDrawArrays(primitive_mode, 0, regs.pipeline.num_vertices);
     }
+
+    // Check for OpenGL errors
     GLenum error = glGetError();
     if (error != GL_NO_ERROR) {
-        LOG_ERROR(Render_OpenGL, "OpenGL error before draw: {}", error);
+        LOG_ERROR(Render_OpenGL, "OpenGL error after draw: {:#x}", error);
         return false;
     }
+
     return true;
 }
 
@@ -1436,6 +1439,7 @@ void RasterizerOpenGL::UploadUniforms(bool accelerate_draw) {
     const bool sync_vs_pica = accelerate_draw;
     const bool sync_vs = vs_uniform_block_data.dirty;
     const bool sync_fs = fs_uniform_block_data.dirty;
+
     if (!sync_vs_pica && !sync_vs && !sync_fs) {
         return;
     }
