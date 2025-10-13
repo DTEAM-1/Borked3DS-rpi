@@ -751,6 +751,8 @@ bool TextureRuntime::NeedsConversion(VideoCore::PixelFormat format) const {
            traits.aspect != (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil);
 }
 
+std::unordered_set<PAddr> Surface::blacklisted_addresses; //gvx64
+
 Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& params)
     : SurfaceBase{params}, runtime{&runtime_}, instance{&runtime_.GetInstance()},
       scheduler{&runtime_.GetScheduler()}, traits{instance->GetTraits(pixel_format)} {

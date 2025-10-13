@@ -7,6 +7,7 @@
 
 #include "video_core/rasterizer_cache/framebuffer_base.h"
 #include "video_core/rasterizer_cache/rasterizer_cache_base.h"
+#include <unordered_set> //gvx64
 #include "video_core/rasterizer_cache/surface_base.h"
 #include "video_core/renderer_opengl/gl_blit_helper.h"
 
@@ -130,7 +131,8 @@ public:
                   const VideoCore::StagingData& staging);
 
     /// Attaches a handle of surface to the specified framebuffer target
-    void Attach(GLenum target, u32 level, u32 layer, bool scaled = true);
+//gvx64    void Attach(GLenum target, u32 level, u32 layer, bool scaled = true);
+    bool Attach(GLenum target, u32 level, u32 layer, bool scaled = true); //gvx64
 
     /// Scales up the surface to match the new resolution scale.
     void ScaleUp(u32 new_scale);
@@ -138,6 +140,8 @@ public:
     /// Returns the bpp of the internal surface format
     u32 GetInternalBytesPerPixel() const;
 
+    static std::unordered_set<PAddr> blacklisted_addresses; //gvx64
+    static constexpr size_t MAX_BLACKLIST_SIZE = 100;  // Prevent unbounded growth - gvx64
 private:
     /// Performs blit between the scaled/unscaled images
     void BlitScale(const VideoCore::TextureBlit& blit, bool up_scale);

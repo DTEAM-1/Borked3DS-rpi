@@ -683,11 +683,24 @@ bool Surface::DownloadWithoutFbo(const VideoCore::BufferTextureCopy& download,
     return false;
 }
 
-void Surface::Attach(GLenum target, u32 level, u32 layer, bool scaled) {
+std::unordered_set<PAddr> Surface::blacklisted_addresses;
+
+bool Surface::Attach(GLenum target, u32 level, u32 layer, bool scaled) {
     const GLuint handle = Handle(static_cast<u32>(scaled));
     const GLenum textarget = texture_type == TextureType::CubeMap
                                  ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + layer
                                  : GL_TEXTURE_2D;
+
+    if (handle == 0) {
+        return false;
+    }
+
+    if (!glIsTexture(handle)) {
+        return false;
+    }
+
+    // Clear any pre-existing errors
+    while (glGetError() != GL_NO_ERROR);
 
     switch (type) {
     case SurfaceType::Color:
@@ -701,8 +714,22 @@ void Surface::Attach(GLenum target, u32 level, u32 layer, bool scaled) {
         glFramebufferTexture2D(target, GL_DEPTH_STENCIL_ATTACHMENT, textarget, handle, level);
         break;
     default:
-        UNREACHABLE_MSG("Invalid surface type!");
+        return false;
     }
+
+    GLenum error = glGetError();
+    if (error != GL_NO_ERROR) {
+        // Blacklist this address
+        if (Surface::blacklisted_addresses.size() < Surface::MAX_BLACKLIST_SIZE) {
+            Surface::blacklisted_addresses.insert(addr);
+            LOG_WARNING(Render_OpenGL,
+                       "Blacklisting surface address {:#x} due to glFramebufferTexture2D error {:#x}",
+                       addr, error);
+        }
+        return false;
+    }
+
+    return true;
 }
 
 void Surface::ScaleUp(u32 new_scale) {

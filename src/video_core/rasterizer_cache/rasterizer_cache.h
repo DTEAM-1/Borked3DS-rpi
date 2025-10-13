@@ -249,15 +249,27 @@ bool RasterizerCache<T>::AccelerateTextureCopy(const Pica::DisplayTransferConfig
     Surface& src_surface = slot_surfaces[src_surface_id];
     Surface& dst_surface = slot_surfaces[dst_surface_id];
 
-    // gvx64 - Force software fallback in games such as Fre Emblem Awakening if known problematic surface address
-   if ( program_id == 0x00040000000A0500 &&
-       (forceFallBackToSW > 0 || src_surface.addr == 0x18368000 || src_surface.addr == 0x183E8000 ||
-       src_surface.addr == 0x18408000 || src_surface.addr == 0x18410000 ||
-       dst_surface.addr == 0x18368000 || dst_surface.addr == 0x183E8000 ||
-       dst_surface.addr == 0x18408000 || dst_surface.addr == 0x18410000)) {
-        LOG_CRITICAL(HW_GPU, "[AccelerateTextureCopy] Fallback due to addr=0x%08X or 0x%08X\n",
+    if (!Surface::blacklisted_addresses.empty()) { //gvx64 - only initiate sw fall-back check if at least one gl error has been logged in Surface::Attach()
+
+        // CHECK: Blacklisted addresses
+        if (Surface::blacklisted_addresses.count(src_surface.addr) || //gvx64 - generalized sw fallback when bad texture address found
+            Surface::blacklisted_addresses.count(dst_surface.addr)) {
+            LOG_DEBUG(Render_OpenGL,
+                     "Skipping texture copy - blacklisted address (src: {:#x}, dst: {:#x})",
                      src_surface.addr, dst_surface.addr);
-        return false;
+            return false;  // Trigger software fallback
+        }
+
+        // gvx64 - specific sw fallback for Fire Emblem Awakening
+       if ( program_id == 0x00040000000A0500 &&
+           (forceFallBackToSW > 0 || src_surface.addr == 0x18368000 || src_surface.addr == 0x183E8000 ||
+           src_surface.addr == 0x18408000 || src_surface.addr == 0x18410000 ||
+           dst_surface.addr == 0x18368000 || dst_surface.addr == 0x183E8000 ||
+           dst_surface.addr == 0x18408000 || dst_surface.addr == 0x18410000)) {
+           LOG_CRITICAL(HW_GPU, "[AccelerateDisplayTransfer] Fallback due to addr=0x{:08X} or 0x{:08X}",
+               src_surface.addr, dst_surface.addr);
+           return false;
+       }
     }
 
     if (dst_surface.type == SurfaceType::Texture ||
@@ -327,21 +339,33 @@ bool RasterizerCache<T>::AccelerateDisplayTransfer(const Pica::DisplayTransferCo
     Surface& src_surface = slot_surfaces[src_surface_id];
     Surface& dst_surface = slot_surfaces[dst_surface_id];
 
-    // gvx64 - Force software fallback in games like Fire Emblem Awakening if surface uses a problematic address
-    if ( program_id == 0x00040000000A0500 &&
-       (forceFallBackToSW > 0 || src_surface.addr == 0x18368000 || src_surface.addr == 0x183E8000 ||
-        src_surface.addr == 0x18408000 || src_surface.addr == 0x18410000 ||
-        dst_surface.addr == 0x18368000 || dst_surface.addr == 0x183E8000 ||
-        dst_surface.addr == 0x18408000 || dst_surface.addr == 0x18410000)) {
-        LOG_CRITICAL(HW_GPU, "[AccelerateDisplayTransfer] Fallback due to addr=0x%08X or 0x%08X\n",
+    if (!Surface::blacklisted_addresses.empty()) { //gvx64 - only initiate sw fall-back check if at least one gl error has been logged in Surface::Attach()
+
+        // CHECK: Blacklisted addresses
+        if (Surface::blacklisted_addresses.count(src_surface.addr) || //gvx64 - generalized sw fallback when bad texture address found
+            Surface::blacklisted_addresses.count(dst_surface.addr)) {
+            LOG_DEBUG(Render_OpenGL,
+                     "Skipping texture copy - blacklisted address (src: {:#x}, dst: {:#x})",
                      src_surface.addr, dst_surface.addr);
-        if (forceFallBackToSW > 0){
-            forceFallBackToSW--; //gvx64
+            return false;  // Trigger software fallback
         }
-        else{
-            forceFallBackToSW = 100; //gvx - maintain software fall-back for 100 subsequent calls to method even if non-error causing to supress black box
+
+        // gvx64 - Specific sw fallback for Fire Emblem Awakening if surface uses a problematic address
+        if ( program_id == 0x00040000000A0500 &&
+            (forceFallBackToSW > 0 || src_surface.addr == 0x18368000 || src_surface.addr == 0x183E8000 ||
+            src_surface.addr == 0x18408000 || src_surface.addr == 0x18410000 ||
+            dst_surface.addr == 0x18368000 || dst_surface.addr == 0x183E8000 ||
+            dst_surface.addr == 0x18408000 || dst_surface.addr == 0x18410000)) {
+            LOG_CRITICAL(HW_GPU, "[AccelerateDisplayTransfer] Fallback due to addr=0x{:08X} or 0x{:08X}",
+                src_surface.addr, dst_surface.addr);
+            if (forceFallBackToSW > 0){
+                forceFallBackToSW--; //gvx64
+            }
+            else{
+                forceFallBackToSW = 100; //gvx - maintain software fall-back for 100 subsequent calls to method even if non-error causing to supress black box
+            }
+            return false;
         }
-        return false;
     }
 
     if (src_surface.is_tiled != dst_surface.is_tiled) {

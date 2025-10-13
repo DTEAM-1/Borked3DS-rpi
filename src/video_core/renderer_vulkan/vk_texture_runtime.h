@@ -7,6 +7,7 @@
 
 #include <deque>
 #include <span>
+#include <unordered_set> //gvx64
 #include "video_core/rasterizer_cache/framebuffer_base.h"
 #include "video_core/rasterizer_cache/rasterizer_cache_base.h"
 #include "video_core/rasterizer_cache/surface_base.h"
@@ -175,6 +176,8 @@ public:
     /// Returns the pipeline stage flags indicative of the surface
     vk::PipelineStageFlags PipelineStageFlags() const noexcept;
 
+    static std::unordered_set<PAddr> blacklisted_addresses; //gvx64
+    static constexpr size_t MAX_BLACKLIST_SIZE = 100;  // Prevent unbounded growth - gvx64
 private:
     /// Performs blit between the scaled/unscaled images
     void BlitScale(const VideoCore::TextureBlit& blit, bool up_scale);
