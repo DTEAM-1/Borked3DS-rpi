@@ -26,6 +26,9 @@
 #include "video_core/host_shaders/opengl_present_frag.h"
 #include "video_core/host_shaders/opengl_present_interlaced_frag.h"
 #include "video_core/host_shaders/opengl_present_vert.h"
+#include "core/hle/service/hid/hid.h" //gvx64
+#include "core/hle/service/hid/touch_cursor_controller.h" //gvx64
+
 
 namespace OpenGL {
 
@@ -102,7 +105,10 @@ RendererOpenGL::RendererOpenGL(Core::System& system, Pica::PicaCore& pica_,
     InitOpenGLObjects();
 }
 
-RendererOpenGL::~RendererOpenGL() = default;
+//gvx64 RendererOpenGL::~RendererOpenGL() = default;
+RendererOpenGL::~RendererOpenGL() { //gvx64
+    CleanupTouchCursorResources(); //gvx64
+} //gvx64
 
 void RendererOpenGL::SwapBuffers() {
     // Maintain the rasterizer's state as a priority
@@ -387,6 +393,9 @@ void RendererOpenGL::InitOpenGLObjects() {
 
     state.texture_units[0].texture_2d = 0;
     state.Apply();
+
+    // Initialize touch cursor resources - gvx64
+    InitTouchCursorResources(); //gvx64
 }
 
 void RendererOpenGL::ReloadShader() {
@@ -728,6 +737,9 @@ void RendererOpenGL::DrawScreens(const Layout::FramebufferLayout& layout, bool f
         }
     }
     ResetSecondLayerOpacity(layout.is_portrait);
+
+    // Draw touch cursor on top of everything - gvx64
+    DrawTouchCursor(layout); //gvx64
 }
 
 void RendererOpenGL::ApplySecondLayerOpacity(bool isPortrait) {
@@ -956,5 +968,179 @@ void RendererOpenGL::CleanupVideoDumping() {
 void RendererOpenGL::Sync() {
     rasterizer.SyncEntireState();
 }
+
+void RendererOpenGL::InitTouchCursorResources() { //gvx64
+    // Create VAO and VBO for cursor
+    touch_cursor_vao.Create();
+    touch_cursor_vbo.Create();
+
+    // Use simple shaders without explicit version - let Borked3DS handle it
+    const char* vert_shader = R"(
+layout(location = 0) in vec2 position;
+uniform mat4 projection;
+
+void main() {
+    gl_Position = projection * vec4(position, 0.0, 1.0);
+}
+)";
+
+    const char* frag_shader = R"(
+precision mediump float;
+out vec4 FragColor;
+
+void main() {
+    FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+}
+)";
+
+    // Compile cursor shader using Borked3DS's shader system
+    touch_cursor_shader.Create(vert_shader, frag_shader);
+
+    // Get uniform and attribute locations
+    touch_cursor_uniform_projection = glGetUniformLocation(touch_cursor_shader.handle, "projection");
+    touch_cursor_attrib_position = glGetAttribLocation(touch_cursor_shader.handle, "position");
+
+    // Set up VAO
+    GLuint old_vao = state.draw.vertex_array;
+    GLuint old_vbo = state.draw.vertex_buffer;
+
+    state.draw.vertex_array = touch_cursor_vao.handle;
+    state.draw.vertex_buffer = touch_cursor_vbo.handle;
+    state.Apply();
+
+    glVertexAttribPointer(touch_cursor_attrib_position, 2, GL_FLOAT, GL_FALSE,
+                         2 * sizeof(GLfloat), nullptr);
+    glEnableVertexAttribArray(touch_cursor_attrib_position);
+
+    // Restore state
+    state.draw.vertex_array = old_vao;
+    state.draw.vertex_buffer = old_vbo;
+    state.Apply();
+}
+
+void RendererOpenGL::CleanupTouchCursorResources() {
+    touch_cursor_vao.Release();
+    touch_cursor_vbo.Release();
+    touch_cursor_shader.Release();
+}
+
+void RendererOpenGL::DrawTouchCursor(const Layout::FramebufferLayout& layout) {
+    // Get HID module and cursor controller
+    auto hid = Service::HID::GetModule(system);
+    if (!hid || !hid->GetTouchCursorController()) {
+        return;
+    }
+
+    auto* cursor_controller = hid->GetTouchCursorController();
+    const auto& config = cursor_controller->GetConfig();
+
+    // Only draw if enabled
+    if (!config.enabled) {
+        return;
+    }
+
+    // Check if currently touching (affects cursor appearance)
+    bool is_touching = cursor_controller->IsTouching();
+
+    // Only draw on bottom screen
+    if (!layout.bottom_screen_enabled) {
+        return;
+    }
+
+    // Get cursor position (0-319, 0-239 in 3DS coordinates)
+    u16 cursor_x = cursor_controller->GetCursorX();
+    u16 cursor_y = cursor_controller->GetCursorY();
+
+    // Cursor size in pixels
+    constexpr int cursor_size = 8;
+
+    // Get bottom screen layout
+    const auto& bottom = layout.bottom_screen;
+
+    // Convert 3DS coordinates to framebuffer coordinates
+    float fb_x = bottom.left + (cursor_x * bottom.GetWidth() / 320.0f);
+    float fb_y = bottom.top + (cursor_y * bottom.GetHeight() / 240.0f);
+    float fb_size = cursor_size * (bottom.GetWidth() / 320.0f);
+
+    // Clamp to bottom screen bounds
+    fb_x = std::clamp(fb_x, static_cast<float>(bottom.left),
+                     static_cast<float>(bottom.right - fb_size));
+    fb_y = std::clamp(fb_y, static_cast<float>(bottom.top),
+                     static_cast<float>(bottom.bottom - fb_size));
+
+    // Save current OpenGL state
+    GLint last_program, last_vao, last_vbo;
+    GLint last_blend_src, last_blend_dst;
+    GLint last_blend_eq;
+    GLboolean last_blend_enabled;
+
+    glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &last_vao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &last_vbo);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &last_blend_src);
+    glGetIntegerv(GL_BLEND_DST_RGB, &last_blend_dst);
+    glGetIntegerv(GL_BLEND_EQUATION_RGB, &last_blend_eq);
+    last_blend_enabled = glIsEnabled(GL_BLEND);
+
+    // Set up rendering state
+    glUseProgram(touch_cursor_shader.handle);
+    glBindVertexArray(touch_cursor_vao.handle);
+    glBindBuffer(GL_ARRAY_BUFFER, touch_cursor_vbo.handle);
+
+    // Set projection matrix (orthographic, origin top-left)
+    GLfloat projection[16] = {
+        2.0f / layout.width,  0.0f,                   0.0f, 0.0f,
+        0.0f,                 -2.0f / layout.height,  0.0f, 0.0f,
+        0.0f,                 0.0f,                  -1.0f, 0.0f,
+        -1.0f,                1.0f,                   0.0f, 1.0f,
+    };
+    glUniformMatrix4fv(touch_cursor_uniform_projection, 1, GL_FALSE, projection);
+
+    // Create cursor quad vertices
+    GLfloat vertices[] = {
+        fb_x,          fb_y,           // Top-left
+        fb_x + fb_size, fb_y,          // Top-right
+        fb_x + fb_size, fb_y + fb_size, // Bottom-right
+
+        fb_x + fb_size, fb_y + fb_size, // Bottom-right
+        fb_x,          fb_y + fb_size,  // Bottom-left
+        fb_x,          fb_y,           // Top-left
+    };
+
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+    // Set blend mode for color inversion
+    glEnable(GL_BLEND);
+    if (is_touching) {
+        // When touching, use inverted colors (full opacity)
+        glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ZERO);
+    } else {
+        // When not touching, use semi-transparent inverted colors (50% opacity)
+        // This makes the cursor visible but less intrusive when pre-positioning
+        glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendColor(0.0f, 0.0f, 0.0f, 0.5f); // 50% alpha
+    }
+    glBlendEquation(GL_FUNC_ADD);
+
+    // Disable depth test and culling
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+
+    // Draw cursor
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    // Restore OpenGL state
+    glUseProgram(last_program);
+    glBindVertexArray(last_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, last_vbo);
+
+    if (last_blend_enabled) {
+        glEnable(GL_BLEND);
+    } else {
+        glDisable(GL_BLEND);
+    }
+    glBlendFunc(last_blend_src, last_blend_dst);
+    glBlendEquation(last_blend_eq);
+} //gvx64 - end
 
 } // namespace OpenGL

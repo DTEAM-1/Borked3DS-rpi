@@ -283,6 +283,8 @@ void Config::ReadValues() {
     ReadAudioValues();
     ReadSystemValues();
     ReadUtilityValues();
+
+    ReadTouchCursorValues(); //gvx64
 }
 
 void Config::ReadAudioValues() {
@@ -927,6 +929,9 @@ void Config::SaveValues() {
     SaveAudioValues();
     SaveSystemValues();
     SaveUtilityValues();
+
+    SaveTouchCursorValues(); // gvx64
+
     qt_config->sync();
 }
 
@@ -1337,6 +1342,32 @@ void Config::SaveVideoDumpingValues() {
 
     qt_config->endGroup();
 }
+
+void Config::ReadTouchCursorValues() { //gvx64 - begin
+    qt_config->beginGroup(QStringLiteral("Controls"));
+    Settings::values.touch_cursor_enabled =
+        ReadSetting(QStringLiteral("touch_cursor_enabled"), false).toBool();
+    Settings::values.touch_cursor_analog_stick =
+        ReadSetting(QStringLiteral("touch_cursor_analog_stick"), 0).toUInt();
+    Settings::values.touch_cursor_button =
+        ReadSetting(QStringLiteral("touch_cursor_button"), 0).toUInt();
+    Settings::values.touch_cursor_sensitivity =
+        ReadSetting(QStringLiteral("touch_cursor_sensitivity"), 1.0).toFloat();
+    qt_config->endGroup();
+}
+
+void Config::SaveTouchCursorValues() {
+    qt_config->beginGroup(QStringLiteral("Controls"));
+    WriteSetting(QStringLiteral("touch_cursor_enabled"),
+                 Settings::values.touch_cursor_enabled.GetValue(), false);
+    WriteSetting(QStringLiteral("touch_cursor_analog_stick"),
+                 Settings::values.touch_cursor_analog_stick.GetValue(), 0u);
+    WriteSetting(QStringLiteral("touch_cursor_button"),
+                 Settings::values.touch_cursor_button.GetValue(), 0u);
+    WriteSetting(QStringLiteral("touch_cursor_sensitivity"),
+                 Settings::values.touch_cursor_sensitivity.GetValue(), 1.0);
+    qt_config->endGroup();
+} //gvx64 - end
 
 void Config::SaveUIValues() {
     qt_config->beginGroup(QStringLiteral("UI"));

@@ -18,6 +18,13 @@
 
 namespace Settings {
 
+struct TouchCursorSettings { //gvx64
+    bool enabled = false;
+    u32 analog_stick = 0;      // 0 = CirclePad, 1 = CStick
+    u32 touch_button = 0;      // Button ID for touch press
+    float sensitivity = 1.0f;
+}; //gvx64 - end
+
 enum class GraphicsAPI {
     Software = 0,
     OpenGL = 1,
@@ -459,6 +466,13 @@ struct Values {
     // Controls
     InputProfile current_input_profile;       ///< The current input profile
     int current_input_profile_index;          ///< The current input profile index
+
+    // Touch Cursor - gvx64
+    SwitchableSetting<bool> touch_cursor_enabled{false, "touch_cursor_enabled"}; //gvx64
+    SwitchableSetting<u32> touch_cursor_analog_stick{0, "touch_cursor_analog_stick"}; //gvx64
+    SwitchableSetting<u32> touch_cursor_button{0, "touch_cursor_button"}; //gvx64
+    SwitchableSetting<float, true> touch_cursor_sensitivity{1.0f, 0.1f, 5.0f, "touch_cursor_sensitivity"}; //gvx64
+
     std::vector<InputProfile> input_profiles; ///< The list of input profiles
     std::vector<TouchFromButtonMap> touch_from_button_maps;
     Setting<bool> use_artic_base_controller{false, "use_artic_base_controller"};

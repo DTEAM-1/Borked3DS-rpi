@@ -80,6 +80,9 @@ add_executable(borked3ds-qt
     configuration/configure_touch_from_button.cpp
     configuration/configure_touch_from_button.h
     configuration/configure_touch_from_button.ui
+    configuration/configure_touch_cursor.cpp      # gvx64
+    configuration/configure_touch_cursor.h        # gvx64
+    configuration/configure_touch_cursor.ui       # gvx64
     configuration/configure_touch_widget.h
     configuration/configure_ui.cpp
     configuration/configure_ui.h

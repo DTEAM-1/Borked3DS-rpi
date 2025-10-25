@@ -321,6 +321,8 @@ add_library(borked3ds_core STATIC
     hle/service/hid/hid_spvr.h
     hle/service/hid/hid_user.cpp
     hle/service/hid/hid_user.h
+    hle/service/hid/touch_cursor_controller.cpp  # Add this - gvx64
+    hle/service/hid/touch_cursor_controller.h    # Add this - gvx64
     hle/service/http/http_c.cpp
     hle/service/http/http_c.h
     hle/service/ir/extra_hid.cpp

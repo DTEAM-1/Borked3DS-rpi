@@ -83,6 +83,18 @@ private:
                             bool right_eye);
     void FillScreen(Common::Vec3<u8> color, TextureInfo& texture);
 
+    // Touch cursor rendering - gvx64
+    void DrawTouchCursor(const Layout::FramebufferLayout& layout); //gvx64
+    void InitTouchCursorResources(); //gvx64
+    void CleanupTouchCursorResources(); //gvx64
+
+    // Touch cursor OpenGL resources
+    OGLVertexArray touch_cursor_vao; //gvx64
+    OGLBuffer touch_cursor_vbo; //gvx64
+    OGLProgram touch_cursor_shader; //gvx64
+    GLuint touch_cursor_uniform_projection; //gvx64
+    GLuint touch_cursor_attrib_position; //gvx64
+
 private:
     Pica::PicaCore& pica;
     Driver driver;

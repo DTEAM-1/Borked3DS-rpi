@@ -20,6 +20,7 @@
 #include "core/frontend/input.h"
 #include "core/hle/service/service.h"
 #include "network/artic_base/artic_base_client.h"
+#include "core/hle/service/hid/touch_cursor_controller.h"  // gvx64
 
 namespace Kernel {
 class Event;
@@ -31,6 +32,9 @@ struct TimingEventType;
 };
 
 namespace Service::HID {
+
+// Forward declaration - gvx64
+//gvx64 class TouchCursorController;
 
 /**
  * Structure of a Pad controller state.
@@ -339,6 +343,10 @@ public:
 
     const PadState& GetState() const;
 
+    TouchCursorController* GetTouchCursorController() { //gvx64
+        return touch_cursor_controller.get(); //gvx64
+    }
+
     // Updating period for each HID device. These empirical values are measured from a 11.2 3DS.
     static constexpr u64 pad_update_ticks = BASE_CLOCK_RATE_ARM11 / 234;
     static constexpr u64 accelerometer_update_ticks = BASE_CLOCK_RATE_ARM11 / 104;
@@ -390,6 +398,7 @@ private:
     std::array<std::unique_ptr<Input::ButtonDevice>, Settings::NativeButton::NUM_BUTTONS_HID>
         buttons;
     std::unique_ptr<Input::AnalogDevice> circle_pad;
+    std::unique_ptr<Input::AnalogDevice> c_stick; // gvx64
     std::unique_ptr<Input::MotionDevice> motion_device;
     std::unique_ptr<Input::TouchDevice> touch_device;
     std::unique_ptr<Input::TouchDevice> touch_btn_device;
@@ -400,6 +409,8 @@ private:
     template <class Archive>
     void serialize(Archive& ar, const unsigned int);
     friend class boost::serialization::access;
+
+    std::unique_ptr<TouchCursorController> touch_cursor_controller; //gvx64
 };
 
 std::shared_ptr<Module> GetModule(Core::System& system);

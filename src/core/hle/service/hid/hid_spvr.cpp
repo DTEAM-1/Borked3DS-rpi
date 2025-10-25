@@ -5,6 +5,7 @@
 
 #include "common/archives.h"
 #include "core/hle/service/hid/hid_spvr.h"
+#include "core/hle/service/hid/touch_cursor_controller.h" //gvx64
 
 SERIALIZE_EXPORT_IMPL(Service::HID::Spvr)
 

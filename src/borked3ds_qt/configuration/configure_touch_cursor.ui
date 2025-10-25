@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ConfigureTouchCursor</class>
+ <widget class="QWidget" name="ConfigureTouchCursor">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>400</width>
+    <height>300</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QGroupBox" name="groupBox">
+     <property name="title">
+      <string>Touch Cursor Settings</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_2">
+      <item>
+       <widget class="QCheckBox" name="enable_touch_cursor">
+        <property name="text">
+         <string>Enable Gamepad Touch Cursor</string>
+        </property>
+        <property name="toolTip">
+         <string>Enable analog stick controlled cursor for touchscreen input. This may reduce performance slightly.</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="description_label">
+        <property name="text">
+         <string>Control the touchscreen cursor with your gamepad's analog stick. A cursor will appear on the bottom screen.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QFormLayout" name="formLayout">
+        <property name="fieldGrowthPolicy">
+         <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+        </property>
+        <item row="0" column="0">
+         <widget class="QLabel" name="analog_stick_label">
+          <property name="text">
+           <string>Analog Stick:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QComboBox" name="analog_stick_combobox">
+          <property name="toolTip">
+           <string>Select which analog stick controls the cursor</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="touch_button_label">
+          <property name="text">
+           <string>Touch Button:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QComboBox" name="touch_button_combobox">
+          <property name="toolTip">
+           <string>Button that triggers touch when held</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="sensitivity_label">
+          <property name="text">
+           <string>Sensitivity:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <layout class="QHBoxLayout" name="horizontalLayout">
+          <item>
+           <widget class="QSlider" name="sensitivity_slider">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="toolTip">
+             <string>Cursor movement speed (0.1x - 5.0x)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="sensitivity_value_label">
+            <property name="text">
+             <string>1.0x</string>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>45</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <spacer name="verticalSpacer">
+        <property name="orientation">
+         <enum>Qt::Vertical</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>40</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

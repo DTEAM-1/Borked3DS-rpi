@@ -24,6 +24,7 @@
 #include "core/hle/service/ir/ir_rst.h"
 #include "core/hle/service/ir/ir_user.h"
 #include "core/hle/service/service.h"
+#include "core/hle/service/hid/touch_cursor_controller.h" //gvx64
 #include "core/movie.h"
 
 SERVICE_CONSTRUCT_IMPL(Service::HID::Module)
@@ -114,7 +115,7 @@ DirectionState GetStickDirectionState(s16 circle_pad_x, s16 circle_pad_y) {
     return state;
 }
 
-void Module::LoadInputDevices() {
+void Module::LoadInputDevices() { //gvx64 - begin
     std::transform(Settings::values.current_input_profile.buttons.begin() +
                        Settings::NativeButton::BUTTON_HID_BEGIN,
                    Settings::values.current_input_profile.buttons.begin() +
@@ -122,6 +123,8 @@ void Module::LoadInputDevices() {
                    buttons.begin(), Input::CreateDevice<Input::ButtonDevice>);
     circle_pad = Input::CreateDevice<Input::AnalogDevice>(
         Settings::values.current_input_profile.analogs[Settings::NativeAnalog::CirclePad]);
+    c_stick = Input::CreateDevice<Input::AnalogDevice>(  // gvx64
+        Settings::values.current_input_profile.analogs[Settings::NativeAnalog::CStick]); // gvx64
     motion_device = Input::CreateDevice<Input::MotionDevice>(
         Settings::values.current_input_profile.motion_device);
     touch_device = Input::CreateDevice<Input::TouchDevice>(
@@ -131,7 +134,7 @@ void Module::LoadInputDevices() {
     } else {
         touch_btn_device.reset();
     }
-}
+} //gvx64 - end
 
 void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
     SharedMem* mem = reinterpret_cast<SharedMem*>(shared_mem->GetPointer());
@@ -261,6 +264,7 @@ void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
         pad_entry.circle_pad_x = circle_pad_x;
         pad_entry.circle_pad_y = circle_pad_y;
 
+
         // If we just updated index 0, provide a new timestamp
         if (mem->pad.index == 0) {
             mem->pad.index_reset_ticks_previous = mem->pad.index_reset_ticks;
@@ -278,11 +282,48 @@ void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
         if (!pressed && touch_btn_device) {
             std::tie(x, y, pressed) = touch_btn_device->GetStatus();
         }
+
+    // Update touch cursor controller if enabled - gvx64
+    if (touch_cursor_controller) { //gvx64
+        const auto& config = touch_cursor_controller->GetConfig();
+        float stick_x = 0.0f, stick_y = 0.0f;
+        bool touch_btn_pressed = false;
+
+        // Get analog stick values based on configuration
+        if (config.analog_stick_button == 0 && circle_pad) {
+            // Use Circle Pad
+            std::tie(stick_x, stick_y) = circle_pad->GetStatus();
+        } else if (config.analog_stick_button == 1 && c_stick) {
+            // Use C-Stick
+            std::tie(stick_x, stick_y) = c_stick->GetStatus();
+        }
+
+        // Get touch button state based on configuration
+        if (config.touch_button < Settings::NativeButton::NUM_BUTTONS_HID) {
+            touch_btn_pressed = buttons[config.touch_button]->GetStatus();
+        }
+
+        touch_cursor_controller->Update(stick_x, stick_y, touch_btn_pressed);
+
+        // Override touch input with cursor position if controller is enabled
+        if (config.enabled) { // Check config.enabled, not GetConfig().enabled again
+            touch_entry.x = touch_cursor_controller->GetCursorX();
+            touch_entry.y = touch_cursor_controller->GetCursorY();
+            touch_entry.valid.Assign(touch_cursor_controller->IsTouching() ? 1 : 0);
+        } else {
+            // Cursor disabled, use normal touch device
+            touch_entry.x = static_cast<u16>(x * Core::kScreenBottomWidth);
+            touch_entry.y = static_cast<u16>(y * Core::kScreenBottomHeight);
+            touch_entry.valid.Assign(pressed ? 1 : 0);
+        }
+    } else {
+        // No cursor controller, use normal touch device
         touch_entry.x = static_cast<u16>(x * Core::kScreenBottomWidth);
         touch_entry.y = static_cast<u16>(y * Core::kScreenBottomHeight);
         touch_entry.valid.Assign(pressed ? 1 : 0);
+    }
 
-        system.Movie().HandleTouchStatus(touch_entry);
+    system.Movie().HandleTouchStatus(touch_entry);
     }
 
     // TODO(bunnei): We're not doing anything with offset 0xA8 + 0x18 of HID SharedMemory, which
@@ -673,6 +714,16 @@ Module::Module(Core::System& system) : system(system) {
         });
 
     timing.ScheduleEvent(pad_update_ticks, pad_update_event);
+
+    touch_cursor_controller = std::make_unique<TouchCursorController>(system); //gvx64
+
+    // Configure touch cursor controller from settings - gvx64
+    Service::HID::TouchCursorConfig cursor_config; //gvx64
+    cursor_config.enabled = Settings::values.touch_cursor_enabled.GetValue(); //gvx64
+    cursor_config.analog_stick_button = Settings::values.touch_cursor_analog_stick.GetValue(); //gvx64
+    cursor_config.touch_button = Settings::values.touch_cursor_button.GetValue(); //gvx64
+    cursor_config.sensitivity = Settings::values.touch_cursor_sensitivity.GetValue(); //gvx64
+    touch_cursor_controller->SetConfig(cursor_config); //gvx64
 }
 
 void Module::UseArticClient(const std::shared_ptr<Network::ArticBase::Client>& client) {
@@ -695,6 +746,16 @@ void Module::UseArticClient(const std::shared_ptr<Network::ArticBase::Client>& c
 
 void Module::ReloadInputDevices() {
     is_device_reload_pending.store(true);
+
+    // Reload touch cursor settings - gvx64
+    if (touch_cursor_controller) {
+        Service::HID::TouchCursorConfig cursor_config;
+        cursor_config.enabled = Settings::values.touch_cursor_enabled.GetValue();
+        cursor_config.analog_stick_button = Settings::values.touch_cursor_analog_stick.GetValue();
+        cursor_config.touch_button = Settings::values.touch_cursor_button.GetValue();
+        cursor_config.sensitivity = Settings::values.touch_cursor_sensitivity.GetValue();
+        touch_cursor_controller->SetConfig(cursor_config);
+    }
 }
 
 const PadState& Module::GetState() const {
