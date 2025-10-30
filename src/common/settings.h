@@ -467,6 +467,9 @@ struct Values {
     InputProfile current_input_profile;       ///< The current input profile
     int current_input_profile_index;          ///< The current input profile index
 
+    // Per-game input profile override - gvx64
+    SwitchableSetting<int> input_profile_index{-1, "input_profile_index"}; //gvx64 -  -1 = use global
+
     // Touch Cursor - gvx64
     SwitchableSetting<bool> touch_cursor_enabled{false, "touch_cursor_enabled"}; //gvx64
     SwitchableSetting<u32> touch_cursor_analog_stick{0, "touch_cursor_analog_stick"}; //gvx64

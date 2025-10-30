@@ -284,7 +284,7 @@ void Config::ReadValues() {
     ReadSystemValues();
     ReadUtilityValues();
 
-    ReadTouchCursorValues(); //gvx64
+    ReadControlsValues(); //gvx64
 }
 
 void Config::ReadAudioValues() {
@@ -930,7 +930,7 @@ void Config::SaveValues() {
     SaveSystemValues();
     SaveUtilityValues();
 
-    SaveTouchCursorValues(); // gvx64
+    SaveControlsValues(); //gvx64
 
     qt_config->sync();
 }
@@ -1343,8 +1343,13 @@ void Config::SaveVideoDumpingValues() {
     qt_config->endGroup();
 }
 
-void Config::ReadTouchCursorValues() { //gvx64 - begin
+void Config::ReadControlsValues() { //gvx64 - begin
     qt_config->beginGroup(QStringLiteral("Controls"));
+
+    // Per-game profile override - gvx64
+    Settings::values.input_profile_index =
+        ReadSetting(QStringLiteral("input_profile_index"), -1).toInt();
+
     Settings::values.touch_cursor_enabled =
         ReadSetting(QStringLiteral("touch_cursor_enabled"), false).toBool();
     Settings::values.touch_cursor_analog_stick =
@@ -1356,8 +1361,13 @@ void Config::ReadTouchCursorValues() { //gvx64 - begin
     qt_config->endGroup();
 }
 
-void Config::SaveTouchCursorValues() {
+void Config::SaveControlsValues() {
     qt_config->beginGroup(QStringLiteral("Controls"));
+
+    // Per-game profile override - gvx64
+    WriteSetting(QStringLiteral("input_profile_index"),
+                 Settings::values.input_profile_index.GetValue(), -1);
+
     WriteSetting(QStringLiteral("touch_cursor_enabled"),
                  Settings::values.touch_cursor_enabled.GetValue(), false);
     WriteSetting(QStringLiteral("touch_cursor_analog_stick"),

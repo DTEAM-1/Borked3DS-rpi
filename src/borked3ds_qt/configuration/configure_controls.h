@@ -8,15 +8,15 @@
 #include <QWidget>
 
 namespace Ui {
-class ConfigureTouchCursor;
+class ConfigureControls;
 }
 
-class ConfigureTouchCursor : public QWidget {
+class ConfigureControls : public QWidget {
     Q_OBJECT
 
 public:
-    explicit ConfigureTouchCursor(QWidget* parent = nullptr);
-    ~ConfigureTouchCursor() override;
+    explicit ConfigureControls(QWidget* parent = nullptr);
+    ~ConfigureControls() override;
 
     void ApplyConfiguration();
     void RetranslateUI();
@@ -24,10 +24,11 @@ public:
 
 private:
     void UpdateUIState();
+    void OnProfileChanged(int index);
     void OnAnalogStickChanged(int index);
     void OnTouchButtonChanged(int index);
     void OnSensitivityChanged(int value);
-    void OnEnabledToggled(bool enabled);
+    void OnTouchCursorEnabledToggled(bool enabled);
 
-    std::unique_ptr<Ui::ConfigureTouchCursor> ui;
+    std::unique_ptr<Ui::ConfigureControls> ui;
 };

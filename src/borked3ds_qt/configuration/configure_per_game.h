@@ -23,7 +23,7 @@ class ConfigureGraphics;
 class ConfigureSystem;
 class ConfigureDebug;
 class ConfigureCheats;
-class ConfigureTouchCursor; //gvx64
+class ConfigureControls; //gvx64
 
 class QGraphicsScene;
 class QStandardItem;
@@ -78,5 +78,5 @@ private:
     std::unique_ptr<ConfigureSystem> system_tab;
     std::unique_ptr<ConfigureDebug> debug_tab;
     std::unique_ptr<ConfigureCheats> cheat_tab;
-    std::unique_ptr<ConfigureTouchCursor> touch_cursor_tab; //gvx64
+    std::unique_ptr<ConfigureControls> controls_tab; //gvx64
 };

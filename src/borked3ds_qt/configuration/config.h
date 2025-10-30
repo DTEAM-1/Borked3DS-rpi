@@ -75,8 +75,8 @@ private:
     void SaveUtilityValues();
     void SaveWebServiceValues();
     void SaveVideoDumpingValues();
-    void ReadTouchCursorValues(); //gvx64
-    void SaveTouchCursorValues(); //gvx64
+    void ReadControlsValues(); //gvx64
+    void SaveControlsValues(); //gvx64
 
     /**
      * Reads a setting from the qt_config.

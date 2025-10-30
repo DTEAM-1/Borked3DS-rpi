@@ -23,7 +23,7 @@
 #include "core/loader/loader.h"
 #include "core/loader/smdh.h"
 #include "ui_configure_per_game.h"
-#include "borked3ds_qt/configuration/configure_touch_cursor.h" //gvx64
+#include "borked3ds_qt/configuration/configure_controls.h" //gvx64
 #include "core/hle/service/hid/hid.h" //gvx64
 
 ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const QString& file_name,
@@ -35,7 +35,7 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const QString
                                                 : fmt::format("{:016X}", title_id);
     game_config = std::make_unique<Config>(config_file_name, Config::ConfigType::PerGameConfig);
 
-    touch_cursor_tab = std::make_unique<ConfigureTouchCursor>(this); //gvx64
+    controls_tab = std::make_unique<ConfigureControls>(this); //gvx64
 
     const bool is_powered_on = system.IsPoweredOn();
     audio_tab = std::make_unique<ConfigureAudio>(is_powered_on, this);
@@ -58,7 +58,7 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const QString
     ui->tabWidget->addTab(audio_tab.get(), tr("Audio"));
     ui->tabWidget->addTab(debug_tab.get(), tr("Debug"));
     ui->tabWidget->addTab(cheat_tab.get(), tr("Cheats"));
-    ui->tabWidget->addTab(touch_cursor_tab.get(), tr("Touch Cursor")); //gvx64
+    ui->tabWidget->addTab(controls_tab.get(), tr("Controls")); //gvx64
 
     setFocusPolicy(Qt::ClickFocus);
     setWindowTitle(tr("Properties"));
@@ -115,14 +115,24 @@ void ConfigurePerGame::ApplyConfiguration() {
     graphics_tab->ApplyConfiguration();
     audio_tab->ApplyConfiguration();
     debug_tab->ApplyConfiguration();
-    touch_cursor_tab->ApplyConfiguration(); //gvx64
+    controls_tab->ApplyConfiguration(); //gvx64
 
     system.ApplySettings();
     Settings::LogSettings();
 
     game_config->Save();
 
-    // Note: Input devices will be reloaded automatically when game starts - gvx64
+    // Apply per-game input profile if configured - gvx64
+    int profile_idx = Settings::values.input_profile_index.GetValue();
+    if (profile_idx >= 0 && profile_idx < static_cast<int>(Settings::values.input_profiles.size())) {
+        Settings::LoadProfile(profile_idx);
+        if (system.IsPoweredOn()) {
+            auto hid = Service::HID::GetModule(system);
+            if (hid) {
+                hid->ReloadInputDevices();
+            }
+        }
+    }
 }
 
 void ConfigurePerGame::changeEvent(QEvent* event) {

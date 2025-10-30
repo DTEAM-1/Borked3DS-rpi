@@ -1432,10 +1432,18 @@ void GMainWindow::BootGame(const QString& filename) {
         // Load per game settings
         const std::string name{is_artic ? "" : FileUtil::GetFilename(filename.toStdString())};
         const std::string config_file_name =
-            title_id == 0 ? name : fmt::format("{:016X}", title_id);
+           title_id == 0 ? name : fmt::format("{:016X}", title_id);
         LOG_INFO(Frontend, "Loading per game config file for title {}", config_file_name);
         Config per_game_config(config_file_name, Config::ConfigType::PerGameConfig);
-    }
+
+        // Apply per-game input profile if configured - gvx64
+        int profile_idx = Settings::values.input_profile_index.GetValue(); //gvx64
+        if (profile_idx >= 0 && profile_idx < static_cast<int>(Settings::values.input_profiles.size())) { //gvx64
+            LOG_INFO(Frontend, "Loading per-game input profile: {} (index {})",  //gvx64
+                    Settings::values.input_profiles[profile_idx].name, profile_idx); //gvx64
+            Settings::LoadProfile(profile_idx); //gvx64
+        } //gvx64
+   }
 
     // Artic Base Server cannot accept a client multiple times, so multiple loaders are not
     // possible. Instead register the app loader early and do not create it again on system load.

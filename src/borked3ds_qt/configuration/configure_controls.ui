@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>ConfigureTouchCursor</class>
- <widget class="QWidget" name="ConfigureTouchCursor">
+ <class>ConfigureControls</class>
+ <widget class="QWidget" name="ConfigureControls">
   <property name="geometry">
    <rect>
     <x>0</x>
     <y>0</y>
     <width>400</width>
-    <height>300</height>
+    <height>400</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -15,7 +15,30 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="QGroupBox" name="groupBox">
+    <widget class="QGroupBox" name="profileGroupBox">
+     <property name="title">
+      <string>Input Profile</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout_profile">
+      <item row="0" column="0">
+       <widget class="QLabel" name="profile_label">
+        <property name="text">
+         <string>Profile:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="profile_combobox">
+        <property name="toolTip">
+         <string>Select which controller profile to use for this game. The "default" profile uses the standard keyboard/controller mappings.</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="touchCursorGroupBox">
      <property name="title">
       <string>Touch Cursor Settings</string>
      </property>
