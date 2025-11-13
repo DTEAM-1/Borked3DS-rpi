@@ -19,7 +19,7 @@
      <item>
       <widget class="QLabel" name="label_2">
        <property name="text">
-        <string>Double-click on a binding to change it.</string>
+        <string>Double-click on a binding to change it. Right-click to clear.</string>
        </property>
       </widget>
      </item>

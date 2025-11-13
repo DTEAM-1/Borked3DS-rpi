@@ -249,7 +249,7 @@ bool RasterizerCache<T>::AccelerateTextureCopy(const Pica::DisplayTransferConfig
     Surface& src_surface = slot_surfaces[src_surface_id];
     Surface& dst_surface = slot_surfaces[dst_surface_id];
 
-    if (!Surface::blacklisted_addresses.empty()) { //gvx64 - only initiate sw fall-back check if at least one gl error has been logged in Surface::Attach()
+    if ( (program_id == 0x00040000001AA900 || program_id == 0x00040000000A0500) && !Surface::blacklisted_addresses.empty()) { //gvx64 - only initiate sw fall-back check if Fire Emblem Awakening or DB Fusion  and at least one gl error has been logged in Surface::Attach()
 
         // CHECK: Blacklisted addresses
         if (Surface::blacklisted_addresses.count(src_surface.addr) || //gvx64 - generalized sw fallback when bad texture address found
@@ -339,7 +339,7 @@ bool RasterizerCache<T>::AccelerateDisplayTransfer(const Pica::DisplayTransferCo
     Surface& src_surface = slot_surfaces[src_surface_id];
     Surface& dst_surface = slot_surfaces[dst_surface_id];
 
-    if (!Surface::blacklisted_addresses.empty()) { //gvx64 - only initiate sw fall-back check if at least one gl error has been logged in Surface::Attach()
+    if ( (program_id == 0x00040000001AA900 || program_id == 0x00040000000A0500) && !Surface::blacklisted_addresses.empty()) { //gvx64 - only initiate sw fall-back check if Fire Emblem Awakening or DB Fusion and at least one gl error has been logged in Surface::Attach()
 
         // CHECK: Blacklisted addresses
         if (Surface::blacklisted_addresses.count(src_surface.addr) || //gvx64 - generalized sw fallback when bad texture address found

@@ -42,12 +42,17 @@ signals:
 
 private:
     void Configure(QModelIndex index);
+    void ConfigureKeyboardHotkey(QModelIndex index);  // gvx64
+    void ConfigureControllerHotkey(QModelIndex index); // gvx64
     std::pair<bool, QString> IsUsedKey(QKeySequence key_sequence) const;
+    std::pair<bool, QString> IsUsedControllerButton(const QString& button_string) const; // gvx64
     QList<QKeySequence> GetUsedKeyList() const;
 
     void RestoreDefaults();
     void ClearAll();
     void PopupContextMenu(const QPoint& menu_location);
+    void ShowKeyboardContextMenu(QModelIndex index, const QPoint& menu_location); // gvx64
+    void ShowControllerContextMenu(QModelIndex index, const QPoint& menu_location); // gvx64
     void RestoreHotkey(QModelIndex index);
 
     /**

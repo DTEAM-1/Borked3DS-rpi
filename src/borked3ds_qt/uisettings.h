@@ -27,6 +27,7 @@ struct Shortcut {
     QString name;
     QString group;
     ContextualShortcut shortcut;
+    QString controller_shortcut; //gvx64
 };
 
 using Themes = std::array<std::pair<const char*, const char*>, 6>;

@@ -17,6 +17,7 @@
 #include "borked3ds_qt/hotkeys.h"
 #include "core/core.h"
 #include "core/savestate.h"
+#include "borked3ds_qt/configuration/configure_touch_from_button.h" //gvx64
 
 #ifdef __unix__
 #include <QDBusObjectPath>
@@ -359,6 +360,15 @@ private:
     // Hotkeys
     bool turbo_mode_active = false;
 
+    HotkeyRegistry hotkey_registry;
+
+    // Gamepad hotkey polling - gvx64
+    QTimer gamepad_hotkey_poll_timer;
+    std::map<QString, bool> gamepad_hotkey_pressed; // Track button states
+
+    void PollGamepadHotkeys(); // gvx64
+    void TriggerHotkeyAction(const QString& group, const QString& action); // gvx64
+
     // Whether emulation is currently running in Borked3DS.
     bool emulation_running = false;
     std::unique_ptr<EmuThread> emu_thread;
@@ -434,8 +444,6 @@ private:
 
     // stores default icon theme search paths for the platform
     QStringList default_theme_paths;
-
-    HotkeyRegistry hotkey_registry;
 
     std::shared_ptr<Camera::QtMultimediaCameraHandlerFactory> qt_cameras;
 

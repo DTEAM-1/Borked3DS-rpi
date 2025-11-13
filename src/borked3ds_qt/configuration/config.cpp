@@ -729,17 +729,20 @@ void Config::ReadRendererValues() {
 void Config::ReadShortcutValues() {
     qt_config->beginGroup(QStringLiteral("Shortcuts"));
 
-    for (const auto& [name, group, shortcut] : default_hotkeys) {
+    for (const auto& [name, group, shortcut, controller_shortcut] : default_hotkeys) { // gvx64
         qt_config->beginGroup(group);
         qt_config->beginGroup(name);
-        // No longer using ReadSetting for shortcut.second as it innacurately returns a value of 1
-        // for WidgetWithChildrenShortcut which is a value of 3. Needed to fix shortcuts the open
+
+        // No longer using ReadSetting for shortcut.second as it inaccurately returns a value of 1
+        // for WidgetWithChildrenShortcut which is a value of 3. Needed to fix shortcuts that open
         // a file dialog in windowed mode
         UISettings::values.shortcuts.push_back(
             {name,
              group,
              {ReadSetting(QStringLiteral("KeySeq"), shortcut.keyseq).toString(),
-              shortcut.context}});
+              shortcut.context},
+             ReadSetting(QStringLiteral("Controller"), QString{}).toString()}); // gvx64
+
         qt_config->endGroup();
         qt_config->endGroup();
     }
@@ -1281,13 +1284,16 @@ void Config::SaveShortcutValues() {
     // Lengths of UISettings::values.shortcuts & default_hotkeys are same.
     // However, their ordering must also be the same.
     for (std::size_t i = 0; i < default_hotkeys.size(); i++) {
-        const auto& [name, group, shortcut] = UISettings::values.shortcuts[i];
+        const auto& [name, group, shortcut, controller_shortcut] = UISettings::values.shortcuts[i]; // gvx64
         const auto& default_hotkey = default_hotkeys[i].shortcut;
 
         qt_config->beginGroup(group);
         qt_config->beginGroup(name);
+
         WriteSetting(QStringLiteral("KeySeq"), shortcut.keyseq, default_hotkey.keyseq);
         WriteSetting(QStringLiteral("Context"), shortcut.context, default_hotkey.context);
+        WriteSetting(QStringLiteral("Controller"), controller_shortcut, QString{}); // gvx64
+
         qt_config->endGroup();
         qt_config->endGroup();
     }

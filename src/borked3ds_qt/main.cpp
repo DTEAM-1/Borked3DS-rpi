@@ -106,6 +106,7 @@
 #include "ui_main.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
+#include "input_common/main.h" // gvx64 - for gamepad polling
 
 #ifdef __APPLE__
 #include "common/apple_authorization.h"
@@ -803,6 +804,13 @@ void GMainWindow::InitializeHotkeys() {
     const auto fullscreen_hotkey = hotkey_registry.GetKeySequence(main_window, fullscreen);
     add_secondary_window_hotkey(action_secondary_fullscreen, fullscreen_hotkey,
                                 SLOT(ToggleSecondaryFullscreen()));
+
+    // Initialize gamepad hotkey polling - gvx64
+    connect(&gamepad_hotkey_poll_timer, &QTimer::timeout, this, &GMainWindow::PollGamepadHotkeys);
+    gamepad_hotkey_poll_timer.setInterval(16); // Poll at ~60Hz (16ms)
+
+    // Start polling when emulation starts
+    // Timer will be started/stopped in OnStartGame/OnStopGame
 }
 
 void GMainWindow::SetDefaultUIGeometry() {
@@ -870,6 +878,157 @@ void GMainWindow::OnAppFocusStateChanged(Qt::ApplicationState state) {
         }
         UpdateVolumeUI();
     }
+}
+
+void GMainWindow::PollGamepadHotkeys() {
+    if (!emulation_running) {
+        return;
+    }
+
+    // Check each configured hotkey's controller binding
+    for (const auto& [group_name, group] : hotkey_registry.hotkey_groups) {
+        for (const auto& [action_name, hotkey] : group) {
+            if (hotkey.controller_keyseq.isEmpty()) {
+                continue; // No controller binding for this hotkey
+            }
+
+            // Parse the button configuration
+            Common::ParamPackage params(hotkey.controller_keyseq.toStdString());
+            if (!params.Has("engine") || !params.Has("button")) {
+                continue;
+            }
+
+            // Create a button device from the params
+            auto button_device = Input::CreateDevice<Input::ButtonDevice>(params.Serialize());
+            if (!button_device) {
+                continue;
+            }
+
+            // Check if button is currently pressed
+            bool is_pressed = button_device->GetStatus();
+
+            QString hotkey_id = group_name + QStringLiteral("::") + action_name;
+
+            // Trigger on new press (not held)
+            if (is_pressed && !gamepad_hotkey_pressed[hotkey_id]) {
+                gamepad_hotkey_pressed[hotkey_id] = true;
+                TriggerHotkeyAction(group_name, action_name);
+            } else if (!is_pressed && gamepad_hotkey_pressed[hotkey_id]) {
+                // Button was released
+                gamepad_hotkey_pressed[hotkey_id] = false;
+            }
+        }
+    }
+}
+
+void GMainWindow::TriggerHotkeyAction(const QString& group, const QString& action) {
+    // Map hotkey actions to their corresponding functions
+    // This mirrors the keyboard hotkey connections in InitializeHotkeys()
+
+    const QString main_window = QStringLiteral("Main Window");
+
+    if (group != main_window) {
+        return; // Only handle Main Window hotkeys for now
+    }
+
+    // Match action names to their handlers
+    if (action == QStringLiteral("Load File")) {
+        OnMenuLoadFile();
+    } else if (action == QStringLiteral("Exit Borked3DS")) {
+        close();
+    } else if (action == QStringLiteral("Restart Emulation")) {
+        if (emu_thread) {
+            BootGame(QString(game_path));
+        }
+    } else if (action == QStringLiteral("Continue/Pause Emulation")) {
+        OnPauseContinueGame();
+    } else if (action == QStringLiteral("Stop Emulation")) {
+        OnStopGame();
+    } else if (action == QStringLiteral("Fullscreen")) {
+        ToggleFullscreen();
+    } else if (action == QStringLiteral("Exit Fullscreen")) {
+        if (emulation_running) {
+            ui->action_Fullscreen->setChecked(false);
+            ToggleFullscreen();
+        }
+    } else if (action == QStringLiteral("Toggle Screen Layout")) {
+        ToggleScreenLayout();
+    } else if (action == QStringLiteral("Swap Screens")) {
+        OnSwapScreens();
+    } else if (action == QStringLiteral("Rotate Screens Upright")) {
+        OnRotateScreens();
+    } else if (action == QStringLiteral("Capture Screenshot")) {
+        OnCaptureScreenshot();
+    } else if (action == QStringLiteral("Advance Frame")) {
+        if (emulation_running && system.frame_limiter.IsFrameAdvancing()) {
+            system.frame_limiter.AdvanceFrame();
+        }
+    } else if (action == QStringLiteral("Load Amiibo")) {
+        OnLoadAmiibo();
+    } else if (action == QStringLiteral("Remove Amiibo")) {
+        OnRemoveAmiibo();
+    } else if (action == QStringLiteral("Toggle Filter Bar")) {
+        OnToggleFilterBar();
+    } else if (action == QStringLiteral("Toggle Status Bar")) {
+        statusBar()->setVisible(!statusBar()->isVisible());
+    } else if (action == QStringLiteral("Toggle Per-Game Speed")) {
+        if (!hotkey_registry.GetKeySequence(main_window, QStringLiteral("Toggle Turbo Mode")).isEmpty()) {
+            return;
+        }
+        Settings::values.frame_limit.SetGlobal(!Settings::values.frame_limit.UsingGlobal());
+        UpdateStatusBar();
+    } else if (action == QStringLiteral("Toggle Texture Dumping")) {
+        Settings::values.dump_textures = !Settings::values.dump_textures;
+    } else if (action == QStringLiteral("Toggle Custom Textures")) {
+        Settings::values.custom_textures = !Settings::values.custom_textures;
+    } else if (action == QStringLiteral("Toggle Turbo Mode")) {
+        ToggleEmulationSpeed();
+    } else if (action == QStringLiteral("Increase Speed Limit")) {
+        AdjustSpeedLimit(true);
+    } else if (action == QStringLiteral("Decrease Speed Limit")) {
+        AdjustSpeedLimit(false);
+    } else if (action == QStringLiteral("Audio Mute/Unmute")) {
+        OnMute();
+    } else if (action == QStringLiteral("Audio Volume Down")) {
+        OnDecreaseVolume();
+    } else if (action == QStringLiteral("Audio Volume Up")) {
+        OnIncreaseVolume();
+    } else if (action == QStringLiteral("Decrease 3D Factor")) {
+        static constexpr u16 FACTOR_3D_STEP = 5;
+        const auto factor_3d = Settings::values.factor_3d.GetValue();
+        if (factor_3d > 0) {
+            if (factor_3d % FACTOR_3D_STEP != 0) {
+                Settings::values.factor_3d = factor_3d - (factor_3d % FACTOR_3D_STEP);
+            } else {
+                Settings::values.factor_3d = factor_3d - FACTOR_3D_STEP;
+            }
+            UpdateStatusBar();
+        }
+    } else if (action == QStringLiteral("Increase 3D Factor")) {
+        static constexpr u16 FACTOR_3D_STEP = 5;
+        const auto factor_3d = Settings::values.factor_3d.GetValue();
+        if (factor_3d < 255) {
+            if (factor_3d % FACTOR_3D_STEP != 0) {
+                Settings::values.factor_3d = factor_3d + FACTOR_3D_STEP - (factor_3d % FACTOR_3D_STEP);
+            } else {
+                Settings::values.factor_3d = factor_3d + FACTOR_3D_STEP;
+            }
+            UpdateStatusBar();
+        }
+    } else if (action == QStringLiteral("Load from Newest Non-Quick Slot")) {
+        // Trigger the QAction directly - gvx64
+        ui->action_Load_from_Newest_Slot->trigger();
+    } else if (action == QStringLiteral("Save to Oldest Non-Quick Slot")) {
+        // Trigger the QAction directly - gvx64
+        ui->action_Save_to_Oldest_Slot->trigger();
+    } else if (action == QStringLiteral("Quick Save")) {
+        // Trigger the QAction directly - gvx64
+        ui->action_Quick_Save->trigger();
+    } else if (action == QStringLiteral("Quick Load")) {
+        // Trigger the QAction directly - gvx64
+        ui->action_Quick_Load->trigger();
+    }
+    // Add more hotkey mappings as needed
 }
 
 bool GApplicationEventFilter::eventFilter(QObject* object, QEvent* event) {
@@ -2407,6 +2566,24 @@ void GMainWindow::OnStartGame() {
 
     UpdateSaveStates();
     UpdateStatusButtons();
+
+    // Only start gamepad hotkey polling if there are controller hotkeys - gvx64
+    bool has_controller_hotkeys = false;
+    for (const auto& [group_name, group] : hotkey_registry.hotkey_groups) {
+        for (const auto& [action_name, hotkey] : group) {
+            if (!hotkey.controller_keyseq.isEmpty()) {
+                has_controller_hotkeys = true;
+                break;
+            }
+        }
+        if (has_controller_hotkeys) break;
+    }
+
+    if (has_controller_hotkeys) {
+        // Don't use pollers - just start the timer
+        // Pollers consume input and break game controls - gvx64
+        gamepad_hotkey_poll_timer.start();
+    }
 }
 
 void GMainWindow::OnRestartGame() {
@@ -2456,6 +2633,11 @@ void GMainWindow::OnStopGame() {
     graphics_api_button->setEnabled(true);
     Settings::RestoreGlobalState(false);
     UpdateStatusButtons();
+
+    // Stop gamepad hotkey polling - gvx64
+    gamepad_hotkey_poll_timer.stop();
+    gamepad_hotkey_pressed.clear();
+    // Don't need to manage pollers anymore
 }
 
 void GMainWindow::OnLoadComplete() {

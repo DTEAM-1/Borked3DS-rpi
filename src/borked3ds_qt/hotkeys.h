@@ -17,6 +17,7 @@ class QWidget;
 class HotkeyRegistry final {
 public:
     friend class ConfigureHotkeys;
+    friend class GMainWindow; //gvx64
 
     explicit HotkeyRegistry();
     ~HotkeyRegistry();

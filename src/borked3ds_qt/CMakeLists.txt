@@ -191,6 +191,8 @@ add_executable(borked3ds-qt
     util/graphics_device_info.h
     util/sequence_dialog/sequence_dialog.cpp
     util/sequence_dialog/sequence_dialog.h
+    util/controller_dialog/controller_dialog.cpp  # gvx64
+    util/controller_dialog/controller_dialog.h    # gvx64
     util/spinbox.cpp
     util/spinbox.h
     util/util.cpp
