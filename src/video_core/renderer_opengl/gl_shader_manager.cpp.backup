@@ -476,23 +476,9 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
     // Precompiled file for separable shaders is compressed.
     auto [decompiled, dumps] = disk_cache.LoadPrecompiled(impl->separable);
 
-    LOG_CRITICAL(Render_OpenGL, "DEBUG: After LoadPrecompiled - decompiled.size()={}, dumps.size()={}, separable={}",
-                 decompiled.size(), dumps.size(), impl->separable); //gvx64 - debugging log
-
-    // gvx64 - Optional: Limit number of shaders loaded at startup for faster boot
-//gvx64    const std::size_t MAX_STARTUP_SHADERS = 1000;  // Adjust this value
-//gvx64    bool limited_loading = raws.size() > MAX_STARTUP_SHADERS;
-//gvx64    std::size_t shaders_to_load = limited_loading ? MAX_STARTUP_SHADERS : raws.size();
-
-//gvx64    if (limited_loading) {
-//gvx64        LOG_INFO(Render_OpenGL,
-//gvx64                 "Limiting startup shader loading to {} of {} shaders for faster boot",
-//gvx64                 shaders_to_load, raws.size());
-//gvx64    }
-
     if (stop_loading) {
         return;
-    } //gvx64 - end
+    }
 
     std::set<GLenum> supported_formats = GetSupportedFormats();
 
@@ -612,143 +598,11 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
         }
     };
 
-// gvx64 - begin - Multi-threaded precompiled shader loading for separable shaders
-    // gvx64 - Multi-threaded precompiled shader loading
     if (impl->separable) {
-        LOG_CRITICAL(Render_OpenGL, "DEBUG: Taking SEPARABLE path");
-
-        // Calculate how many shaders to load
-        const std::size_t MAX_STARTUP_SHADERS = Settings::values.startup_shader_load_limit.GetValue();
-        bool limited_loading = raws.size() > MAX_STARTUP_SHADERS;
-        std::size_t shaders_to_load = limited_loading ? MAX_STARTUP_SHADERS : raws.size();
-
-
-        if (limited_loading) {
-            LOG_INFO(Render_OpenGL,
-                     "Limiting startup shader loading to {} of {} shaders for faster boot",
-                     shaders_to_load, raws.size());
-        }
-
-        // Use multi-threading only if loading more than 100 shaders
-        if (!strict_context_required && shaders_to_load > 100) {
-
-            // Multi-threaded path for separable shaders
-            const std::size_t num_workers{std::max(1U, std::thread::hardware_concurrency())};
-            const std::size_t bucket_size{shaders_to_load / num_workers};
-            std::vector<std::unique_ptr<Frontend::GraphicsContext>> contexts(num_workers);
-            std::vector<std::thread> threads(num_workers);
-
-            LOG_INFO(Render_OpenGL,
-                     "Loading {} of {} precompiled shaders using {} threads",
-                     shaders_to_load, raws.size(), num_workers);
-
-            emu_window.SaveContext();
-            for (std::size_t i = 0; i < num_workers; ++i) {
-                const bool is_last_worker = i + 1 == num_workers;
-                const std::size_t start{bucket_size * i};
-                const std::size_t end{is_last_worker ? shaders_to_load : start + bucket_size};
-
-                contexts[i] = emu_window.CreateSharedContext();
-                contexts[i]->DoneCurrent();
-
-                threads[i] = std::thread([&, start, end, context = contexts[i].get()]() {
-                    const auto scope = context->Acquire();
-                    LoadPrecompiledShader(start, end, raws, decompiled, dumps);
-                });
-            }
-
-            for (auto& thread : threads) {
-                thread.join();
-            }
-            emu_window.RestoreContext();
-        } else {
-            LoadPrecompiledShader(0, shaders_to_load, raws, decompiled, dumps);
-        }
+        LoadPrecompiledShader(0, raws.size(), raws, decompiled, dumps);
     } else {
-        // NON-SEPARABLE path - Used on Pi4 (no separable shader support)
-        LOG_CRITICAL(Render_OpenGL, "DEBUG: Taking NON-SEPARABLE path");
-
-        // Calculate how many programs to load
-        const std::size_t MAX_STARTUP_SHADERS = Settings::values.startup_shader_load_limit.GetValue();
-        bool limited_loading = dumps.size() > MAX_STARTUP_SHADERS;
-        std::size_t programs_to_load = limited_loading ? MAX_STARTUP_SHADERS : dumps.size();
-
-        // Use multi-threading only if loading more than 100 shaders
-        if (!strict_context_required && programs_to_load > 100) {
-
-            if (limited_loading) {
-                LOG_INFO(Render_OpenGL,
-                         "Limiting startup shader loading to {} of {} programs for faster boot",
-                         programs_to_load, dumps.size());
-            }
-
-            // Multi-threaded loading for non-separable shaders
-            const std::size_t num_workers{std::max(1U, std::thread::hardware_concurrency())};
-
-            // Convert dumps map to vector for easier indexing
-            std::vector<std::pair<u64, ShaderDiskCacheDump>> dumps_vec(dumps.begin(), dumps.end());
-
-            const std::size_t bucket_size{programs_to_load / num_workers};
-
-            std::vector<std::unique_ptr<Frontend::GraphicsContext>> contexts(num_workers);
-            std::vector<std::thread> threads(num_workers);
-
-            LOG_INFO(Render_OpenGL,
-                     "Loading {} of {} non-separable precompiled programs using {} threads",
-                     programs_to_load, dumps_vec.size(), num_workers);
-
-            emu_window.SaveContext();
-            for (std::size_t i = 0; i < num_workers; ++i) {
-                const bool is_last_worker = i + 1 == num_workers;
-                const std::size_t start{bucket_size * i};
-                const std::size_t end{is_last_worker ? programs_to_load : start + bucket_size};
-
-                contexts[i] = emu_window.CreateSharedContext();
-                contexts[i]->DoneCurrent();
-
-                threads[i] = std::thread([&, start, end, context = contexts[i].get()]() {
-                    const auto scope = context->Acquire();
-
-                    for (std::size_t idx = start; idx < end; ++idx) {
-                        if (stop_loading || compilation_failed) {
-                            return;
-                        }
-
-                        const auto& [unique_identifier, dump] = dumps_vec[idx];
-                        const auto decomp = decompiled.find(unique_identifier);
-
-                        if (decomp == decompiled.end() || decomp->second.sanitize_mul != accurate_mul) {
-                            continue;
-                        }
-
-                        OGLProgram shader = GeneratePrecompiledProgram(dump, supported_formats, impl->separable);
-                        if (shader.handle != 0) {
-                            std::scoped_lock lock(mutex);
-                            impl->program_cache.emplace(unique_identifier, std::move(shader));
-                        } else {
-                            LOG_ERROR(Frontend, "Failed to link Precompiled program!");
-                            compilation_failed = true;
-                            return;
-                        }
-
-                        if (callback) {
-                            std::scoped_lock lock(mutex);
-                            static std::size_t loaded_count = 0;
-                            callback(VideoCore::LoadCallbackStage::Decompile, ++loaded_count, programs_to_load);
-                        }
-                    }
-                });
-            }
-
-            for (auto& thread : threads) {
-                thread.join();
-            }
-            emu_window.RestoreContext();
-        } else {
-            // Single-threaded fallback
-            LoadPrecompiledProgram(decompiled, dumps);
-        }
-    } // gvx64 - end
+        LoadPrecompiledProgram(decompiled, dumps);
+    }
 
     bool load_all_raws = false;
     if (compilation_failed) {

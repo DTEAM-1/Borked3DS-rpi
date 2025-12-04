@@ -721,6 +721,7 @@ void Config::ReadRendererValues() {
 
     if (global) {
         ReadBasicSetting(Settings::values.use_shader_jit);
+        ReadBasicSetting(Settings::values.startup_shader_load_limit);  //gvx64
     }
 
     qt_config->endGroup();
@@ -1273,6 +1274,7 @@ void Config::SaveRendererValues() {
     if (global) {
         WriteSetting(QStringLiteral("use_shader_jit"), Settings::values.use_shader_jit.GetValue(),
                      true);
+        WriteSetting(QStringLiteral("startup_shader_load_limit"), Settings::values.startup_shader_load_limit.GetValue(), 1000);  //gvx64
     }
 
     qt_config->endGroup();

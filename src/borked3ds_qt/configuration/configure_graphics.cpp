@@ -80,6 +80,11 @@ ConfigureGraphics::ConfigureGraphics(QString gl_renderer, std::span<const QStrin
                 ui->hw_renderer_group->setEnabled(!is_software);
                 ui->toggle_disk_shader_cache->setEnabled(!is_software &&
                                                          ui->toggle_hw_shader->isChecked());
+                //gvx64 - Enable/disable shader preload spinbox based on disk cache checkbox
+                ui->shader_preload_limit->setEnabled(ui->toggle_disk_shader_cache->isEnabled() &&
+                                                     ui->toggle_disk_shader_cache->isChecked());
+                ui->label_shader_limit->setEnabled(ui->toggle_disk_shader_cache->isEnabled() &&
+                                                   ui->toggle_disk_shader_cache->isChecked());
             });
 
     connect(ui->toggle_hw_shader, &QCheckBox::toggled, this, [this] {
@@ -87,7 +92,18 @@ ConfigureGraphics::ConfigureGraphics(QString gl_renderer, std::span<const QStrin
         const bool checked = ui->toggle_hw_shader->isChecked();
         ui->hw_shader_group->setEnabled(checked && enabled);
         ui->toggle_disk_shader_cache->setEnabled(checked && enabled);
+            ui->shader_preload_limit->setEnabled(checked && enabled &&  //gvx64
+                                             ui->toggle_disk_shader_cache->isChecked());
+        ui->label_shader_limit->setEnabled(checked && enabled && //gvx64
+                                           ui->toggle_disk_shader_cache->isChecked());
     });
+
+    // gvx64 - begin
+    connect(ui->toggle_disk_shader_cache, &QCheckBox::toggled, [this](bool checked) {
+        ui->shader_preload_limit->setEnabled(checked);
+        ui->label_shader_limit->setEnabled(checked);
+    });
+    // gvx64 - end
 
     connect(ui->spirv_shader_gen, &QCheckBox::toggled, this, [this] {
         const bool enabled = ui->spirv_shader_gen->isEnabled();
@@ -177,6 +193,7 @@ void ConfigureGraphics::SetConfiguration() {
     ui->toggle_hw_shader->setChecked(Settings::values.use_hw_shader.GetValue());
     ui->toggle_accurate_mul->setChecked(Settings::values.shaders_accurate_mul.GetValue());
     ui->toggle_disk_shader_cache->setChecked(Settings::values.use_disk_shader_cache.GetValue());
+    ui->shader_preload_limit->setValue(Settings::values.startup_shader_load_limit.GetValue());  //gvx64
     ui->toggle_vsync_new->setChecked(Settings::values.use_vsync_new.GetValue());
     ui->spirv_shader_gen->setChecked(Settings::values.spirv_shader_gen.GetValue());
     ui->toggle_geometry_shader->setChecked(Settings::values.geometry_shader.GetValue());
@@ -246,6 +263,7 @@ void ConfigureGraphics::ApplyConfiguration() {
                                              ui->texture_sampling_combobox);
     ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_disk_shader_cache,
                                              ui->toggle_disk_shader_cache, use_disk_shader_cache);
+    Settings::values.startup_shader_load_limit = ui->shader_preload_limit->value();  //gvx64
     ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_vsync_new, ui->toggle_vsync_new,
                                              use_vsync_new);
     ConfigurationShared::ApplyPerGameSetting(
