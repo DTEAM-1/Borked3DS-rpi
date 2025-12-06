@@ -365,6 +365,7 @@ private:
     // Gamepad hotkey polling - gvx64
     QTimer gamepad_hotkey_poll_timer;
     std::map<QString, bool> gamepad_hotkey_pressed; // Track button states
+    std::map<QString, std::unique_ptr<Input::ButtonDevice>> hotkey_button_devices; // Cache devices - gvx64
 
     void PollGamepadHotkeys(); // gvx64
     void TriggerHotkeyAction(const QString& group, const QString& action); // gvx64

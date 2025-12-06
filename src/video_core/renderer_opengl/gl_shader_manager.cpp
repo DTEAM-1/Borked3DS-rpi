@@ -476,9 +476,6 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
     // Precompiled file for separable shaders is compressed.
     auto [decompiled, dumps] = disk_cache.LoadPrecompiled(impl->separable);
 
-    LOG_CRITICAL(Render_OpenGL, "DEBUG: After LoadPrecompiled - decompiled.size()={}, dumps.size()={}, separable={}",
-                 decompiled.size(), dumps.size(), impl->separable); //gvx64 - debugging log
-
     // gvx64 - Optional: Limit number of shaders loaded at startup for faster boot
 //gvx64    const std::size_t MAX_STARTUP_SHADERS = 1000;  // Adjust this value
 //gvx64    bool limited_loading = raws.size() > MAX_STARTUP_SHADERS;
@@ -615,7 +612,6 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
 // gvx64 - begin - Multi-threaded precompiled shader loading for separable shaders
     // gvx64 - Multi-threaded precompiled shader loading
     if (impl->separable) {
-        LOG_CRITICAL(Render_OpenGL, "DEBUG: Taking SEPARABLE path");
 
         // Calculate how many shaders to load
         const std::size_t MAX_STARTUP_SHADERS = Settings::values.startup_shader_load_limit.GetValue();
@@ -623,11 +619,11 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
         std::size_t shaders_to_load = limited_loading ? MAX_STARTUP_SHADERS : raws.size();
 
 
-        if (limited_loading) {
-            LOG_INFO(Render_OpenGL,
-                     "Limiting startup shader loading to {} of {} shaders for faster boot",
-                     shaders_to_load, raws.size());
-        }
+//gvx64        if (limited_loading) {
+//gvx64            LOG_INFO(Render_OpenGL,
+//gvx64                     "Limiting startup shader loading to {} of {} shaders for faster boot",
+//gvx64                     shaders_to_load, raws.size());
+//gvx64        }
 
         // Use multi-threading only if loading more than 100 shaders
         if (!strict_context_required && shaders_to_load > 100) {
@@ -638,9 +634,9 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
             std::vector<std::unique_ptr<Frontend::GraphicsContext>> contexts(num_workers);
             std::vector<std::thread> threads(num_workers);
 
-            LOG_INFO(Render_OpenGL,
-                     "Loading {} of {} precompiled shaders using {} threads",
-                     shaders_to_load, raws.size(), num_workers);
+//gvx64            LOG_INFO(Render_OpenGL,
+//gvx64                     "Loading {} of {} precompiled shaders using {} threads",
+//gvx64                     shaders_to_load, raws.size(), num_workers);
 
             emu_window.SaveContext();
             for (std::size_t i = 0; i < num_workers; ++i) {
@@ -666,7 +662,7 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
         }
     } else {
         // NON-SEPARABLE path - Used on Pi4 (no separable shader support)
-        LOG_CRITICAL(Render_OpenGL, "DEBUG: Taking NON-SEPARABLE path");
+//gvx64        LOG_CRITICAL(Render_OpenGL, "DEBUG: Taking NON-SEPARABLE path");
 
         // Calculate how many programs to load
         const std::size_t MAX_STARTUP_SHADERS = Settings::values.startup_shader_load_limit.GetValue();
@@ -676,11 +672,11 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
         // Use multi-threading only if loading more than 100 shaders
         if (!strict_context_required && programs_to_load > 100) {
 
-            if (limited_loading) {
-                LOG_INFO(Render_OpenGL,
-                         "Limiting startup shader loading to {} of {} programs for faster boot",
-                         programs_to_load, dumps.size());
-            }
+//gvx64            if (limited_loading) {
+//gvx64                LOG_INFO(Render_OpenGL,
+//gvx64                         "Limiting startup shader loading to {} of {} programs for faster boot",
+//gvx64                         programs_to_load, dumps.size());
+//gvx64            }
 
             // Multi-threaded loading for non-separable shaders
             const std::size_t num_workers{std::max(1U, std::thread::hardware_concurrency())};
@@ -693,10 +689,11 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
             std::vector<std::unique_ptr<Frontend::GraphicsContext>> contexts(num_workers);
             std::vector<std::thread> threads(num_workers);
 
-            LOG_INFO(Render_OpenGL,
-                     "Loading {} of {} non-separable precompiled programs using {} threads",
-                     programs_to_load, dumps_vec.size(), num_workers);
+//gvx64            LOG_INFO(Render_OpenGL,
+//gvx64                     "Loading {} of {} non-separable precompiled programs using {} threads",
+//gvx64                     programs_to_load, dumps_vec.size(), num_workers);
 
+            std::size_t loaded_count = 0;  // gvx64 - Reset counter for each shader load session
             emu_window.SaveContext();
             for (std::size_t i = 0; i < num_workers; ++i) {
                 const bool is_last_worker = i + 1 == num_workers;
@@ -733,7 +730,7 @@ void ShaderProgramManager::LoadDiskCache(const std::atomic_bool& stop_loading,
 
                         if (callback) {
                             std::scoped_lock lock(mutex);
-                            static std::size_t loaded_count = 0;
+                            // gvx64 - Counter declared above
                             callback(VideoCore::LoadCallbackStage::Decompile, ++loaded_count, programs_to_load);
                         }
                     }

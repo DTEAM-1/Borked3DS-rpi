@@ -889,32 +889,41 @@ void GMainWindow::PollGamepadHotkeys() {
     for (const auto& [group_name, group] : hotkey_registry.hotkey_groups) {
         for (const auto& [action_name, hotkey] : group) {
             if (hotkey.controller_keyseq.isEmpty()) {
-                continue; // No controller binding for this hotkey
-            }
-
-            // Parse the button configuration
-            Common::ParamPackage params(hotkey.controller_keyseq.toStdString());
-            if (!params.Has("engine") || !params.Has("button")) {
                 continue;
             }
 
-            // Create a button device from the params
-            auto button_device = Input::CreateDevice<Input::ButtonDevice>(params.Serialize());
-            if (!button_device) {
+            QString hotkey_id = group_name + QStringLiteral("::") + action_name;
+
+            // Create device on first use and cache it - gvx64
+            if (hotkey_button_devices.find(hotkey_id) == hotkey_button_devices.end()) {
+                Common::ParamPackage params(hotkey.controller_keyseq.toStdString());
+                if (!params.Has("engine") || !params.Has("button")) {
+                    continue;
+                }
+
+                auto button_device = Input::CreateDevice<Input::ButtonDevice>(params.Serialize());
+                if (!button_device) {
+                    // Cache nullptr to avoid trying again
+                    hotkey_button_devices[hotkey_id] = nullptr;
+                    continue;
+                }
+
+                hotkey_button_devices[hotkey_id] = std::move(button_device);
+            }
+
+            // Skip if device creation failed
+            if (!hotkey_button_devices[hotkey_id]) {
                 continue;
             }
 
             // Check if button is currently pressed
-            bool is_pressed = button_device->GetStatus();
-
-            QString hotkey_id = group_name + QStringLiteral("::") + action_name;
+            bool is_pressed = hotkey_button_devices[hotkey_id]->GetStatus();
 
             // Trigger on new press (not held)
             if (is_pressed && !gamepad_hotkey_pressed[hotkey_id]) {
                 gamepad_hotkey_pressed[hotkey_id] = true;
                 TriggerHotkeyAction(group_name, action_name);
             } else if (!is_pressed && gamepad_hotkey_pressed[hotkey_id]) {
-                // Button was released
                 gamepad_hotkey_pressed[hotkey_id] = false;
             }
         }
@@ -2638,6 +2647,7 @@ void GMainWindow::OnStopGame() {
     gamepad_hotkey_poll_timer.stop();
     gamepad_hotkey_pressed.clear();
     // Don't need to manage pollers anymore
+    hotkey_button_devices.clear(); // Clear cached devices - gvx64
 }
 
 void GMainWindow::OnLoadComplete() {
