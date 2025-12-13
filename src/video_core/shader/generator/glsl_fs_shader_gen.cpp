@@ -1504,7 +1504,7 @@ float ProcTexNoiseCoef(vec2 x) {
     out += "if (proctex_bias == 0.0) lod = 0.0;\n";
 #ifndef __APPLE__
     if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
-        out += fmt::format("lod = clamp(lod, {:#}.0, {:#}.0);\n",
+        out += fmt::format("lod = clamp(lod, {:#}, {:#});\n", //gvx64 - fix for Mario Golf shader compilation error
                            std::max(0.0f, static_cast<f32>(config.proctex.lod_min)),
                            std::min(7.0f, static_cast<f32>(config.proctex.lod_max)));
     } else {
