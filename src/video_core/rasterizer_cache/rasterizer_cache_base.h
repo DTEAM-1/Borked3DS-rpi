@@ -233,6 +233,85 @@ private:
     bool use_custom_textures;
     u64 program_id = 0; //gvx64
     int forceFallBackToSW = 0;     /// gvx64 - Track instances of bad surfaces to force fall-back to software renderer
+    int sw_fallback_game_index = -1; //gvx64 - Game-specific fallback: -1=uninitialized, 0=none, 1=FE, 2=DBF, 3=YW, ...
+
+    // Game-specific SW fallback helpers //gvx64
+    void InitFallbackGameIndex(); //gvx64
+    bool CheckTextureCopyFallback(const Surface& src, const Surface& dst); //gvx64
+    bool CheckDisplayTransferFallback(const Surface& src, const Surface& dst); //gvx64
 };
+
+// Function implementations //gvx64
+template <class T>
+void RasterizerCache<T>::InitFallbackGameIndex() {
+    if (sw_fallback_game_index == -1) {
+        if (program_id == 0x00040000000A0500) {
+            sw_fallback_game_index = 1; // Fire Emblem
+        } else if (program_id == 0x00040000001AA900) {
+            sw_fallback_game_index = 2; // DB Fusions
+        } else if (program_id == 0x000400000019B000 || program_id == 0x00040000001B2800 || program_id == 0x000400000017C200 || program_id == 0x00040000001D6800) {
+            sw_fallback_game_index = 3; // Yokai Watch 1, 2, 3
+        } else {
+            sw_fallback_game_index = 0; // No fallback
+        }
+    }
+}
+
+// Texture copy fallback logic //gvx64
+template <class T>
+bool RasterizerCache<T>::CheckTextureCopyFallback(const Surface& src, const Surface& dst) {
+    switch (sw_fallback_game_index) {
+        case 1: // Fire Emblem
+            return (forceFallBackToSW > 0 ||
+                    src.addr == 0x18368000 || src.addr == 0x183E8000 ||
+                    src.addr == 0x18408000 || src.addr == 0x18410000 ||
+                    dst.addr == 0x18368000 || dst.addr == 0x183E8000 ||
+                    dst.addr == 0x18408000 || dst.addr == 0x18410000);
+
+        case 2: // DB Fusions
+            return (!Surface::blacklisted_addresses.empty() &&
+                    (Surface::blacklisted_addresses.count(src.addr) ||
+                     Surface::blacklisted_addresses.count(dst.addr)));
+
+        case 3: // Yokai Watch
+            // Detect lens operation
+            return (src.addr == 0x18244700 && src.width == 72 && src.height == 120);
+        default:
+            return false;
+    }
+}
+
+// Display transfer fallback logic //gvx64
+template <class T>
+bool RasterizerCache<T>::CheckDisplayTransferFallback(const Surface& src, const Surface& dst) {
+    switch (sw_fallback_game_index) {
+        case 1: // Fire Emblem
+            if (forceFallBackToSW > 0 ||
+                src.addr == 0x18368000 || src.addr == 0x183E8000 ||
+                src.addr == 0x18408000 || src.addr == 0x18410000 ||
+                dst.addr == 0x18368000 || dst.addr == 0x183E8000 ||
+                dst.addr == 0x18408000 || dst.addr == 0x18410000) {
+                if (forceFallBackToSW > 0) {
+                    forceFallBackToSW--;
+                } else {
+                    forceFallBackToSW = 100;
+                }
+                return true;
+            }
+            return false;
+
+        case 2: // DB Fusions
+            return (!Surface::blacklisted_addresses.empty() &&
+                    (Surface::blacklisted_addresses.count(src.addr) ||
+                     Surface::blacklisted_addresses.count(dst.addr)));
+
+        case 3: // Yokai Watch
+            // Detect lens operation
+            return (src.addr == 0x18244700 && src.width == 72 && src.height == 120);
+
+        default:
+            return false;
+    }
+}
 
 } // namespace VideoCore

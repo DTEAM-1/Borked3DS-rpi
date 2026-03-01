@@ -249,33 +249,49 @@ bool RasterizerCache<T>::AccelerateTextureCopy(const Pica::DisplayTransferConfig
     Surface& src_surface = slot_surfaces[src_surface_id];
     Surface& dst_surface = slot_surfaces[dst_surface_id];
 
-    if ( (program_id == 0x00040000001AA900 || program_id == 0x00040000000A0500) && !Surface::blacklisted_addresses.empty()) { //gvx64 - only initiate sw fall-back check if Fire Emblem Awakening or DB Fusion  and at least one gl error has been logged in Surface::Attach()
+//gvx64 - debug code block - uncomment when needed
+//gvx64 if (program_id == 0x00040000001B2800) {
+//gvx64    LOG_CRITICAL(Render_OpenGL, "Texture op: src={:#x} ({}x{}) dst={:#x} ({}x{})",
+//gvx64                 src_surface.addr, src_surface.width, src_surface.height,
+//gvx64                 dst_surface.addr, dst_surface.width, dst_surface.height);
+//gvx64 }
 
-        // CHECK: Blacklisted addresses
-        if ( (program_id != 0x00040000000A0500) && (Surface::blacklisted_addresses.count(src_surface.addr) || //gvx64 - generalized sw fallback for DB Fusion when bad texture address found
-            Surface::blacklisted_addresses.count(dst_surface.addr))) {
-            LOG_DEBUG(Render_OpenGL,
-                     "Skipping texture copy - blacklisted address (src: {:#x}, dst: {:#x})",
-                     src_surface.addr, dst_surface.addr);
-            return false;  // Trigger software fallback
-        }
+/*    // Yokai Watch: Detect lens-specific texture operation //gvx64
+    if ( (program_id == 0x000400000019B000 || program_id == 0x00040000001B2800) && //gvx64 - YW2 Bony Spirits or YW2 Psychic Spectres - AUS
+        src_surface.addr == 0x18244700 &&
+        src_surface.width == 72 && src_surface.height == 120) { //gvx64
+        return false; //gvx64 - force sw fallback
+    }
 
-        // gvx64 - specific sw fallback for Fire Emblem Awakening
-       if ( program_id == 0x00040000000A0500 &&
-           (forceFallBackToSW > 0 || src_surface.addr == 0x18368000 || src_surface.addr == 0x183E8000 ||
-           src_surface.addr == 0x18408000 || src_surface.addr == 0x18410000 ||
-           dst_surface.addr == 0x18368000 || dst_surface.addr == 0x183E8000 ||
-           dst_surface.addr == 0x18408000 || dst_surface.addr == 0x18410000)) {
-           LOG_DEBUG(HW_GPU, "[AccelerateDisplayTransfer] Fallback due to addr=0x{:08X} or 0x{:08X}",
-               src_surface.addr, dst_surface.addr);
-           return false;
-       }
+    // DB Fusion: Permanent blacklist //gvx64
+    if (program_id == 0x00040000001AA900 &&
+        !Surface::blacklisted_addresses.empty() &&
+        (Surface::blacklisted_addresses.count(src_surface.addr) ||
+         Surface::blacklisted_addresses.count(dst_surface.addr))) {
+        return false;
+    }
+
+    // Fire Emblem: Hardcoded addresses //gvx64
+    if (program_id == 0x00040000000A0500 &&
+        (forceFallBackToSW > 0 ||
+        src_surface.addr == 0x18368000 || src_surface.addr == 0x183E8000 ||
+        src_surface.addr == 0x18408000 || src_surface.addr == 0x18410000 ||
+        dst_surface.addr == 0x18368000 || dst_surface.addr == 0x183E8000 ||
+        dst_surface.addr == 0x18408000 || dst_surface.addr == 0x18410000)) {
+        return false;
     }
 
     if (dst_surface.type == SurfaceType::Texture ||
         !CheckFormatsBlittable(src_surface.pixel_format, dst_surface.pixel_format)) {
         return false;
-    }
+    }*/
+    // In AccelerateTextureCopy:
+    if (sw_fallback_game_index < 0){
+        InitFallbackGameIndex(); //gvx64 - No parameters
+    }else if (sw_fallback_game_index > 0 && //gvx64
+        CheckTextureCopyFallback(src_surface, dst_surface)) { //gvx64 - No forceFallBackToSW parameter
+        return false; //gvx64
+    } //gvx64
 
     ASSERT(src_rect.GetWidth() == dst_rect.GetWidth());
 
@@ -339,34 +355,50 @@ bool RasterizerCache<T>::AccelerateDisplayTransfer(const Pica::DisplayTransferCo
     Surface& src_surface = slot_surfaces[src_surface_id];
     Surface& dst_surface = slot_surfaces[dst_surface_id];
 
-    if ( (program_id == 0x00040000001AA900 || program_id == 0x00040000000A0500) && !Surface::blacklisted_addresses.empty()) { //gvx64 - only initiate sw fall-back check if Fire Emblem Awakening or DB Fusion and at least one gl error has been logged in Surface::Attach()
-
-        // CHECK: Blacklisted addresses
-        if ( (program_id != 0x00040000000A0500) && (Surface::blacklisted_addresses.count(src_surface.addr) || //gvx64 - generalized sw fallback for DB Fusion when bad texture address found
-            Surface::blacklisted_addresses.count(dst_surface.addr))) {
-            LOG_DEBUG(Render_OpenGL,
-                     "Skipping texture copy - blacklisted address (src: {:#x}, dst: {:#x})",
-                     src_surface.addr, dst_surface.addr);
-            return false;  // Trigger software fallback
-        }
-
-        // gvx64 - Specific sw fallback for Fire Emblem Awakening if surface uses a problematic address
-        if ( program_id == 0x00040000000A0500 &&
-            (forceFallBackToSW > 0 || src_surface.addr == 0x18368000 || src_surface.addr == 0x183E8000 ||
-            src_surface.addr == 0x18408000 || src_surface.addr == 0x18410000 ||
-            dst_surface.addr == 0x18368000 || dst_surface.addr == 0x183E8000 ||
-            dst_surface.addr == 0x18408000 || dst_surface.addr == 0x18410000)) {
-            LOG_DEBUG(HW_GPU, "[AccelerateDisplayTransfer] Fallback due to addr=0x{:08X} or 0x{:08X}",
-                src_surface.addr, dst_surface.addr);
-            if (forceFallBackToSW > 0){
-                forceFallBackToSW--; //gvx64
-            }
-            else{
-                forceFallBackToSW = 100; //gvx - maintain software fall-back for 100 subsequent calls to method even if non-error causing to supress black box
-            }
-            return false;
-        }
+//gvx64 - debug code block - uncomment when needed
+//gvx64 if (program_id == 0x00040000001B2800) {
+//gvx64    LOG_CRITICAL(Render_OpenGL, "Texture op: src={:#x} ({}x{}) dst={:#x} ({}x{})",
+//gvx64                 src_surface.addr, src_surface.width, src_surface.height,
+//gvx64                 dst_surface.addr, dst_surface.width, dst_surface.height);
+//gvx64 }
+/*
+    //gvx64 - Yokai Watch: Detect lens-specific texture operation //gvx64
+    if ( (program_id == 0x000400000019B000 || program_id == 0x00040000001B2800) && //gvx64 - YW2 Bony Spirits or YW2 Psychic Spectres - AUS
+        src_surface.addr == 0x18244700 &&
+        src_surface.width == 72 && src_surface.height == 120) { //gvx64
+        return false; //gvx64 - fallback to sw renderer
     }
+
+
+    // DB Fusion: Permanent blacklist //gvx64
+    if (program_id == 0x00040000001AA900 &&
+       !Surface::blacklisted_addresses.empty() &&
+       (Surface::blacklisted_addresses.count(src_surface.addr) ||
+        Surface::blacklisted_addresses.count(dst_surface.addr))) {
+        return false;
+    }
+
+    // Fire Emblem: Hardcoded addresses with counter //gvx64
+    if (program_id == 0x00040000000A0500 &&
+        (forceFallBackToSW > 0 ||
+        src_surface.addr == 0x18368000 || src_surface.addr == 0x183E8000 ||
+        src_surface.addr == 0x18408000 || src_surface.addr == 0x18410000 ||
+        dst_surface.addr == 0x18368000 || dst_surface.addr == 0x183E8000 ||
+        dst_surface.addr == 0x18408000 || dst_surface.addr == 0x18410000)) {
+        if (forceFallBackToSW > 0) {
+            forceFallBackToSW--;
+        } else {
+            forceFallBackToSW = 100;
+        }
+        return false;
+    }*/
+    // In AccelerateDisplayTransfer:
+    if (sw_fallback_game_index < 0){
+        InitFallbackGameIndex(); //gvx64 - No parameters
+    } else if (sw_fallback_game_index > 0 && //gvx64
+        CheckDisplayTransferFallback(src_surface, dst_surface)) { //gvx64 - No forceFallBackToSW parameter
+        return false; //gvx64
+    } //gvx64
 
     if (src_surface.is_tiled != dst_surface.is_tiled) {
         std::swap(src_rect.top, src_rect.bottom);

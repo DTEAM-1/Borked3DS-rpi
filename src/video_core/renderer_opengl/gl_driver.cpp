@@ -348,6 +348,7 @@ void Driver::CheckExtensionSupport() {
     clip_cull_distance = !is_gles || GLAD_GL_EXT_clip_cull_distance;
     ext_texture_compression_s3tc = GLAD_GL_EXT_texture_compression_s3tc;
     ext_shader_framebuffer_fetch = GLAD_GL_EXT_shader_framebuffer_fetch;
+    LOG_CRITICAL(Render_OpenGL, "GL_EXT_shader_framebuffer_fetch: {}", ext_shader_framebuffer_fetch); //gvx64
     arm_shader_framebuffer_fetch = GLAD_GL_ARM_shader_framebuffer_fetch;
     arb_fragment_shader_interlock = GLAD_GL_ARB_fragment_shader_interlock;
     nv_fragment_shader_interlock = GLAD_GL_NV_fragment_shader_interlock;

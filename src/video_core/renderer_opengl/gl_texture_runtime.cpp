@@ -722,13 +722,12 @@ bool Surface::Attach(GLenum target, u32 level, u32 layer, bool scaled) {
         // Blacklist this address
         if (Surface::blacklisted_addresses.size() < Surface::MAX_BLACKLIST_SIZE) {
             Surface::blacklisted_addresses.insert(addr);
-            LOG_WARNING(Render_OpenGL,
+            LOG_DEBUG(Render_OpenGL,
                        "Blacklisting surface address {:#x} due to glFramebufferTexture2D error {:#x}",
                        addr, error);
         }
         return false;
     }
-
     return true;
 }
 
