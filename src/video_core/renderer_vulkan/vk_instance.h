@@ -243,6 +243,26 @@ public:
         return properties.limits.maxTexelBufferElements;
     }
 
+    /// Returns the maximum sampled images allowed per descriptor set
+    u32 MaxDescriptorSetSampledImages() const {
+        return properties.limits.maxDescriptorSetSampledImages;
+    }
+
+    /// Returns the maximum sampled images allowed per shader stage
+    u32 MaxPerStageDescriptorSampledImages() const {
+        return properties.limits.maxPerStageDescriptorSampledImages;
+    }
+
+    /// Returns the maximum samplers allowed per descriptor set
+    u32 MaxDescriptorSetSamplers() const {
+        return properties.limits.maxDescriptorSetSamplers;
+    }
+
+    /// Returns the maximum samplers allowed per shader stage
+    u32 MaxPerStageDescriptorSamplers() const {
+        return properties.limits.maxPerStageDescriptorSamplers;
+    }
+
     /// Returns true if shaders can declare the ClipDistance attribute
     bool IsShaderClipDistanceSupported() const {
         return features.shaderClipDistance;

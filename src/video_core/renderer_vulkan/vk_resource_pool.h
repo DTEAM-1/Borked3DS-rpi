@@ -65,7 +65,7 @@ class DescriptorHeap final : public ResourcePool {
 public:
     explicit DescriptorHeap(const Instance& instance, MasterSemaphore* master_semaphore,
                             std::span<const vk::DescriptorSetLayoutBinding> bindings,
-                            u32 descriptor_heap_count = 1024);
+                            u32 descriptor_heap_count = 128);
     ~DescriptorHeap() override;
 
     const vk::DescriptorSetLayout& Layout() const {

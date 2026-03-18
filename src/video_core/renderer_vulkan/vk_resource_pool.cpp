@@ -2,9 +2,12 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <unordered_map>
+#include <vector>
+
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
@@ -108,30 +111,67 @@ constexpr u32 DESCRIPTOR_SET_BATCH = 32;
 DescriptorHeap::DescriptorHeap(const Instance& instance, MasterSemaphore* master_semaphore,
                                std::span<const vk::DescriptorSetLayoutBinding> bindings,
                                u32 descriptor_heap_count_)
-    : ResourcePool{master_semaphore, DESCRIPTOR_SET_BATCH}, device{instance.GetDevice()},
+    : ResourcePool{master_semaphore, DESCRIPTOR_SET_BATCH},
+      device{instance.GetDevice()},
       descriptor_heap_count{descriptor_heap_count_} {
-    // Create descriptor set layout.
+    std::vector<vk::DescriptorSetLayoutBinding> clamped_bindings;
+    clamped_bindings.reserve(bindings.size());
+
+    const u32 max_sampled_images =
+        std::min(instance.MaxDescriptorSetSampledImages(),
+                 instance.MaxPerStageDescriptorSampledImages());
+
+    const u32 max_samplers =
+        std::min(instance.MaxDescriptorSetSamplers(),
+                 instance.MaxPerStageDescriptorSamplers());
+
+    for (const auto& binding : bindings) {
+        auto adjusted = binding;
+
+        switch (adjusted.descriptorType) {
+        case vk::DescriptorType::eCombinedImageSampler:
+            adjusted.descriptorCount =
+                std::min(adjusted.descriptorCount, std::min(max_sampled_images, max_samplers));
+            break;
+
+        case vk::DescriptorType::eSampledImage:
+            adjusted.descriptorCount =
+                std::min(adjusted.descriptorCount, max_sampled_images);
+            break;
+
+        case vk::DescriptorType::eSampler:
+            adjusted.descriptorCount =
+                std::min(adjusted.descriptorCount, max_samplers);
+            break;
+
+        default:
+            break;
+        }
+
+        clamped_bindings.push_back(adjusted);
+    }
+
     const vk::DescriptorSetLayoutCreateInfo layout_ci = {
-        .bindingCount = static_cast<u32>(bindings.size()),
-        .pBindings = bindings.data(),
+        .bindingCount = static_cast<u32>(clamped_bindings.size()),
+        .pBindings = clamped_bindings.data(),
     };
     descriptor_set_layout = device.createDescriptorSetLayoutUnique(layout_ci);
+
     if (instance.HasDebuggingToolAttached()) {
         SetObjectName(device, *descriptor_set_layout, "DescriptorSetLayout");
     }
 
-    // Build descriptor set pool counts.
-    std::unordered_map<vk::DescriptorType, u16> descriptor_type_counts;
-    for (const auto& binding : bindings) {
+    std::unordered_map<vk::DescriptorType, u32> descriptor_type_counts;
+    for (const auto& binding : clamped_bindings) {
         descriptor_type_counts[binding.descriptorType] += binding.descriptorCount;
     }
+
     for (const auto& [type, count] : descriptor_type_counts) {
         auto& pool_size = pool_sizes.emplace_back();
         pool_size.descriptorCount = count * descriptor_heap_count;
         pool_size.type = type;
     }
 
-    // Create descriptor pool
     AppendDescriptorPool();
 }
 
