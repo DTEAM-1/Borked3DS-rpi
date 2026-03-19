@@ -79,6 +79,10 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
+[[nodiscard]] constexpr vk::ImageLayout SampledSteadyStateLayout() {
+    return vk::ImageLayout::eShaderReadOnlyOptimal;
+}
+
 u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
     u32 depth_offset = 0;
     u32 stencil_offset = 4 * data.size / 5;
@@ -200,10 +204,6 @@ boost::container::small_vector<vk::ImageMemoryBarrier, 3> MakeInitBarriers(
         .viewFormatCount = 1,
         .pViewFormats = format_list.data(),
     };
-}
-
-[[nodiscard]] constexpr vk::ImageLayout SampledSteadyStateLayout() {
-    return vk::ImageLayout::eShaderReadOnlyOptimal;
 }
 
 Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, TextureType type,
