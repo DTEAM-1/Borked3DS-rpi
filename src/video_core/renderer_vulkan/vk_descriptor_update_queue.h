@@ -35,7 +35,7 @@ public:
 
     void AddImageSampler(vk::DescriptorSet target, u8 binding, u8 array_index,
                          vk::ImageView image_view, vk::Sampler sampler,
-                         vk::ImageLayout imageLayout = vk::ImageLayout::eGeneral);
+                         vk::ImageLayout imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal);
 
     void AddBuffer(vk::DescriptorSet target, u8 binding, vk::Buffer buffer, vk::DeviceSize offset,
                    vk::DeviceSize size = VK_WHOLE_SIZE,

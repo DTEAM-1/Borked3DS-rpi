@@ -54,7 +54,7 @@ void DescriptorUpdateQueue::AddImageSampler(vk::DescriptorSet target, u8 binding
     auto& image_info = descriptor_infos[descriptor_write_end].image_info;
     image_info.sampler = sampler;
     image_info.imageView = image_view;
-    image_info.imageLayout = image_layout;
+    image_info.imageLayout = sampler ? vk::ImageLayout::eShaderReadOnlyOptimal : image_layout;
 
     descriptor_writes[descriptor_write_end++] = vk::WriteDescriptorSet{
         .dstSet = target,

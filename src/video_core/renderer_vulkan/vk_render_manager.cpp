@@ -93,8 +93,9 @@ void RenderManager::EndRendering() {
                                           : vk::AccessFlagBits::eDepthStencilAttachmentWrite,
                 .dstAccessMask =
                     vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead,
-                .oldLayout = vk::ImageLayout::eGeneral,
-                .newLayout = vk::ImageLayout::eGeneral,
+                .oldLayout = is_color ? vk::ImageLayout::eColorAttachmentOptimal
+                                     : vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = images[i],
@@ -172,13 +173,13 @@ vk::UniqueRenderPass RenderManager::CreateRenderPass(vk::Format color, vk::Forma
             .storeOp = vk::AttachmentStoreOp::eStore,
             .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
             .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
-            .initialLayout = vk::ImageLayout::eGeneral,
-            .finalLayout = vk::ImageLayout::eGeneral,
+            .initialLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
         };
 
         color_attachment_ref = vk::AttachmentReference{
             .attachment = attachment_count++,
-            .layout = vk::ImageLayout::eGeneral,
+            .layout = vk::ImageLayout::eColorAttachmentOptimal,
         };
 
         use_color = true;
@@ -191,13 +192,13 @@ vk::UniqueRenderPass RenderManager::CreateRenderPass(vk::Format color, vk::Forma
             .storeOp = vk::AttachmentStoreOp::eStore,
             .stencilLoadOp = load_op,
             .stencilStoreOp = vk::AttachmentStoreOp::eStore,
-            .initialLayout = vk::ImageLayout::eGeneral,
-            .finalLayout = vk::ImageLayout::eGeneral,
+            .initialLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
         };
 
         depth_attachment_ref = vk::AttachmentReference{
             .attachment = attachment_count++,
-            .layout = vk::ImageLayout::eGeneral,
+            .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
         };
 
         use_depth = true;
@@ -213,13 +214,48 @@ vk::UniqueRenderPass RenderManager::CreateRenderPass(vk::Format color, vk::Forma
         .pDepthStencilAttachment = use_depth ? &depth_attachment_ref : nullptr,
     };
 
+    const std::array<vk::SubpassDependency, 2> dependencies = {{
+        {
+            .srcSubpass = VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = vk::PipelineStageFlagBits::eFragmentShader |
+                            vk::PipelineStageFlagBits::eTransfer,
+            .dstStageMask = use_color ? vk::PipelineStageFlagBits::eColorAttachmentOutput
+                                      : vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                                            vk::PipelineStageFlagBits::eLateFragmentTests,
+            .srcAccessMask = vk::AccessFlagBits::eShaderRead |
+                             vk::AccessFlagBits::eTransferRead,
+            .dstAccessMask = use_color
+                                 ? vk::AccessFlagBits::eColorAttachmentRead |
+                                       vk::AccessFlagBits::eColorAttachmentWrite
+                                 : vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                                       vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+            .dependencyFlags = vk::DependencyFlagBits::eByRegion,
+        },
+        {
+            .srcSubpass = 0,
+            .dstSubpass = VK_SUBPASS_EXTERNAL,
+            .srcStageMask = use_color ? vk::PipelineStageFlagBits::eColorAttachmentOutput
+                                      : vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                                            vk::PipelineStageFlagBits::eLateFragmentTests,
+            .dstStageMask = vk::PipelineStageFlagBits::eFragmentShader |
+                            vk::PipelineStageFlagBits::eTransfer,
+            .srcAccessMask = use_color
+                                 ? vk::AccessFlagBits::eColorAttachmentWrite
+                                 : vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+            .dstAccessMask = vk::AccessFlagBits::eShaderRead |
+                             vk::AccessFlagBits::eTransferRead,
+            .dependencyFlags = vk::DependencyFlagBits::eByRegion,
+        },
+    }};
+
     const vk::RenderPassCreateInfo renderpass_info = {
         .attachmentCount = attachment_count,
         .pAttachments = attachments.data(),
         .subpassCount = 1,
         .pSubpasses = &subpass,
-        .dependencyCount = 0,
-        .pDependencies = nullptr,
+        .dependencyCount = 2,
+        .pDependencies = dependencies.data(),
     };
 
     return instance.GetDevice().createRenderPassUnique(renderpass_info);
