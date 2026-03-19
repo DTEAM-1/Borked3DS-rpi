@@ -141,6 +141,16 @@ boost::container::small_vector<vk::ImageMemoryBarrier, 3> MakeInitBarriers(
     return barriers;
 }
 
+[[nodiscard]] constexpr vk::ComponentMapping MakeIdentityComponentMapping() {
+    return vk::ComponentMapping{
+        .r = vk::ComponentSwizzle::eR,
+        .g = vk::ComponentSwizzle::eG,
+        .b = vk::ComponentSwizzle::eB,
+        .a = vk::ComponentSwizzle::eA,
+    };
+}
+
+
 Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, TextureType type,
                   vk::Format format, vk::ImageUsageFlags usage, vk::ImageCreateFlags flags,
                   vk::ImageAspectFlags aspect, bool need_format_list,
@@ -249,6 +259,7 @@ allocation_success:
         .viewType =
             type == TextureType::CubeMap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D,
         .format = format,
+        .components = MakeIdentityComponentMapping(),
         .subresourceRange{
             .aspectMask = aspect,
             .baseMipLevel = 0,
@@ -1374,6 +1385,7 @@ vk::ImageView Surface::StorageView() noexcept {
         .image = Image(),
         .viewType = vk::ImageViewType::e2D,
         .format = vk::Format::eR32Uint,
+        .components = MakeIdentityComponentMapping(),
         .subresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .baseMipLevel = 0,
