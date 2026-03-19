@@ -150,6 +150,57 @@ boost::container::small_vector<vk::ImageMemoryBarrier, 3> MakeInitBarriers(
     };
 }
 
+[[nodiscard]] constexpr vk::ComponentMapping MakeOpaqueAlphaComponentMapping() {
+    return vk::ComponentMapping{
+        .r = vk::ComponentSwizzle::eR,
+        .g = vk::ComponentSwizzle::eG,
+        .b = vk::ComponentSwizzle::eB,
+        .a = vk::ComponentSwizzle::eOne,
+    };
+}
+
+[[nodiscard]] constexpr bool FormatHasExplicitAlpha(vk::Format format) {
+    switch (format) {
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR5G5B5A1UnormPack16:
+    case vk::Format::eR4G4B4A4UnormPack16:
+    case vk::Format::eBc1RgbaUnormBlock:
+    case vk::Format::eBc3UnormBlock:
+    case vk::Format::eBc7UnormBlock:
+    case vk::Format::eAstc4x4UnormBlock:
+    case vk::Format::eAstc6x6UnormBlock:
+    case vk::Format::eAstc8x6UnormBlock:
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] constexpr vk::ComponentMapping MakePiSafeComponentMapping(vk::Format format,
+                                                                        vk::ImageAspectFlags aspect) {
+    if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
+        return MakeIdentityComponentMapping();
+    }
+    return FormatHasExplicitAlpha(format) ? MakeIdentityComponentMapping()
+                                          : MakeOpaqueAlphaComponentMapping();
+}
+
+[[nodiscard]] vk::ImageFormatListCreateInfo MakeImageFormatListCreateInfo(
+    const vk::Format format, std::array<vk::Format, 2>& format_list) {
+    if (format == vk::Format::eR8G8B8A8Unorm) {
+        format_list = {vk::Format::eR8G8B8A8Unorm, vk::Format::eR32Uint};
+        return vk::ImageFormatListCreateInfo{
+            .viewFormatCount = 2,
+            .pViewFormats = format_list.data(),
+        };
+    }
+
+    format_list = {format, vk::Format::eUndefined};
+    return vk::ImageFormatListCreateInfo{
+        .viewFormatCount = 1,
+        .pViewFormats = format_list.data(),
+    };
+}
 
 Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, TextureType type,
                   vk::Format format, vk::ImageUsageFlags usage, vk::ImageCreateFlags flags,
@@ -163,14 +214,9 @@ Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, T
         height = std::min(height, TextureConfig{}.max_texture_size);
     }
 
-    const std::array format_list = {
-        vk::Format::eR8G8B8A8Unorm,
-        vk::Format::eR32Uint,
-    };
-    const vk::ImageFormatListCreateInfo image_format_list = {
-        .viewFormatCount = static_cast<u32>(format_list.size()),
-        .pViewFormats = format_list.data(),
-    };
+    std::array<vk::Format, 2> format_list{};
+    const vk::ImageFormatListCreateInfo image_format_list =
+        MakeImageFormatListCreateInfo(format, format_list);
 
     const vk::ImageCreateInfo image_info = {
         .pNext = need_format_list ? &image_format_list : nullptr,
@@ -259,7 +305,7 @@ allocation_success:
         .viewType =
             type == TextureType::CubeMap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D,
         .format = format,
-        .components = MakeIdentityComponentMapping(),
+        .components = MakePiSafeComponentMapping(format, aspect),
         .subresourceRange{
             .aspectMask = aspect,
             .baseMipLevel = 0,
@@ -1332,6 +1378,7 @@ vk::ImageView Surface::DepthView() noexcept {
         .image = Image(),
         .viewType = vk::ImageViewType::e2D,
         .format = instance->GetTraits(pixel_format).native,
+        .components = MakeIdentityComponentMapping(),
         .subresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eDepth,
             .baseMipLevel = 0,
@@ -1354,6 +1401,7 @@ vk::ImageView Surface::StencilView() noexcept {
         .image = Image(),
         .viewType = vk::ImageViewType::e2D,
         .format = instance->GetTraits(pixel_format).native,
+        .components = MakeIdentityComponentMapping(),
         .subresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eStencil,
             .baseMipLevel = 0,
@@ -1538,7 +1586,7 @@ Framebuffer::Framebuffer(TextureRuntime& runtime, const VideoCore::FramebufferPa
         }
         images[index] = surface->Image();
         aspects[index] = surface->Aspect();
-        image_views[index] = shadow_rendering ? surface->StorageView() : surface->FramebufferView();
+        image_views[index] = surface->FramebufferView();
     };
 
     boost::container::static_vector<vk::ImageView, 2> attachments;
@@ -1571,10 +1619,11 @@ Sampler::Sampler(TextureRuntime& runtime, const VideoCore::SamplerParams& params
     using TextureConfig = VideoCore::SamplerParams::TextureConfig;
 
     const Instance& instance = runtime.GetInstance();
-    const vk::PhysicalDeviceProperties properties = instance.GetPhysicalDevice().getProperties();
-    const bool use_border_color =
-        instance.IsCustomBorderColorSupported() && (params.wrap_s == TextureConfig::ClampToBorder ||
-                                                    params.wrap_t == TextureConfig::ClampToBorder);
+    const bool is_v3dv = instance.GetDriverID() == vk::DriverIdKHR::eMesaV3Dv;
+    const bool requested_border_color =
+        params.wrap_s == TextureConfig::ClampToBorder || params.wrap_t == TextureConfig::ClampToBorder;
+    const bool use_border_color = !is_v3dv && instance.IsCustomBorderColorSupported() &&
+                                  requested_border_color;
 
     const auto color = PicaToVK::ColorRGBA8(params.border_color);
     const vk::SamplerCustomBorderColorCreateInfoEXT border_color_info = {
@@ -1585,10 +1634,16 @@ Sampler::Sampler(TextureRuntime& runtime, const VideoCore::SamplerParams& params
     const vk::Filter mag_filter = PicaToVK::TextureFilterMode(params.mag_filter);
     const vk::Filter min_filter = PicaToVK::TextureFilterMode(params.min_filter);
     const vk::SamplerMipmapMode mipmap_mode = PicaToVK::TextureMipFilterMode(params.mip_filter);
-    const vk::SamplerAddressMode wrap_u = PicaToVK::WrapMode(params.wrap_s);
-    const vk::SamplerAddressMode wrap_v = PicaToVK::WrapMode(params.wrap_t);
-    const float lod_min = static_cast<float>(params.lod_min);
-    const float lod_max = static_cast<float>(params.lod_max);
+    const vk::SamplerAddressMode wrap_u =
+        (is_v3dv && params.wrap_s == TextureConfig::ClampToBorder)
+            ? vk::SamplerAddressMode::eClampToEdge
+            : PicaToVK::WrapMode(params.wrap_s);
+    const vk::SamplerAddressMode wrap_v =
+        (is_v3dv && params.wrap_t == TextureConfig::ClampToBorder)
+            ? vk::SamplerAddressMode::eClampToEdge
+            : PicaToVK::WrapMode(params.wrap_t);
+    const float lod_min = std::max(0.0f, static_cast<float>(params.lod_min));
+    const float lod_max = std::max(lod_min, static_cast<float>(params.lod_max));
 
     const vk::SamplerCreateInfo sampler_info = {
         .pNext = use_border_color ? &border_color_info : nullptr,
@@ -1598,14 +1653,14 @@ Sampler::Sampler(TextureRuntime& runtime, const VideoCore::SamplerParams& params
         .addressModeU = wrap_u,
         .addressModeV = wrap_v,
         .mipLodBias = 0,
-        .anisotropyEnable = instance.IsAnisotropicFilteringSupported(),
-        .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+        .anisotropyEnable = VK_FALSE,
+        .maxAnisotropy = 1.0f,
         .compareEnable = false,
         .compareOp = vk::CompareOp::eAlways,
         .minLod = lod_min,
         .maxLod = lod_max,
-        .borderColor =
-            use_border_color ? vk::BorderColor::eFloatCustomEXT : vk::BorderColor::eIntOpaqueBlack,
+        .borderColor = use_border_color ? vk::BorderColor::eFloatCustomEXT
+                                        : vk::BorderColor::eIntOpaqueBlack,
         .unnormalizedCoordinates = false,
     };
     sampler = instance.GetDevice().createSamplerUnique(sampler_info);

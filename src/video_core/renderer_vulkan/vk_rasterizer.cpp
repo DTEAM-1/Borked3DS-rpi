@@ -470,6 +470,7 @@ void RasterizerVulkan::DrawTriangles() {
 }
 
 bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
+
     BORKED3DS_PROFILE("Vulkan", "Drawing");
     const bool shadow_rendering = regs.framebuffer.IsShadowRendering();
     const bool has_stencil = regs.framebuffer.HasStencil();
