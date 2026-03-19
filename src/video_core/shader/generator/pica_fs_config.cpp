@@ -18,13 +18,13 @@ FramebufferConfig::FramebufferConfig(const Pica::RegsInternal& regs, const Profi
 
     // Emulate logic op in the shader if needed and not supported.
     logic_op.Assign(Pica::FramebufferRegs::LogicOp::Copy);
-    if (!profile.has_logic_op && !regs.framebuffer.output_merger.alphablend_enable) {
+    if (!shadow_rendering && !profile.has_logic_op && !regs.framebuffer.output_merger.alphablend_enable) {
         logic_op.Assign(regs.framebuffer.output_merger.logic_op);
     }
 
     const auto alpha_eq = output_merger.alpha_blending.blend_equation_a.Value();
     const auto rgb_eq = output_merger.alpha_blending.blend_equation_rgb.Value();
-    if (!profile.has_blend_minmax_factor && output_merger.alphablend_enable) {
+    if (!shadow_rendering && !profile.has_blend_minmax_factor && output_merger.alphablend_enable) {
         if (rgb_eq == Pica::FramebufferRegs::BlendEquation::Max ||
             rgb_eq == Pica::FramebufferRegs::BlendEquation::Min) {
             rgb_blend.eq = rgb_eq;

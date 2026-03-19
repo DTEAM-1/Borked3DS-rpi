@@ -171,8 +171,9 @@ struct FSConfig {
     }
 
     [[nodiscard]] bool EmulateBlend() const {
-        return framebuffer.rgb_blend.eq != Pica::FramebufferRegs::BlendEquation::Add ||
-               framebuffer.alpha_blend.eq != Pica::FramebufferRegs::BlendEquation::Add;
+        return !framebuffer.shadow_rendering.Value() &&
+               (framebuffer.rgb_blend.eq != Pica::FramebufferRegs::BlendEquation::Add ||
+                framebuffer.alpha_blend.eq != Pica::FramebufferRegs::BlendEquation::Add);
     }
 
     [[nodiscard]] bool UsesShadowPipeline() const {

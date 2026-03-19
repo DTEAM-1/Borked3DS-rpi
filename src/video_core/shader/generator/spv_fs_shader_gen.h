@@ -47,6 +47,12 @@ private:
     /// Writes the code to emulate gas rendering
     void WriteGas();
 
+    /// Writes the code to update the shadow buffer during shadow rendering.
+    void WriteShadow();
+
+    [[nodiscard]] Id EncodeShadow(Id pixel);
+    [[nodiscard]] Id UpdateShadow(Id pixel, Id d, Id s);
+
     /// Writes the code to emulate the specified TEV stage
     void WriteTevStage(s32 index);
 
