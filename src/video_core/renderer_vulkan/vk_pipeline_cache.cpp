@@ -71,6 +71,8 @@ constexpr std::array<vk::DescriptorSetLayoutBinding, 3> TEXTURE_BINDINGS = {{
     {2, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment}, // tex2
 }};
 
+constexpr u32 MaxTex0Descriptors = 6;
+
 constexpr std::array<vk::DescriptorSetLayoutBinding, 2> UTILITY_BINDINGS = {{
     {0, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eFragment}, // shadow_buffer
     {1, vk::DescriptorType::eCombinedImageSampler, 1,
@@ -85,7 +87,11 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
       workers{num_worker_threads, "Pipeline workers"},
       descriptor_heaps{
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), BUFFER_BINDINGS, 32},
-          DescriptorHeap{instance, scheduler.GetMasterSemaphore(), TEXTURE_BINDINGS<1>},
+          // tex0 must accommodate up to 6 descriptors for shadow cube faces.
+          // Using a single layout with 6 entries keeps the descriptor set layout
+          // compatible for both normal 2D textures (which only use array element 0)
+          // and shadow cube textures (which populate array elements 0..5).
+          DescriptorHeap{instance, scheduler.GetMasterSemaphore(), TEXTURE_BINDINGS<MaxTex0Descriptors>, 32},
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), UTILITY_BINDINGS, 32}},
       trivial_vertex_shader{
           instance, SPIRV::GenerateTrivialVertexShader(instance.IsShaderClipDistanceSupported())} {
