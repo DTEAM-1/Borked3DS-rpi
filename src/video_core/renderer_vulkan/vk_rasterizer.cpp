@@ -470,7 +470,6 @@ void RasterizerVulkan::DrawTriangles() {
 }
 
 bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
-
     BORKED3DS_PROFILE("Vulkan", "Drawing");
     const bool shadow_rendering = regs.framebuffer.IsShadowRendering();
     const bool has_stencil = regs.framebuffer.HasStencil();
@@ -588,7 +587,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
                 Surface& surface = res_cache.GetTextureSurface(texture);
                 Sampler& sampler = res_cache.GetSampler(texture.config);
                 surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
-                update_queue.AddImageSampler(texture_set, texture_index, 0, surface.StorageView(),
+                update_queue.AddImageSampler(texture_set, texture_index, 0, surface.ImageView(),
                                              sampler.Handle());
                 continue;
             }
@@ -644,7 +643,7 @@ void RasterizerVulkan::BindShadowCube(const Pica::TexturingRegs::FullTextureConf
         const VideoCore::SurfaceId surface_id = res_cache.GetTextureSurface(info);
         Surface& surface = res_cache.GetSurface(surface_id);
         surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
-        update_queue.AddImageSampler(texture_set, 0, binding, surface.StorageView(),
+        update_queue.AddImageSampler(texture_set, 0, binding, surface.ImageView(),
                                      sampler.Handle());
     }
 }
