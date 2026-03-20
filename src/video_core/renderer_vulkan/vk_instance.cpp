@@ -25,7 +25,7 @@ vk::Format MakeFormat(VideoCore::PixelFormat format) {
     case VideoCore::PixelFormat::RGBA8:
         return vk::Format::eR8G8B8A8Unorm;
     case VideoCore::PixelFormat::RGB8:
-        return vk::Format::eR8G8B8A8Unorm;
+        return vk::Format::eB8G8R8Unorm;
     case VideoCore::PixelFormat::RGB5A1:
         return vk::Format::eR5G5B5A1UnormPack16;
     case VideoCore::PixelFormat::RGB565:
