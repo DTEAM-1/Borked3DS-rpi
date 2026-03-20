@@ -153,6 +153,17 @@ Instance::Instance(Frontend::EmuWindow& window, u32 physical_device_index)
     physical_device = physical_devices[physical_device_index];
     available_extensions = GetSupportedExtensions(physical_device);
     properties = physical_device.getProperties();
+
+    LOG_INFO(Render_Vulkan,
+             "Descriptor limits: maxPerStageDescriptorSamplers={}, "
+             "maxPerStageDescriptorSampledImages={}, "
+             "maxDescriptorSetSamplers={}, "
+             "maxDescriptorSetSampledImages={}",
+             properties.limits.maxPerStageDescriptorSamplers,
+             properties.limits.maxPerStageDescriptorSampledImages,
+             properties.limits.maxDescriptorSetSamplers,
+             properties.limits.maxDescriptorSetSampledImages);
+
     if (properties.apiVersion < TargetVulkanApiVersion) {
         throw std::runtime_error(fmt::format(
             "Vulkan {}.{} is required, but only {}.{} is supported by device!",
@@ -698,6 +709,7 @@ void Instance::CollectToolingInfo() {
     LOG_INFO(Render_Vulkan, "VK_DRIVER: {}", driver_name);
     LOG_INFO(Render_Vulkan, "VK_DEVICE: {}", model_name);
     LOG_INFO(Render_Vulkan, "VK_VERSION: {}", api_version);
+    LOG_INFO(Render_Vulkan, "VK_EXTENSIONS: {}", extensions);
     const auto tools = physical_device.getToolPropertiesEXT();
     for (const vk::PhysicalDeviceToolProperties& tool : tools) {
         const std::string_view name = tool.name;
