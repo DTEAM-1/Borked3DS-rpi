@@ -583,7 +583,7 @@ void FragmentModule::WriteAlphaTestCondition(FramebufferRegs::CompareFunc func) 
         case CompareFunc::GreaterThanOrEqual: {
             static constexpr std::array op{"!=", "==", ">=", ">", "<=", "<"};
             const auto index = static_cast<u32>(func) - static_cast<u32>(CompareFunc::Equal);
-            return fmt::format("int(combiner_output.a * 255.0) {} alphatest_ref", op[index]);
+            return fmt::format("int(round(combiner_output.a * 255.0)) {} alphatest_ref", op[index]);
         }
         default:
             LOG_CRITICAL(Render, "Unknown alpha test condition {}", func);
