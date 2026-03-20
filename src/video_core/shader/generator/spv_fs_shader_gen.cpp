@@ -78,6 +78,18 @@ void FragmentModule::Generate() {
     }
 
     Id color{Byteround(combiner_output, 4)};
+
+    // Clamp to the valid color range to avoid unstable values on V3DV.
+    const Id zero{ConstF32(0.f, 0.f, 0.f, 0.f)};
+    const Id one{ConstF32(1.f, 1.f, 1.f, 1.f)};
+    color = OpFClamp(vec_ids.Get(4), color, zero, one);
+
+    // Preserve normal alpha behavior, but repair the clearly broken case where alpha becomes 0.
+    const Id alpha{OpCompositeExtract(f32_id, color, 3)};
+    const Id alpha_is_zero{OpFOrdEqual(bool_id, alpha, ConstF32(0.f))};
+    const Id fixed_alpha{OpSelect(f32_id, alpha_is_zero, ConstF32(1.f), alpha)};
+    color = OpCompositeInsert(vec_ids.Get(4), fixed_alpha, color, 3);
+
     switch (config.framebuffer.logic_op) {
     case FramebufferRegs::LogicOp::Clear:
         color = ConstF32(0.f, 0.f, 0.f, 0.f);
@@ -102,11 +114,6 @@ void FragmentModule::Generate() {
     }
 
     // Write output color
-    const Id alpha{OpCompositeExtract(f32_id, color, 3)};
-    const Id fixed_alpha{OpSelect(f32_id, OpFOrdEqual(bool_id, alpha, ConstF32(0.0f)),
-                                   ConstF32(1.0f), alpha)};
-    color = OpCompositeInsert(vec_ids.Get(4), fixed_alpha, color, 3);
-
     OpStore(color_id, color);
     OpReturn();
     OpFunctionEnd();
