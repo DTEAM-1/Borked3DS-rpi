@@ -77,13 +77,6 @@ void FragmentModule::Generate() {
         break;
     }
 
-    if (config.framebuffer.shadow_rendering) {
-        WriteShadow();
-        OpReturn();
-        OpFunctionEnd();
-        return;
-    }
-
     Id color{Byteround(combiner_output, 4)};
     switch (config.framebuffer.logic_op) {
     case FramebufferRegs::LogicOp::Clear:
@@ -93,13 +86,14 @@ void FragmentModule::Generate() {
         color = ConstF32(1.f, 1.f, 1.f, 1.f);
         break;
     case FramebufferRegs::LogicOp::Copy:
+        // Take the color output as-is
         break;
-    case FramebufferRegs::LogicOp::CopyInverted: {
-        const Id ones = ConstF32(1.f, 1.f, 1.f, 1.f);
-        color = OpFSub(vec_ids.Get(4), ones, color);
+    case FramebufferRegs::LogicOp::CopyInverted:
+        // out += "color = ~color;\n";
         break;
-    }
     case FramebufferRegs::LogicOp::NoOp:
+        // We need to discard the color, but not necessarily the depth. This is not possible
+        // with fragment shader alone, so we emulate this behavior with the color mask.
         break;
     default:
         LOG_CRITICAL(HW_GPU, "Unhandled logic_op {:x}",
@@ -107,53 +101,10 @@ void FragmentModule::Generate() {
         UNIMPLEMENTED();
     }
 
+    // Write output color
     OpStore(color_id, color);
     OpReturn();
     OpFunctionEnd();
-}
-
-
-Id FragmentModule::EncodeShadow(Id pixel) {
-    const Id x{OpCompositeExtract(u32_id, pixel, 0)};
-    const Id y{OpCompositeExtract(u32_id, pixel, 1)};
-    return OpBitwiseOr(u32_id, OpShiftLeftLogical(u32_id, x, ConstU32(8u)), y);
-}
-
-Id FragmentModule::UpdateShadow(Id pixel, Id d, Id s) {
-    const Id ref_d{OpShiftRightLogical(u32_id, pixel, ConstU32(8u))};
-    const Id ref_s{OpBitwiseAnd(u32_id, pixel, ConstU32(0xFFu))};
-
-    const Id less_cond{OpULessThan(bool_id, d, ref_d)};
-    const Id s_zero{OpIEqual(bool_id, s, ConstU32(0u))};
-
-    const Id d_new{OpSelect(u32_id, s_zero, d, ref_d)};
-    const Id s_min{OpUMin(u32_id, s, ref_s)};
-    const Id s_new{OpSelect(u32_id, s_zero, ref_s, s_min)};
-    const Id candidate{EncodeShadow(OpCompositeConstruct(uvec_ids.Get(2), d_new, s_new))};
-
-    return OpSelect(u32_id, less_cond, candidate, pixel);
-}
-
-void FragmentModule::WriteShadow() {
-    const Id clamped_depth{OpFClamp(f32_id, depth, ConstF32(0.f), ConstF32(1.f))};
-    const Id d_scaled{OpFMul(f32_id, clamped_depth, ConstF32(16777215.f))};
-    const Id d{OpConvertFToU(u32_id, d_scaled)};
-
-    const Id green{OpCompositeExtract(f32_id, combiner_output, 1)};
-    const Id s_scaled{OpFMul(f32_id, green, ConstF32(255.f))};
-    const Id s{OpConvertFToU(u32_id, s_scaled)};
-
-    const Id frag_coord{OpLoad(vec_ids.Get(4), gl_frag_coord_id)};
-    const Id coord_f{OpVectorShuffle(vec_ids.Get(2), frag_coord, frag_coord, 0, 1)};
-    const Id image_coord{OpConvertFToS(ivec_ids.Get(2), coord_f)};
-
-    const Id shadow_buffer{OpLoad(image_r32_id, shadow_texture_px_id)};
-    const Id old_texel{OpImageRead(uvec_ids.Get(4), shadow_buffer, image_coord)};
-    const Id old_shadow{OpCompositeExtract(u32_id, old_texel, 0)};
-    const Id new_shadow{UpdateShadow(old_shadow, d, s)};
-    const Id new_texel{OpCompositeConstruct(uvec_ids.Get(4), new_shadow, ConstU32(0u),
-                                            ConstU32(0u), ConstU32(0u))};
-    OpImageWrite(shadow_buffer, image_coord, new_texel);
 }
 
 void FragmentModule::WriteDepth() {
@@ -776,10 +727,9 @@ void FragmentModule::WriteAlphaTestCondition(FramebufferRegs::CompareFunc func) 
     case CompareFunc::LessThanOrEqual:
     case CompareFunc::GreaterThan:
     case CompareFunc::GreaterThanOrEqual: {
-        const Id alpha_value{OpCompositeExtract(f32_id, combiner_output, 3)};
-        const Id alpha_scaled{OpFMul(f32_id, alpha_value, ConstF32(255.f))};
-        const Id alpha_rounded{OpRound(f32_id, alpha_scaled)};
-        const Id alpha_int{OpConvertFToS(i32_id, alpha_rounded)};
+        const Id alpha_scaled{
+            OpFMul(f32_id, OpCompositeExtract(f32_id, combiner_output, 3), ConstF32(255.f))};
+        const Id alpha_int{OpConvertFToS(i32_id, alpha_scaled)};
         const Id alphatest_ref{GetShaderDataMember(i32_id, ConstS32(1))};
         const Id alpha_comp_ref{compare(alpha_int, alphatest_ref)};
         const Id kill_label{OpLabel()};
@@ -1029,7 +979,9 @@ void FragmentModule::DefineTexSampler(u32 texture_unit) {
     };
 
     const auto sample_3d = [&](Id tex_id, bool projection) {
-        const Id image_type = !projection ? image_cube_id : image2d_id;
+        // Pi 5 / V3DV fallback: force 2D sampled image path for stability.
+        // Cube sampling has shown black/transparent texture failures on this driver.
+        const Id image_type = image2d_id;
         const Id sampled_image{OpLoad(TypeSampledImage(image_type), tex_id)};
         const Id texcoord0_w{OpLoad(f32_id, texcoord0_w_id)};
         const Id coord{OpCompositeConstruct(vec_ids.Get(3), OpCompositeExtract(f32_id, texcoord, 0),
@@ -1037,7 +989,8 @@ void FragmentModule::DefineTexSampler(u32 texture_unit) {
         if (projection) {
             return OpImageSampleProjImplicitLod(vec_ids.Get(4), sampled_image, coord);
         } else {
-            return OpImageSampleImplicitLod(vec_ids.Get(4), sampled_image, coord);
+            // With the 2D fallback, just sample using the stable 2D LOD path.
+            return sample_lod(tex_id);
         }
     };
 
@@ -1053,12 +1006,15 @@ void FragmentModule::DefineTexSampler(u32 texture_unit) {
             ret_val = sample_3d(tex0_id, true);
             break;
         case Pica::TexturingRegs::TextureConfig::TextureCube:
-            ret_val = sample_3d(tex0_id, false);
+            // Pi 5 / V3DV fallback: cube path is unstable, use the 2D texture path.
+            ret_val = sample_lod(tex0_id);
             break;
         case Pica::TexturingRegs::TextureConfig::Shadow2D:
             ret_val = SampleShadow();
-            // case Pica::TexturingRegs::TextureConfig::ShadowCube:
-            // return "shadowTextureCube(texcoord0, texcoord0_w)";
+            break;
+        case Pica::TexturingRegs::TextureConfig::ShadowCube:
+            // Pi 5 / V3DV fallback: shadow cube path is not reliable, use planar shadow sampling.
+            ret_val = SampleShadow();
             break;
         default:
             LOG_CRITICAL(Render, "Unhandled texture type {:x}",
@@ -1642,7 +1598,7 @@ void FragmentModule::DefineInterface() {
     tex2_id = DefineUniformConst(TypeSampledImage(image2d_id), 1, 2);
 
     // Define shadow textures
-    shadow_texture_px_id = DefineUniformConst(image_r32_id, 2, 0, false);
+    shadow_texture_px_id = DefineUniformConst(image_r32_id, 2, 0, true);
 
     // Define built-ins
     gl_frag_coord_id = DefineVar(vec_ids.Get(4), spv::StorageClass::Input);
