@@ -103,6 +103,39 @@ constexpr SurfaceType GetFormatType(PixelFormat format) {
     return FORMAT_MAP[index].type;
 }
 
+
+constexpr bool IsTextureFormatConvertedToRGBA8(PixelFormat format) {
+    switch (format) {
+    case PixelFormat::IA8:
+    case PixelFormat::RG8:
+    case PixelFormat::I8:
+    case PixelFormat::A8:
+    case PixelFormat::IA4:
+    case PixelFormat::I4:
+    case PixelFormat::A4:
+    case PixelFormat::ETC1:
+    case PixelFormat::ETC1A4:
+        return true;
+    default:
+        return false;
+    }
+}
+
+constexpr bool IsAlphaOrIntensityFormat(PixelFormat format) {
+    switch (format) {
+    case PixelFormat::IA8:
+    case PixelFormat::RG8:
+    case PixelFormat::I8:
+    case PixelFormat::A8:
+    case PixelFormat::IA4:
+    case PixelFormat::I4:
+    case PixelFormat::A4:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool CheckFormatsBlittable(PixelFormat source_format, PixelFormat dest_format);
 
 std::string_view PixelFormatAsString(PixelFormat format);
