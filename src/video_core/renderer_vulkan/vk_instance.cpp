@@ -11,6 +11,7 @@
 #include "common/settings.h"
 #include "core/frontend/emu_window.h"
 #include "video_core/custom_textures/custom_format.h"
+#include "video_core/rasterizer_cache/pixel_format.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
@@ -32,6 +33,16 @@ vk::Format MakeFormat(VideoCore::PixelFormat format) {
         return vk::Format::eR5G6B5UnormPack16;
     case VideoCore::PixelFormat::RGBA4:
         return vk::Format::eR4G4B4A4UnormPack16;
+    case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::RG8:
+    case VideoCore::PixelFormat::I8:
+    case VideoCore::PixelFormat::A8:
+    case VideoCore::PixelFormat::IA4:
+    case VideoCore::PixelFormat::I4:
+    case VideoCore::PixelFormat::A4:
+    case VideoCore::PixelFormat::ETC1:
+    case VideoCore::PixelFormat::ETC1A4:
+        return vk::Format::eR8G8B8A8Unorm;
     case VideoCore::PixelFormat::D16:
         return vk::Format::eD16Unorm;
     case VideoCore::PixelFormat::D24:
@@ -244,6 +255,8 @@ FormatTraits Instance::DetermineTraits(VideoCore::PixelFormat pixel_format, vk::
     const bool supports_storage =
         (format_properties.optimalTilingFeatures & storage_usage) == storage_usage;
     const bool needs_conversion =
+        // Many 3DS 2D/UI texture formats are expanded to RGBA8.
+        VideoCore::IsTextureFormatConvertedToRGBA8(pixel_format) ||
         // Requires component flip.
         pixel_format == VideoCore::PixelFormat::RGBA8 ||
         // Requires (de)interleaving.
