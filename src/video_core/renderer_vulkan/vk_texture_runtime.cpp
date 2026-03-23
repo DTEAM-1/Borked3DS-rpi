@@ -88,29 +88,9 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
-[[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat pixel_format,
-                                                             vk::ImageAspectFlags aspect) {
-    if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
-        return MakeIdentityComponentMapping();
-    }
-
-    using PS = VideoCore::PixelFormat;
-    using CS = vk::ComponentSwizzle;
-    switch (pixel_format) {
-    case PS::A8:
-    case PS::A4:
-        return vk::ComponentMapping{CS::eZero, CS::eZero, CS::eZero, CS::eR};
-    case PS::I8:
-    case PS::I4:
-        return vk::ComponentMapping{CS::eR, CS::eR, CS::eR, CS::eOne};
-    case PS::IA8:
-    case PS::IA4:
-        return vk::ComponentMapping{CS::eR, CS::eR, CS::eR, CS::eG};
-    case PS::RG8:
-        return vk::ComponentMapping{CS::eR, CS::eG, CS::eZero, CS::eOne};
-    default:
-        return MakeIdentityComponentMapping();
-    }
+[[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat /*pixel_format*/,
+                                                             vk::ImageAspectFlags /*aspect*/) {
+    return MakeIdentityComponentMapping();
 }
 
 u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
