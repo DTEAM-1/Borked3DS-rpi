@@ -71,8 +71,6 @@ constexpr std::array<vk::DescriptorSetLayoutBinding, 3> TEXTURE_BINDINGS = {{
     {2, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment}, // tex2
 }};
 
-constexpr u32 MaxTex0Descriptors = 6;
-
 constexpr std::array<vk::DescriptorSetLayoutBinding, 2> UTILITY_BINDINGS = {{
     {0, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eFragment}, // shadow_buffer
     {1, vk::DescriptorType::eCombinedImageSampler, 1,
@@ -87,11 +85,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
       workers{num_worker_threads, "Pipeline workers"},
       descriptor_heaps{
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), BUFFER_BINDINGS, 32},
-          // tex0 must accommodate up to 6 descriptors for shadow cube faces.
-          // Using a single layout with 6 entries keeps the descriptor set layout
-          // compatible for both normal 2D textures (which only use array element 0)
-          // and shadow cube textures (which populate array elements 0..5).
-          DescriptorHeap{instance, scheduler.GetMasterSemaphore(), TEXTURE_BINDINGS<MaxTex0Descriptors>, 32},
+          DescriptorHeap{instance, scheduler.GetMasterSemaphore(), TEXTURE_BINDINGS<1>},
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), UTILITY_BINDINGS, 32}},
       trivial_vertex_shader{
           instance, SPIRV::GenerateTrivialVertexShader(instance.IsShaderClipDistanceSupported())} {
@@ -106,6 +100,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .has_blend_minmax_factor = false,
         .has_minus_one_to_one_range = false,
         .has_logic_op = !instance.NeedsLogicOpEmulation(),
+        .has_shader_stencil_export = instance.IsShaderStencilExportSupported(),
         .is_vulkan = true,
     };
     BuildLayout();
@@ -456,7 +451,9 @@ void PipelineCache::UseFragmentShader(const Pica::RegsInternal& regs,
     if (new_shader) {
         workers.QueueWork([fs_config, this, &shader]() {
             const bool use_spirv = Settings::values.spirv_shader_gen.GetValue();
-            if (use_spirv && !fs_config.UsesShadowPipeline()) {
+            const bool can_use_spirv_fs = use_spirv && !fs_config.UsesShadowPipeline() &&
+                                          profile.has_shader_stencil_export;
+            if (can_use_spirv_fs) {
                 const std::vector code = SPIRV::GenerateFragmentShader(fs_config, profile);
                 shader.module = CompileSPV(code, instance.GetDevice());
             } else {
