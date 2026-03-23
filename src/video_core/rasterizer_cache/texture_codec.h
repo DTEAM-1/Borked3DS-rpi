@@ -374,45 +374,44 @@ static constexpr void LinearCopy(std::span<u8> src_buffer, std::span<u8> dst_buf
 using MortonFunc = void (*)(u32, u32, u32, u32, std::span<u8>, std::span<u8>);
 
 static constexpr std::array<MortonFunc, 18> UNSWIZZLE_TABLE = {
-    MortonCopy<true, PixelFormat::RGBA8>,  // 0
-    MortonCopy<true, PixelFormat::RGB8>,   // 1
-    MortonCopy<true, PixelFormat::RGB5A1>, // 2
-    MortonCopy<true, PixelFormat::RGB565>, // 3
-    MortonCopy<true, PixelFormat::RGBA4>,  // 4
-    MortonCopy<true, PixelFormat::IA8>,    // 5
-    MortonCopy<true, PixelFormat::RG8>,    // 6
-    MortonCopy<true, PixelFormat::I8>,     // 7
-    MortonCopy<true, PixelFormat::A8>,     // 8
-    MortonCopy<true, PixelFormat::IA4>,    // 9
-    MortonCopy<true, PixelFormat::I4>,     // 10
-    MortonCopy<true, PixelFormat::A4>,     // 11
-    MortonCopy<true, PixelFormat::ETC1>,   // 12
-    MortonCopy<true, PixelFormat::ETC1A4>, // 13
-    MortonCopy<true, PixelFormat::D16>,    // 14
-    nullptr,                               // 15
-    MortonCopy<true, PixelFormat::D24>,    // 16
-    MortonCopy<true, PixelFormat::D24S8>,  // 17
+    MortonCopy<true, PixelFormat::RGBA8>,       // 0
+    MortonCopy<true, PixelFormat::RGB8>,        // 1
+    MortonCopy<true, PixelFormat::RGB5A1>,      // 2
+    MortonCopy<true, PixelFormat::RGB565>,      // 3
+    MortonCopy<true, PixelFormat::RGBA4>,       // 4
+    MortonCopy<true, PixelFormat::IA8, true>,   // 5
+    MortonCopy<true, PixelFormat::RG8, true>,   // 6
+    MortonCopy<true, PixelFormat::I8, true>,    // 7
+    MortonCopy<true, PixelFormat::A8, true>,    // 8
+    MortonCopy<true, PixelFormat::IA4, true>,   // 9
+    MortonCopy<true, PixelFormat::I4, true>,    // 10
+    MortonCopy<true, PixelFormat::A4, true>,    // 11
+    MortonCopy<true, PixelFormat::ETC1, true>,  // 12
+    MortonCopy<true, PixelFormat::ETC1A4, true>,// 13
+    MortonCopy<true, PixelFormat::D16>,         // 14
+    nullptr,                                    // 15
+    MortonCopy<true, PixelFormat::D24>,         // 16
+    MortonCopy<true, PixelFormat::D24S8>,       // 17
 };
 
 static constexpr std::array<MortonFunc, 18> UNSWIZZLE_TABLE_CONVERTED = {
-    MortonCopy<true, PixelFormat::RGBA8, true>,  // 0
-    MortonCopy<true, PixelFormat::RGB8, true>,   // 1
-    MortonCopy<true, PixelFormat::RGB5A1, true>, // 2
-    MortonCopy<true, PixelFormat::RGB565, true>, // 3
-    MortonCopy<true, PixelFormat::RGBA4, true>,  // 4
-    // The following formats are implicitly converted to RGBA regardless, so ignore them.
-    nullptr,                                  // 5
-    nullptr,                                  // 6
-    nullptr,                                  // 7
-    nullptr,                                  // 8
-    nullptr,                                  // 9
-    nullptr,                                  // 10
-    nullptr,                                  // 11
-    nullptr,                                  // 12
-    nullptr,                                  // 13
-    MortonCopy<true, PixelFormat::D16, true>, // 14
-    nullptr,                                  // 15
-    MortonCopy<true, PixelFormat::D24, true>, // 16
+    MortonCopy<true, PixelFormat::RGBA8, true>,   // 0
+    MortonCopy<true, PixelFormat::RGB8, true>,    // 1
+    MortonCopy<true, PixelFormat::RGB5A1, true>,  // 2
+    MortonCopy<true, PixelFormat::RGB565, true>,  // 3
+    MortonCopy<true, PixelFormat::RGBA4, true>,   // 4
+    MortonCopy<true, PixelFormat::IA8, true>,     // 5
+    MortonCopy<true, PixelFormat::RG8, true>,     // 6
+    MortonCopy<true, PixelFormat::I8, true>,      // 7
+    MortonCopy<true, PixelFormat::A8, true>,      // 8
+    MortonCopy<true, PixelFormat::IA4, true>,     // 9
+    MortonCopy<true, PixelFormat::I4, true>,      // 10
+    MortonCopy<true, PixelFormat::A4, true>,      // 11
+    MortonCopy<true, PixelFormat::ETC1, true>,    // 12
+    MortonCopy<true, PixelFormat::ETC1A4, true>,  // 13
+    MortonCopy<true, PixelFormat::D16, true>,     // 14
+    nullptr,                                      // 15
+    MortonCopy<true, PixelFormat::D24, true>,     // 16
     // No conversion here as we need to do a special deinterleaving conversion elsewhere.
     nullptr, // 17
 };
@@ -464,46 +463,44 @@ static constexpr std::array<MortonFunc, 18> SWIZZLE_TABLE_CONVERTED = {
 using LinearFunc = void (*)(std::span<u8>, std::span<u8>);
 
 static constexpr std::array<LinearFunc, 18> LINEAR_DECODE_TABLE = {
-    LinearCopy<true, PixelFormat::RGBA8>,  // 0
-    LinearCopy<true, PixelFormat::RGB8>,   // 1
-    LinearCopy<true, PixelFormat::RGB5A1>, // 2
-    LinearCopy<true, PixelFormat::RGB565>, // 3
-    LinearCopy<true, PixelFormat::RGBA4>,  // 4
-    // These formats cannot be used linearly and can be ignored.
-    nullptr,                              // 5
-    nullptr,                              // 6
-    nullptr,                              // 7
-    nullptr,                              // 8
-    nullptr,                              // 9
-    nullptr,                              // 10
-    nullptr,                              // 11
-    nullptr,                              // 12
-    nullptr,                              // 13
-    LinearCopy<true, PixelFormat::D16>,   // 14
-    nullptr,                              // 15
-    LinearCopy<true, PixelFormat::D24>,   // 16
-    LinearCopy<true, PixelFormat::D24S8>, // 17
+    LinearCopy<true, PixelFormat::RGBA8>,       // 0
+    LinearCopy<true, PixelFormat::RGB8>,        // 1
+    LinearCopy<true, PixelFormat::RGB5A1>,      // 2
+    LinearCopy<true, PixelFormat::RGB565>,      // 3
+    LinearCopy<true, PixelFormat::RGBA4>,       // 4
+    LinearCopy<true, PixelFormat::IA8, true>,   // 5
+    LinearCopy<true, PixelFormat::RG8, true>,   // 6
+    LinearCopy<true, PixelFormat::I8, true>,    // 7
+    LinearCopy<true, PixelFormat::A8, true>,    // 8
+    LinearCopy<true, PixelFormat::IA4, true>,   // 9
+    LinearCopy<true, PixelFormat::I4, true>,    // 10
+    LinearCopy<true, PixelFormat::A4, true>,    // 11
+    LinearCopy<true, PixelFormat::ETC1, true>,  // 12
+    LinearCopy<true, PixelFormat::ETC1A4, true>,// 13
+    LinearCopy<true, PixelFormat::D16>,         // 14
+    nullptr,                                    // 15
+    LinearCopy<true, PixelFormat::D24>,         // 16
+    LinearCopy<true, PixelFormat::D24S8>,       // 17
 };
 
 static constexpr std::array<LinearFunc, 18> LINEAR_DECODE_TABLE_CONVERTED = {
-    LinearCopy<true, PixelFormat::RGBA8, true>,  // 0
-    LinearCopy<true, PixelFormat::RGB8, true>,   // 1
-    LinearCopy<true, PixelFormat::RGB5A1, true>, // 2
-    LinearCopy<true, PixelFormat::RGB565, true>, // 3
-    LinearCopy<true, PixelFormat::RGBA4, true>,  // 4
-    // These formats cannot be used linearly and can be ignored.
-    nullptr,                                  // 5
-    nullptr,                                  // 6
-    nullptr,                                  // 7
-    nullptr,                                  // 8
-    nullptr,                                  // 9
-    nullptr,                                  // 10
-    nullptr,                                  // 11
-    nullptr,                                  // 12
-    nullptr,                                  // 13
-    LinearCopy<true, PixelFormat::D16, true>, // 14
-    nullptr,                                  // 15
-    LinearCopy<true, PixelFormat::D24, true>, // 16
+    LinearCopy<true, PixelFormat::RGBA8, true>,   // 0
+    LinearCopy<true, PixelFormat::RGB8, true>,    // 1
+    LinearCopy<true, PixelFormat::RGB5A1, true>,  // 2
+    LinearCopy<true, PixelFormat::RGB565, true>,  // 3
+    LinearCopy<true, PixelFormat::RGBA4, true>,   // 4
+    LinearCopy<true, PixelFormat::IA8, true>,     // 5
+    LinearCopy<true, PixelFormat::RG8, true>,     // 6
+    LinearCopy<true, PixelFormat::I8, true>,      // 7
+    LinearCopy<true, PixelFormat::A8, true>,      // 8
+    LinearCopy<true, PixelFormat::IA4, true>,     // 9
+    LinearCopy<true, PixelFormat::I4, true>,      // 10
+    LinearCopy<true, PixelFormat::A4, true>,      // 11
+    LinearCopy<true, PixelFormat::ETC1, true>,    // 12
+    LinearCopy<true, PixelFormat::ETC1A4, true>,  // 13
+    LinearCopy<true, PixelFormat::D16, true>,     // 14
+    nullptr,                                      // 15
+    LinearCopy<true, PixelFormat::D24, true>,     // 16
     // No conversion here as we need to do a special deinterleaving conversion elsewhere.
     nullptr, // 17
 };
