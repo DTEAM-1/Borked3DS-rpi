@@ -26,6 +26,7 @@ struct Profile {
     bool has_gl_nv_fragment_shader_interlock{};
     bool has_gl_intel_fragment_shader_ordering{};
     bool has_gl_nv_fragment_shader_barycentric{};
+    bool has_shader_stencil_export{};
     bool is_vulkan{};
 };
 
