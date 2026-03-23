@@ -77,13 +77,6 @@ void FragmentModule::Generate() {
         break;
     }
 
-    if (config.framebuffer.shadow_rendering) {
-        WriteShadow();
-        OpReturn();
-        OpFunctionEnd();
-        return;
-    }
-
     Id color{Byteround(combiner_output, 4)};
     switch (config.framebuffer.logic_op) {
     case FramebufferRegs::LogicOp::Clear:
@@ -95,11 +88,9 @@ void FragmentModule::Generate() {
     case FramebufferRegs::LogicOp::Copy:
         // Take the color output as-is
         break;
-    case FramebufferRegs::LogicOp::CopyInverted: {
-        const Id ones = ConstF32(1.f, 1.f, 1.f, 1.f);
-        color = OpFSub(vec_ids.Get(4), ones, color);
+    case FramebufferRegs::LogicOp::CopyInverted:
+        // out += "color = ~color;\n";
         break;
-    }
     case FramebufferRegs::LogicOp::NoOp:
         // We need to discard the color, but not necessarily the depth. This is not possible
         // with fragment shader alone, so we emulate this behavior with the color mask.
@@ -736,10 +727,9 @@ void FragmentModule::WriteAlphaTestCondition(FramebufferRegs::CompareFunc func) 
     case CompareFunc::LessThanOrEqual:
     case CompareFunc::GreaterThan:
     case CompareFunc::GreaterThanOrEqual: {
-        const Id alpha_value{OpCompositeExtract(f32_id, combiner_output, 3)};
-        const Id alpha_scaled{OpFMul(f32_id, alpha_value, ConstF32(255.f))};
-        const Id alpha_rounded{OpRound(f32_id, alpha_scaled)};
-        const Id alpha_int{OpConvertFToS(i32_id, alpha_rounded)};
+        const Id alpha_scaled{
+            OpFMul(f32_id, OpCompositeExtract(f32_id, combiner_output, 3), ConstF32(255.f))};
+        const Id alpha_int{OpConvertFToS(i32_id, alpha_scaled)};
         const Id alphatest_ref{GetShaderDataMember(i32_id, ConstS32(1))};
         const Id alpha_comp_ref{compare(alpha_int, alphatest_ref)};
         const Id kill_label{OpLabel()};
@@ -989,7 +979,7 @@ void FragmentModule::DefineTexSampler(u32 texture_unit) {
     };
 
     const auto sample_3d = [&](Id tex_id, bool projection) {
-        const Id image_type = image2d_id;
+        const Id image_type = !projection ? image_cube_id : image2d_id;
         const Id sampled_image{OpLoad(TypeSampledImage(image_type), tex_id)};
         const Id texcoord0_w{OpLoad(f32_id, texcoord0_w_id)};
         const Id coord{OpCompositeConstruct(vec_ids.Get(3), OpCompositeExtract(f32_id, texcoord, 0),
@@ -997,7 +987,7 @@ void FragmentModule::DefineTexSampler(u32 texture_unit) {
         if (projection) {
             return OpImageSampleProjImplicitLod(vec_ids.Get(4), sampled_image, coord);
         } else {
-            return sample_lod(tex_id);
+            return OpImageSampleImplicitLod(vec_ids.Get(4), sampled_image, coord);
         }
     };
 
@@ -1013,13 +1003,12 @@ void FragmentModule::DefineTexSampler(u32 texture_unit) {
             ret_val = sample_3d(tex0_id, true);
             break;
         case Pica::TexturingRegs::TextureConfig::TextureCube:
-            ret_val = sample_lod(tex0_id);
+            ret_val = sample_3d(tex0_id, false);
             break;
         case Pica::TexturingRegs::TextureConfig::Shadow2D:
             ret_val = SampleShadow();
-            break;
-        case Pica::TexturingRegs::TextureConfig::ShadowCube:
-            ret_val = SampleShadow();
+            // case Pica::TexturingRegs::TextureConfig::ShadowCube:
+            // return "shadowTextureCube(texcoord0, texcoord0_w)";
             break;
         default:
             LOG_CRITICAL(Render, "Unhandled texture type {:x}",
@@ -1597,10 +1586,7 @@ void FragmentModule::DefineInterface() {
 
     // Define texture unit samplers
     const auto texture_type = config.texture.texture0_type.Value();
-    const auto tex0_type =
-        (texture_type == TextureType::TextureCube || texture_type == TextureType::ShadowCube)
-            ? image2d_id
-            : image2d_id;
+    const auto tex0_type = texture_type == TextureType::TextureCube ? image_cube_id : image2d_id;
     tex0_id = DefineUniformConst(TypeSampledImage(tex0_type), 1, 0);
     tex1_id = DefineUniformConst(TypeSampledImage(image2d_id), 1, 1);
     tex2_id = DefineUniformConst(TypeSampledImage(image2d_id), 1, 2);
