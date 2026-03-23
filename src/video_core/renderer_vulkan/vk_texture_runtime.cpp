@@ -79,6 +79,40 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
+[[nodiscard]] constexpr vk::ComponentMapping MakeIdentityComponentMapping() {
+    return vk::ComponentMapping{
+        .r = vk::ComponentSwizzle::eR,
+        .g = vk::ComponentSwizzle::eG,
+        .b = vk::ComponentSwizzle::eB,
+        .a = vk::ComponentSwizzle::eA,
+    };
+}
+
+[[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat pixel_format,
+                                                             vk::ImageAspectFlags aspect) {
+    if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
+        return MakeIdentityComponentMapping();
+    }
+
+    using PS = VideoCore::PixelFormat;
+    using CS = vk::ComponentSwizzle;
+    switch (pixel_format) {
+    case PS::A8:
+    case PS::A4:
+        return vk::ComponentMapping{CS::eZero, CS::eZero, CS::eZero, CS::eR};
+    case PS::I8:
+    case PS::I4:
+        return vk::ComponentMapping{CS::eR, CS::eR, CS::eR, CS::eOne};
+    case PS::IA8:
+    case PS::IA4:
+        return vk::ComponentMapping{CS::eR, CS::eR, CS::eR, CS::eG};
+    case PS::RG8:
+        return vk::ComponentMapping{CS::eR, CS::eG, CS::eZero, CS::eOne};
+    default:
+        return MakeIdentityComponentMapping();
+    }
+}
+
 u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
     u32 depth_offset = 0;
     u32 stencil_offset = 4 * data.size / 5;
@@ -142,7 +176,8 @@ boost::container::small_vector<vk::ImageMemoryBarrier, 3> MakeInitBarriers(
 }
 
 Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, TextureType type,
-                  vk::Format format, vk::ImageUsageFlags usage, vk::ImageCreateFlags flags,
+                  vk::Format format, VideoCore::PixelFormat pixel_format,
+                  vk::ImageUsageFlags usage, vk::ImageCreateFlags flags,
                   vk::ImageAspectFlags aspect, bool need_format_list,
                   std::string_view debug_name = {}) {
     const u32 layers = type == TextureType::CubeMap ? 6 : 1;
@@ -249,6 +284,7 @@ allocation_success:
         .viewType =
             type == TextureType::CubeMap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D,
         .format = format,
+        .components = MakeUIViewComponentMapping(pixel_format, aspect),
         .subresourceRange{
             .aspectMask = aspect,
             .baseMipLevel = 0,
@@ -778,14 +814,14 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
     }
 
     const bool need_format_list = is_mutable && instance->IsImageFormatListSupported();
-    handles[0] = MakeHandle(instance, width, height, levels, texture_type, format, traits.usage,
+    handles[0] = MakeHandle(instance, width, height, levels, texture_type, format, pixel_format, traits.usage,
                             flags, traits.aspect, need_format_list, DebugName(false));
     raw_images.emplace_back(handles[0].image);
 
     if (res_scale != 1) {
         handles[1] =
             MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type, format,
-                       traits.usage, flags, traits.aspect, need_format_list, DebugName(true));
+                       pixel_format, traits.usage, flags, traits.aspect, need_format_list, DebugName(true));
         raw_images.emplace_back(handles[1].image);
     }
 
@@ -818,18 +854,18 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceBase& surface
 
     const std::string debug_name = DebugName(false, true);
     handles[0] = MakeHandle(instance, mat->width, mat->height, levels, texture_type, format,
-                            traits.usage, flags, traits.aspect, false, debug_name);
+                            VideoCore::PixelFormat::RGBA8, traits.usage, flags, traits.aspect, false, debug_name);
     raw_images.emplace_back(handles[0].image);
 
     if (res_scale != 1) {
         handles[1] = MakeHandle(instance, mat->width, mat->height, levels, texture_type,
-                                vk::Format::eR8G8B8A8Unorm, traits.usage, flags, traits.aspect,
+                                vk::Format::eR8G8B8A8Unorm, VideoCore::PixelFormat::RGBA8, traits.usage, flags, traits.aspect,
                                 false, debug_name);
         raw_images.emplace_back(handles[1].image);
     }
     if (has_normal) {
         handles[2] = MakeHandle(instance, mat->width, mat->height, levels, texture_type, format,
-                                traits.usage, flags, traits.aspect, false, debug_name);
+                                VideoCore::PixelFormat::RGBA8, traits.usage, flags, traits.aspect, false, debug_name);
         raw_images.emplace_back(handles[2].image);
     }
 
@@ -1128,7 +1164,7 @@ void Surface::ScaleUp(u32 new_scale) {
 
     handles[1] =
         MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
-                   traits.native, traits.usage, flags, traits.aspect, false, DebugName(true));
+                   traits.native, pixel_format, traits.usage, flags, traits.aspect, false, DebugName(true));
 
     runtime->renderpass_cache.EndRendering();
     scheduler->Record(
@@ -1204,7 +1240,7 @@ vk::ImageView Surface::CopyImageView() noexcept {
         }
         copy_handle =
             MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
-                       traits.native, traits.usage, flags, traits.aspect, false);
+                       traits.native, pixel_format, traits.usage, flags, traits.aspect, false);
         copy_layout = vk::ImageLayout::eUndefined;
     }
 
