@@ -46,6 +46,8 @@ private:
 
     /// Writes the code to emulate gas rendering
     void WriteGas();
+	
+	void DefineInterface();
 
 
     /// Writes the code to emulate the specified TEV stage
