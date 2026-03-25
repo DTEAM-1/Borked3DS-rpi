@@ -747,6 +747,67 @@ void FragmentModule::WriteAlphaTestCondition(FramebufferRegs::CompareFunc func) 
     }
 }
 
+Id FragmentModule::CompareShadow(Id pixel, Id z) {
+    const Id pixel_d24{OpShiftRightLogical(u32_id, pixel, ConstS32(8))};
+    const Id pixel_s8{OpConvertUToF(f32_id, OpBitwiseAnd(u32_id, pixel, ConstU32(255u)))};
+    const Id s8_f32{OpFMul(f32_id, pixel_s8, ConstF32(1.f / 255.f))};
+    const Id d24_leq_z{OpULessThanEqual(bool_id, pixel_d24, z)};
+    return OpSelect(f32_id, d24_leq_z, ConstF32(0.f), s8_f32);
+}
+
+Id FragmentModule::SampleShadow() {
+    const Id texcoord0{OpLoad(vec_ids.Get(2), texcoord_id[0])};
+    const Id texcoord0_w{OpLoad(f32_id, texcoord0_w_id)};
+    const Id abs_min_w{OpFMul(f32_id, OpFMin(f32_id, OpFAbs(f32_id, texcoord0_w), ConstF32(1.f)),
+                              ConstF32(16777215.f))};
+    const Id shadow_texture_bias{GetShaderDataMember(i32_id, ConstS32(17))};
+    const Id z_i32{OpSMax(i32_id, ConstS32(0),
+                          OpISub(i32_id, OpConvertFToS(i32_id, abs_min_w), shadow_texture_bias))};
+    const Id z{OpBitcast(u32_id, z_i32)};
+    const Id shadow_texture_px{OpLoad(image_r32_id, shadow_texture_px_id)};
+    const Id px_size{OpImageQuerySize(ivec_ids.Get(2), shadow_texture_px)};
+    const Id coord{OpFma(vec_ids.Get(2), OpConvertSToF(vec_ids.Get(2), px_size), texcoord0,
+                         ConstF32(-0.5f, -0.5f))};
+    const Id coord_floor{OpFloor(vec_ids.Get(2), coord)};
+    const Id f{OpFSub(vec_ids.Get(2), coord, coord_floor)};
+    const Id i{OpConvertFToS(ivec_ids.Get(2), coord_floor)};
+
+    const auto sample_shadow2D = [&](Id uv) -> Id {
+        const Id true_label{OpLabel()};
+        const Id false_label{OpLabel()};
+        const Id end_label{OpLabel()};
+        const Id uv_le_zero{OpSLessThan(bvec_ids.Get(2), uv, ConstS32(0, 0))};
+        const Id uv_geq_size{OpSGreaterThanEqual(bvec_ids.Get(2), uv, px_size)};
+        const Id cond{
+            OpAny(bool_id, OpCompositeConstruct(bvec_ids.Get(4), uv_le_zero, uv_geq_size))};
+        OpSelectionMerge(end_label, spv::SelectionControlMask::MaskNone);
+        OpBranchConditional(cond, true_label, false_label);
+        AddLabel(true_label);
+        OpBranch(end_label);
+        AddLabel(false_label);
+        const Id px_texel{OpImageRead(uvec_ids.Get(4), shadow_texture_px, uv)};
+        const Id px_texel_x{OpCompositeExtract(u32_id, px_texel, 0)};
+        const Id result{CompareShadow(px_texel_x, z)};
+        OpBranch(end_label);
+        AddLabel(end_label);
+        return OpPhi(f32_id, ConstF32(1.f), true_label, result, false_label);
+    };
+
+    const Id s_xy{
+        OpCompositeConstruct(vec_ids.Get(2), sample_shadow2D(i),
+                             sample_shadow2D(OpIAdd(ivec_ids.Get(2), i, ConstS32(1, 0))))};
+    const Id s_zw{OpCompositeConstruct(
+        vec_ids.Get(2), sample_shadow2D(OpIAdd(ivec_ids.Get(2), i, ConstS32(0, 1))),
+        sample_shadow2D(OpIAdd(ivec_ids.Get(2), i, ConstS32(1, 1))))};
+    const Id f_yy{OpVectorShuffle(vec_ids.Get(2), f, f, 1, 1)};
+    const Id t{OpFMix(vec_ids.Get(2), s_xy, s_zw, f_yy)};
+    const Id t_x{OpCompositeExtract(f32_id, t, 0)};
+    const Id t_y{OpCompositeExtract(f32_id, t, 1)};
+    const Id a_x{OpCompositeExtract(f32_id, f, 0)};
+    const Id val{OpFMix(f32_id, t_x, t_y, a_x)};
+    return OpCompositeConstruct(vec_ids.Get(4), val, val, val, val);
+}
+
 Id FragmentModule::AppendProcTexShiftOffset(Id v, ProcTexShift mode, ProcTexClamp clamp_mode) {
     const Id offset{clamp_mode == ProcTexClamp::MirroredRepeat ? ConstF32(1.f) : ConstF32(0.5f)};
     const Id v_i32{OpConvertFToS(i32_id, v)};
@@ -945,8 +1006,9 @@ void FragmentModule::DefineTexSampler(u32 texture_unit) {
             ret_val = sample_3d(tex0_id, false);
             break;
         case Pica::TexturingRegs::TextureConfig::Shadow2D:
-            // V3DV / Pi5 safe fallback: avoid shadow/stencil export path
-            ret_val = ConstF32(1.f, 1.f, 1.f, 1.f);
+            ret_val = SampleShadow();
+            // case Pica::TexturingRegs::TextureConfig::ShadowCube:
+            // return "shadowTextureCube(texcoord0, texcoord0_w)";
             break;
         default:
             LOG_CRITICAL(Render, "Unhandled texture type {:x}",
@@ -1514,7 +1576,6 @@ void FragmentModule::DefineInterface() {
     image_buffer_id = TypeImage(f32_id, spv::Dim::Buffer, 0, 0, 0, 1, spv::ImageFormat::Unknown);
     image2d_id = TypeImage(f32_id, spv::Dim::Dim2D, 0, 0, 0, 1, spv::ImageFormat::Unknown);
     image_cube_id = TypeImage(f32_id, spv::Dim::Cube, 0, 0, 0, 1, spv::ImageFormat::Unknown);
-    image_r32_id = TypeImage(u32_id, spv::Dim::Dim2D, 0, 0, 0, 2, spv::ImageFormat::R32ui);
     sampler_id = TypeSampler();
 
     // Define lighting texture buffers
@@ -1529,8 +1590,6 @@ void FragmentModule::DefineInterface() {
     tex1_id = DefineUniformConst(TypeSampledImage(image2d_id), 1, 1);
     tex2_id = DefineUniformConst(TypeSampledImage(image2d_id), 1, 2);
 
-    // Define shadow textures
-    shadow_texture_px_id = DefineUniformConst(image_r32_id, 2, 0, true);
 
     // Define built-ins
     gl_frag_coord_id = DefineVar(vec_ids.Get(4), spv::StorageClass::Input);
