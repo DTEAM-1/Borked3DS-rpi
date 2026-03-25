@@ -450,7 +450,11 @@ void PipelineCache::UseFragmentShader(const Pica::RegsInternal& regs,
     if (new_shader) {
         workers.QueueWork([fs_config, this, &shader]() {
             const bool use_spirv = Settings::values.spirv_shader_gen.GetValue();
-            if (use_spirv && !fs_config.UsesShadowPipeline()) {
+            const bool can_use_spirv_fs =
+                use_spirv && !fs_config.UsesShadowPipeline() &&
+                instance.IsShaderStencilExportSupported();
+
+            if (can_use_spirv_fs) {
                 const std::vector code = SPIRV::GenerateFragmentShader(fs_config, profile);
                 shader.module = CompileSPV(code, instance.GetDevice());
             } else {
