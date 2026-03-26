@@ -444,9 +444,12 @@ void PipelineCache::UseFragmentShader(const Pica::RegsInternal& regs,
     if (new_shader) {
         workers.QueueWork([fs_config, this, &shader]() {
             const bool use_spirv = Settings::values.spirv_shader_gen.GetValue();
+            const bool is_v3dv_driver = instance.GetDriverID() == vk::DriverId::eMesaV3Dv ||
+                                        instance.GetDriverID() ==
+                                            vk::DriverId::eBroadcomProprietary;
 
             const bool can_use_spirv_fs =
-                use_spirv && !fs_config.UsesShadowPipeline() &&
+                use_spirv && !is_v3dv_driver && !fs_config.UsesShadowPipeline() &&
                 instance.IsShaderStencilExportSupported();
 
             if (can_use_spirv_fs) {

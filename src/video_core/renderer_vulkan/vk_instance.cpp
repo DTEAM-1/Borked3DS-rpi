@@ -4,7 +4,7 @@
 // Refer to the license.txt file included.
 
 #include <span>
-#include <string_view>
+#include <cstring>
 #include <boost/container/static_vector.hpp>
 #include <fmt/ranges.h>
 
@@ -487,25 +487,19 @@ bool Instance::CreateDevice() {
 
     boost::container::static_vector<const char*, 13> enabled_extensions;
     for (const auto& ext : extension_support) {
-        const bool available = std::find(available_extensions.begin(), available_extensions.end(),
-                                         ext.name) != available_extensions.end();
-        const bool driver_blacklisted =
-            is_v3dv_driver &&
-            (std::string_view{ext.name} == VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME ||
-             std::string_view{ext.name} == VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+        bool available = std::find(available_extensions.begin(), available_extensions.end(),
+                                   ext.name) != available_extensions.end();
 
-        if (available && !driver_blacklisted) {
+        if (is_v3dv_driver &&
+            (std::strcmp(ext.name, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME) == 0 ||
+             std::strcmp(ext.name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0)) {
+            available = false;
+        }
+
+        if (available) {
             enabled_extensions.push_back(ext.name);
             if (ext.supported) {
                 *ext.supported = true;
-            }
-        } else if (available && driver_blacklisted) {
-            LOG_WARNING(Render_Vulkan,
-                        "Optional extension {} is supported by the loader/device but disabled "
-                        "for V3DV compatibility",
-                        ext.name);
-            if (ext.supported) {
-                *ext.supported = false;
             }
         } else if (ext.required) {
             LOG_CRITICAL(Render_Vulkan, "Required extension {} not available", ext.name);
