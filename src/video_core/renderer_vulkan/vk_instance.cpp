@@ -4,6 +4,7 @@
 // Refer to the license.txt file included.
 
 #include <span>
+#include <string_view>
 #include <boost/container/static_vector.hpp>
 #include <fmt/ranges.h>
 
@@ -446,6 +447,9 @@ bool Instance::CreateDevice() {
     driver_id = driver.driverID;
     vendor_name = driver.driverName.data();
 
+    const bool is_v3dv_driver = driver_id == vk::DriverId::eMesaV3Dv ||
+                                driver_id == vk::DriverId::eBroadcomProprietary;
+
     features = feature_chain.get().features;
     if (available_extensions.empty()) {
         LOG_CRITICAL(Render_Vulkan, "No extensions supported by device.");
@@ -485,11 +489,23 @@ bool Instance::CreateDevice() {
     for (const auto& ext : extension_support) {
         const bool available = std::find(available_extensions.begin(), available_extensions.end(),
                                          ext.name) != available_extensions.end();
+        const bool driver_blacklisted =
+            is_v3dv_driver &&
+            (std::string_view{ext.name} == VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME ||
+             std::string_view{ext.name} == VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
 
-        if (available) {
+        if (available && !driver_blacklisted) {
             enabled_extensions.push_back(ext.name);
             if (ext.supported) {
                 *ext.supported = true;
+            }
+        } else if (available && driver_blacklisted) {
+            LOG_WARNING(Render_Vulkan,
+                        "Optional extension {} is supported by the loader/device but disabled "
+                        "for V3DV compatibility",
+                        ext.name);
+            if (ext.supported) {
+                *ext.supported = false;
             }
         } else if (ext.required) {
             LOG_CRITICAL(Render_Vulkan, "Required extension {} not available", ext.name);
@@ -497,6 +513,11 @@ bool Instance::CreateDevice() {
         } else {
             LOG_WARNING(Render_Vulkan, "Optional extension {} not available", ext.name);
         }
+    }
+
+    if (is_v3dv_driver) {
+        shader_stencil_export = false;
+        fragment_shader_barycentric = false;
     }
 
     const auto family_properties = physical_device.getQueueFamilyProperties();
