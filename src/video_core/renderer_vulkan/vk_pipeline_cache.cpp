@@ -448,18 +448,9 @@ void PipelineCache::UseFragmentShader(const Pica::RegsInternal& regs,
                                         instance.GetDriverID() ==
                                             vk::DriverId::eBroadcomProprietary;
 
-            // Pi 5 / V3DV:
-            // keep SPIR-V enabled globally, but always force GLSL for fragment shaders.
-            // This avoids illegal SPIR-V modules requesting
-            // SPV_EXT_shader_stencil_export / StencilExportEXT.
             const bool can_use_spirv_fs =
-                !is_v3dv_driver && use_spirv && !fs_config.UsesShadowPipeline() &&
+                use_spirv && !is_v3dv_driver && !fs_config.UsesShadowPipeline() &&
                 instance.IsShaderStencilExportSupported();
-
-            if (is_v3dv_driver) {
-                LOG_DEBUG(Render_Vulkan,
-                          "Forcing GLSL fragment shader path on V3DV/Broadcom for compatibility");
-            }
 
             if (can_use_spirv_fs) {
                 const std::vector<u32> code = SPIRV::GenerateFragmentShader(fs_config, profile);

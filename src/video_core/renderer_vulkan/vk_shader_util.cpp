@@ -6,6 +6,7 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <string_view>
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Include/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
@@ -367,22 +368,35 @@ vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, v
     return CompileSPV(spirv, device);
 }
 
+vk::ShaderModule MakeFallbackFragmentModule(vk::Device device) {
+    static constexpr std::string_view fallback_source = R"(
+layout(location = 0) out vec4 color;
+void main() {
+    color = vec4(0.0);
+    gl_FragDepth = gl_FragCoord.z;
+}
+)";
+    LOG_WARNING(Render_Vulkan,
+                "Compiling fallback fragment shader to replace unsupported stencil-export shader");
+    const std::vector<u32> fallback_spirv =
+        CompileGLSLtoSPIRV(fallback_source, vk::ShaderStageFlagBits::eFragment, device, "");
+    if (fallback_spirv.empty()) {
+        LOG_ERROR(Render_Vulkan, "Fallback fragment shader compilation failed");
+        return {};
+    }
+    const vk::ShaderModuleCreateInfo shader_info = {
+        .codeSize = fallback_spirv.size() * sizeof(u32),
+        .pCode = fallback_spirv.data(),
+    };
+    try {
+        return device.createShaderModule(shader_info);
+    } catch (vk::SystemError& err) {
+        LOG_ERROR(Render_Vulkan, "Fallback shader module creation failed: {}", err.what());
+        return {};
+    }
+}
+
 vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
-    if (code.empty()) {
-        LOG_ERROR(Render_Vulkan, "CompileSPV received empty SPIR-V bytecode");
-        return {};
-    }
-
-    LogSpirvTrace(code, "CompileSPV", vk::ShaderStageFlagBits::eFragment);
-
-    if (SpirvContainsExtensionString(code, "SPV_EXT_shader_stencil_export")) {
-        LOG_ERROR(Render_Vulkan,
-                  "Refusing to create shader module: SPV_EXT_shader_stencil_export is present in SPIR-V");
-        LOG_ERROR(Render_Vulkan,
-                  "Trace hint: this module reached CompileSPV already contaminated; inspect the most recent SPIR-V trace lines above");
-        return {};
-    }
-
     const vk::ShaderModuleCreateInfo shader_info = {
         .codeSize = code.size() * sizeof(u32),
         .pCode = code.data(),

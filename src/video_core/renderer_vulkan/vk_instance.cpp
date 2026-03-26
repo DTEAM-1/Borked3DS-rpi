@@ -4,7 +4,6 @@
 // Refer to the license.txt file included.
 
 #include <span>
-#include <cstring>
 #include <boost/container/static_vector.hpp>
 #include <fmt/ranges.h>
 
@@ -487,16 +486,15 @@ bool Instance::CreateDevice() {
 
     boost::container::static_vector<const char*, 13> enabled_extensions;
     for (const auto& ext : extension_support) {
-        bool available = std::find(available_extensions.begin(), available_extensions.end(),
-                                   ext.name) != available_extensions.end();
+        const bool available = std::find(available_extensions.begin(), available_extensions.end(),
+                                         ext.name) != available_extensions.end();
 
-        if (is_v3dv_driver &&
+        const bool block_on_v3dv =
+            is_v3dv_driver &&
             (std::strcmp(ext.name, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME) == 0 ||
-             std::strcmp(ext.name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0)) {
-            available = false;
-        }
+             std::strcmp(ext.name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0);
 
-        if (available) {
+        if (available && !block_on_v3dv) {
             enabled_extensions.push_back(ext.name);
             if (ext.supported) {
                 *ext.supported = true;
@@ -505,7 +503,16 @@ bool Instance::CreateDevice() {
             LOG_CRITICAL(Render_Vulkan, "Required extension {} not available", ext.name);
             return false;
         } else {
-            LOG_WARNING(Render_Vulkan, "Optional extension {} not available", ext.name);
+            if (block_on_v3dv) {
+                LOG_WARNING(Render_Vulkan,
+                            "Pi5/V3DV compatibility: forcibly disabling optional extension {}",
+                            ext.name);
+                if (ext.supported) {
+                    *ext.supported = false;
+                }
+            } else {
+                LOG_WARNING(Render_Vulkan, "Optional extension {} not available", ext.name);
+            }
         }
     }
 
