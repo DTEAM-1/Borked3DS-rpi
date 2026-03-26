@@ -145,7 +145,12 @@ FragmentModule::FragmentModule(const FSConfig& config_, const Profile& profile_)
         DefineBindingsGL();
     }
     DefineHelpers();
-    DefineShadowHelpers();
+    // Pi 5 / V3DV Vulkan compatibility:
+    // keep the Vulkan GLSL fragment path free of shadow helper code that can
+    // trigger glslang to emit SPV_EXT_shader_stencil_export.
+    if (!profile.is_vulkan) {
+        DefineShadowHelpers();
+    }
     DefineLightingHelpers();
     DefineProcTexSampler();
     for (u32 i = 0; i < 4; i++) {
@@ -1087,7 +1092,12 @@ void FragmentModule::WriteFog() {
 void FragmentModule::WriteGas() {
     // TODO: Implement me
     LOG_CRITICAL(Render, "Unimplemented gas mode");
-    out += "discard; }";
+    if (profile.is_vulkan) {
+        out += "gl_FragDepth = depth;\n";
+        out += "color = vec4(0.0); }";
+    } else {
+        out += "discard; }";
+    }
 }
 
 //gvx64 - shader re-write to fix launch crash in Poochy & Yoshi's Woolly World
