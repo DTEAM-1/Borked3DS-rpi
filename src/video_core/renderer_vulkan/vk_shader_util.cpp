@@ -147,6 +147,21 @@ EShLanguage ToEshShaderStage(vk::ShaderStageFlagBits stage) {
     return EShLanguage::EShLangVertex;
 }
 
+namespace {
+
+bool SpirvContainsExtensionString(std::span<const u32> code, std::string_view needle) {
+    if (code.empty() || needle.empty()) {
+        return false;
+    }
+
+    const auto* bytes = reinterpret_cast<const char*>(code.data());
+    const std::size_t size_bytes = code.size() * sizeof(u32);
+    const std::string_view haystack{bytes, size_bytes};
+    return haystack.find(needle) != std::string_view::npos;
+}
+
+} // Anonymous namespace
+
 bool InitializeCompiler() {
     static bool glslang_initialized = false;
 
@@ -315,6 +330,17 @@ vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, v
 }
 
 vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
+    if (code.empty()) {
+        LOG_ERROR(Render_Vulkan, "CompileSPV received empty SPIR-V bytecode");
+        return {};
+    }
+
+    if (SpirvContainsExtensionString(code, "SPV_EXT_shader_stencil_export")) {
+        LOG_ERROR(Render_Vulkan,
+                  "Refusing to create shader module: SPV_EXT_shader_stencil_export is present in SPIR-V");
+        return {};
+    }
+
     const vk::ShaderModuleCreateInfo shader_info = {
         .codeSize = code.size() * sizeof(u32),
         .pCode = code.data(),
