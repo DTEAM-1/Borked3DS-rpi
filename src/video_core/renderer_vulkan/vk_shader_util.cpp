@@ -6,6 +6,7 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <string_view>
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Include/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
@@ -147,8 +148,6 @@ EShLanguage ToEshShaderStage(vk::ShaderStageFlagBits stage) {
     return EShLanguage::EShLangVertex;
 }
 
-namespace {
-
 bool SpirvContainsExtensionString(std::span<const u32> code, std::string_view needle) {
     if (code.empty() || needle.empty()) {
         return false;
@@ -160,7 +159,43 @@ bool SpirvContainsExtensionString(std::span<const u32> code, std::string_view ne
     return haystack.find(needle) != std::string_view::npos;
 }
 
-} // Anonymous namespace
+u64 HashSpirvWords(std::span<const u32> code) {
+    constexpr u64 kOffset = 1469598103934665603ull;
+    constexpr u64 kPrime = 1099511628211ull;
+    u64 hash = kOffset;
+    for (u32 word : code) {
+        hash ^= static_cast<u64>(word);
+        hash *= kPrime;
+    }
+    return hash;
+}
+
+const char* ShaderStageName(vk::ShaderStageFlagBits stage) {
+    switch (stage) {
+    case vk::ShaderStageFlagBits::eVertex:
+        return "vertex";
+    case vk::ShaderStageFlagBits::eGeometry:
+        return "geometry";
+    case vk::ShaderStageFlagBits::eFragment:
+        return "fragment";
+    case vk::ShaderStageFlagBits::eCompute:
+        return "compute";
+    default:
+        return "unknown";
+    }
+}
+
+void LogSpirvTrace(std::span<const u32> code, std::string_view origin,
+                   vk::ShaderStageFlagBits stage) {
+    LOG_INFO(Render_Vulkan,
+             "SPIR-V trace: origin='{}', stage={}, words={}, bytes={}, hash=0x{:016x}",
+             origin, ShaderStageName(stage), code.size(), code.size_bytes(), HashSpirvWords(code));
+    if (SpirvContainsExtensionString(code, "SPV_EXT_shader_stencil_export")) {
+        LOG_ERROR(Render_Vulkan,
+                  "SPIR-V trace: origin='{}', stage={} contains SPV_EXT_shader_stencil_export",
+                  origin, ShaderStageName(stage));
+    }
+}
 
 bool InitializeCompiler() {
     static bool glslang_initialized = false;
@@ -181,12 +216,7 @@ bool InitializeCompiler() {
 }
 } // Anonymous namespace
 
-/**
- * @brief Optimizes SPIR-V code using spirv-opt from SPIRV-Tools
- * @param code The string containing SPIR-V code
- */
 std::vector<u32> OptimizeSPIRV(std::vector<u32> code) {
-
     std::vector<u32> result = code;
     std::vector<u32> spirv = code;
     spv_target_env vulkanEnv = SPV_ENV_UNIVERSAL_1_0;
@@ -212,13 +242,10 @@ std::vector<u32> OptimizeSPIRV(std::vector<u32> code) {
     spv_opt.SetMessageConsumer([](spv_message_level_t, const char*, const spv_position_t&,
                                   const char* m) { LOG_ERROR(HW_GPU, "spirv-opt: {}", m); });
 
-    // SPIR-V Legalization
     if (Settings::values.spirv_output_legalization.GetValue()) {
         spv_opt.RegisterLegalizationPasses();
     }
 
-    // Optimize SPIR-V for Size or Performance. Equivalent to passing -Os or -O to spirv-opt
-    // respectively.
     if (Settings::values.optimize_spirv_output.GetValue() == Settings::OptimizeSpirv::Size) {
         spv_opt.RegisterSizePasses();
     } else if (Settings::values.optimize_spirv_output.GetValue() ==
@@ -228,7 +255,6 @@ std::vector<u32> OptimizeSPIRV(std::vector<u32> code) {
 
     spvtools::OptimizerOptions opt_options;
 
-    // SPIR-V Validation
     if (Settings::values.spirv_output_validation.GetValue()) {
         opt_options.set_run_validator(true);
     } else {
@@ -244,17 +270,13 @@ std::vector<u32> OptimizeSPIRV(std::vector<u32> code) {
     return result;
 }
 
-/**
- * @brief Compiles GLSL into SPIRV
- * @param code The string containing GLSL code.
- * @param stage The pipeline stage the shader will be used in.
- * @param device The vulkan device handle.
- */
 std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBits stage,
                                     vk::Device device, std::string_view premable) {
     if (!InitializeCompiler()) {
         return {};
     }
+
+    (void)device;
 
     EProfile profile = ECoreProfile;
     EShMessages messages =
@@ -274,17 +296,21 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
     glslang::TShader::ForbidIncluder includer;
     if (!shader->parse(&DefaultTBuiltInResource, default_version, profile, false, true, messages,
                        includer)) [[unlikely]] {
-        LOG_INFO(Render_Vulkan, "Shader Info Log:\n{}\n{}", shader->getInfoLog(),
+        LOG_INFO(Render_Vulkan, "Shader Info Log:
+{}
+{}", shader->getInfoLog(),
                  shader->getInfoDebugLog());
-        LOG_INFO(Render_Vulkan, "Shader Source:\n{}", code);
+        LOG_INFO(Render_Vulkan, "Shader Source:
+{}", code);
         return {};
     }
 
-    // Even though there's only a single shader, we still need to link it to generate SPV
     auto program = std::make_unique<glslang::TProgram>();
     program->addShader(shader.get());
     if (!program->link(messages)) {
-        LOG_INFO(Render_Vulkan, "Program Info Log:\n{}\n{}", program->getInfoLog(),
+        LOG_INFO(Render_Vulkan, "Program Info Log:
+{}
+{}", program->getInfoLog(),
                  program->getInfoDebugLog());
         return {};
     }
@@ -295,12 +321,10 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
     glslang::SpvOptions options;
 
     if (Settings::values.optimize_spirv_output.GetValue() == Settings::OptimizeSpirv::Disabled) {
-        // Use built-in glslang to enable default optimizations on the generated SPIR-V code
         options.disableOptimizer = false;
         options.validate = false;
         options.optimizeSize = true;
     } else {
-        // Use external SPIRV-Tools to perform optimizations
         options.disableOptimizer = true;
         options.validate = false;
         options.optimizeSize = false;
@@ -314,19 +338,23 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
         LOG_INFO(Render_Vulkan, "SPIR-V conversion messages: {}", spv_messages);
     }
 
-    // Final pass through SPIRV-Optimizer
+    LogSpirvTrace(out_code, "CompileGLSLtoSPIRV/raw", stage);
+
     if (Settings::values.optimize_spirv_output.GetValue() == Settings::OptimizeSpirv::Disabled) {
         return out_code;
     } else {
         std::vector<u32> result;
         result = OptimizeSPIRV(out_code);
+        LogSpirvTrace(result, "CompileGLSLtoSPIRV/optimized", stage);
         return result;
     }
 }
 
 vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, vk::Device device,
                          std::string_view premable) {
-    return CompileSPV(CompileGLSLtoSPIRV(code, stage, device, premable), device);
+    const std::vector<u32> spirv = CompileGLSLtoSPIRV(code, stage, device, premable);
+    LogSpirvTrace(spirv, "Compile", stage);
+    return CompileSPV(spirv, device);
 }
 
 vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
@@ -335,9 +363,13 @@ vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
         return {};
     }
 
+    LogSpirvTrace(code, "CompileSPV", vk::ShaderStageFlagBits::eFragment);
+
     if (SpirvContainsExtensionString(code, "SPV_EXT_shader_stencil_export")) {
         LOG_ERROR(Render_Vulkan,
                   "Refusing to create shader module: SPV_EXT_shader_stencil_export is present in SPIR-V");
+        LOG_ERROR(Render_Vulkan,
+                  "Trace hint: this module reached CompileSPV already contaminated; inspect the most recent SPIR-V trace lines above");
         return {};
     }
 
