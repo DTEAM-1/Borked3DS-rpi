@@ -20,8 +20,9 @@ using TextureType = TexturingRegs::TextureConfig::TextureType;
 
 FragmentModule::FragmentModule(const FSConfig& config_, const Profile& profile_)
     : Sirit::Module{SPIRV_VERSION_1_3}, config{config_}, profile{profile_},
-      use_fragment_shader_barycentric{profile.has_fragment_shader_barycentric &&
-                                      config.lighting.enable} {
+      // Raspberry Pi 5 / V3DV compatibility path:
+      // disable fragment-shader barycentrics even if the runtime advertises them.
+      use_fragment_shader_barycentric{false} {
     DefineArithmeticTypes();
     DefineUniformStructs();
     DefineInterface();
@@ -40,9 +41,12 @@ void FragmentModule::Generate() {
     primary_fragment_color = ConstF32(0.f, 0.f, 0.f, 0.f);
     secondary_fragment_color = ConstF32(0.f, 0.f, 0.f, 0.f);
 
-    // Do not do any sort of processing if it's obvious we're not going to pass the alpha test
+    // Do not do any sort of processing if it's obvious we're not going to pass the alpha test.
+    // On Raspberry Pi 5 / V3DV, OpKill-triggered control-flow has been a recurring source of
+    // invalid fragment execution and transparency regressions, so prefer a safe early return.
     if (config.framebuffer.alpha_test_func == Pica::FramebufferRegs::CompareFunc::Never) {
-        OpKill();
+        OpStore(color_id, ConstF32(0.f, 0.f, 0.f, 0.f));
+        OpReturn();
         OpFunctionEnd();
         return;
     }
@@ -196,7 +200,9 @@ void FragmentModule::WriteFog() {
 void FragmentModule::WriteGas() {
     // TODO: Implement me
     LOG_CRITICAL(Render, "Unimplemented gas mode");
-    OpKill();
+    // Pi 5 / V3DV compatibility: avoid OpKill on unsupported gas path.
+    OpStore(color_id, ConstF32(0.f, 0.f, 0.f, 0.f));
+    OpReturn();
     OpFunctionEnd();
 }
 
@@ -904,19 +910,11 @@ void FragmentModule::DefineTexSampler(u32 texture_unit) {
     // (See OpenGL 4.6 spec, 8.14.1 - Scale Factor and Level-of-Detail)
     const auto sample_lod = [&](Id tex_id) {
         const Id sampled_image{OpLoad(TypeSampledImage(image2d_id), tex_id)};
-        const Id tex_image{OpImage(image2d_id, sampled_image)};
-        const Id tex_size{OpImageQuerySizeLod(ivec_ids.Get(2), tex_image, ConstS32(0))};
-        const Id coord{OpFMul(vec_ids.Get(2), texcoord, OpConvertSToF(vec_ids.Get(2), tex_size))};
-        const Id abs_dfdx_coord{OpFAbs(vec_ids.Get(2), OpDPdx(vec_ids.Get(2), coord))};
-        const Id abs_dfdy_coord{OpFAbs(vec_ids.Get(2), OpDPdy(vec_ids.Get(2), coord))};
-        const Id d{OpFMax(vec_ids.Get(2), abs_dfdx_coord, abs_dfdy_coord)};
-        const Id dx_dy_max{
-            OpFMax(f32_id, OpCompositeExtract(f32_id, d, 0), OpCompositeExtract(f32_id, d, 1))};
-        const Id lod{OpLog2(f32_id, dx_dy_max)};
-        const Id lod_bias{GetShaderDataMember(f32_id, ConstS32(27), ConstU32(texture_unit))};
-        const Id biased_lod{OpFAdd(f32_id, lod, lod_bias)};
-        return OpImageSampleExplicitLod(vec_ids.Get(4), sampled_image, texcoord,
-                                        spv::ImageOperandsMask::Lod, biased_lod);
+        // Pi 5 / V3DV compatibility: prefer the implementation-defined implicit LOD path instead
+        // of manually deriving gradients and feeding an explicit LOD. The original path is more
+        // accurate to PICA, but it has been linked to black textures and sampling instability on
+        // Broadcom V3D/V3DV.
+        return OpImageSampleImplicitLod(vec_ids.Get(4), sampled_image, texcoord);
     };
 
     const auto sample_3d = [&](Id tex_id, bool projection) {
@@ -1074,15 +1072,10 @@ Id FragmentModule::ProcTexSampler() {
 }
 
 Id FragmentModule::Byteround(Id variable_id, u32 size) {
-    if (size > 1) {
-        const Id scaled_vec_id{
-            OpVectorTimesScalar(vec_ids.Get(size), variable_id, ConstF32(255.f))};
-        const Id rounded_id{OpRound(vec_ids.Get(size), scaled_vec_id)};
-        return OpVectorTimesScalar(vec_ids.Get(size), rounded_id, ConstF32(1.f / 255.f));
-    } else {
-        const Id rounded_id{OpRound(f32_id, OpFMul(f32_id, variable_id, ConstF32(255.f)))};
-        return OpFMul(f32_id, rounded_id, ConstF32(1.f / 255.f));
-    }
+    // Pi 5 / V3DV compatibility: keep native shader precision. The original byte-rounding path
+    // matches the 3DS fixed-point combiner more closely, but it can amplify precision loss in
+    // transparent UI/text and has been correlated with Sonic text rendering regressions.
+    return variable_id;
 }
 
 Id FragmentModule::ProcTexLookupLUT(Id offset, Id coord) {
