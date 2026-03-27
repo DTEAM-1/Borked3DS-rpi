@@ -84,13 +84,6 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
     MakeSoftwareVertexLayout();
     pipeline_info.vertex_layout = software_layout;
 
-    // Pi 5 / V3DV Vulkan compatibility:
-    // keep sample shading disabled here. A 3D path on Pi 5 was reaching
-    // vkCreateGraphicsPipelines() with sampleShadingEnable = VK_TRUE while the
-    // sampleRateShading feature was not enabled, which caused pipeline creation
-    // failure. Force the rasterizer-side pipeline state to a safe default.
-    pipeline_info.multisample.sample_shading_enable.Assign(false);
-    pipeline_info.multisample.min_sample_shading = 0.0f;
 
     const vk::Device device = instance.GetDevice();
     texture_lf_view = device.createBufferViewUnique({
@@ -466,6 +459,9 @@ void RasterizerVulkan::DrawTriangles() {
 
         pipeline_cache.UseTrivialVertexShader();
         pipeline_cache.UseTrivialGeometryShader();
+        // Pi 5 / V3DV stability fix:
+        // make sure a fragment shader is always bound for the software vertex path.
+        pipeline_cache.UseFragmentShader(regs, user_config);
 
         LOG_DEBUG(Render_Vulkan, "Pipeline configured, attempting draw");
         bool draw_result = Draw(false, false);
@@ -519,11 +515,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncTextureUnits(framebuffer);
     SyncUtilityTextures(framebuffer);
 
-    // Sync and bind the shader
-    if (shader_dirty) {
-        pipeline_cache.UseFragmentShader(regs, user_config);
-        shader_dirty = false;
-    }
+    // Pi 5 / V3DV stability fix:
+    // always bind the fragment shader here to avoid stale or incomplete pipeline state.
+    pipeline_cache.UseFragmentShader(regs, user_config);
+    shader_dirty = false;
 
     // Sync the LUTs within the texture buffer
     SyncAndUploadLUTs();

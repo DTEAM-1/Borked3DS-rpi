@@ -160,7 +160,11 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
 
     const vk::PipelineMultisampleStateCreateInfo multisampling = {
         .rasterizationSamples = vk::SampleCountFlagBits::e1,
-        .sampleShadingEnable = Settings::values.use_sample_shading.GetValue(),
+        // Pi 5 / V3DV compatibility:
+        // sample shading must stay disabled here unless sampleRateShading was enabled
+        // as a Vulkan device feature. On Pi 5 we hit pipeline creation failures when
+        // this followed the UI setting directly.
+        .sampleShadingEnable = false,
     };
 
     const vk::PipelineColorBlendAttachmentState colorblend_attachment = {
