@@ -84,6 +84,14 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
     MakeSoftwareVertexLayout();
     pipeline_info.vertex_layout = software_layout;
 
+    // Pi 5 / V3DV Vulkan compatibility:
+    // keep sample shading disabled here. A 3D path on Pi 5 was reaching
+    // vkCreateGraphicsPipelines() with sampleShadingEnable = VK_TRUE while the
+    // sampleRateShading feature was not enabled, which caused pipeline creation
+    // failure. Force the rasterizer-side pipeline state to a safe default.
+    pipeline_info.multisample.sample_shading_enable.Assign(false);
+    pipeline_info.multisample.min_sample_shading = 0.0f;
+
     const vk::Device device = instance.GetDevice();
     texture_lf_view = device.createBufferViewUnique({
         .buffer = texture_lf_buffer.Handle(),
