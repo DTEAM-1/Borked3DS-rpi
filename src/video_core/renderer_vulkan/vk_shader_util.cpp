@@ -397,6 +397,21 @@ void main() {
 }
 
 vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
+    if (code.empty()) {
+        LOG_ERROR(Render_Vulkan, "CompileSPV received empty SPIR-V bytecode");
+        return {};
+    }
+
+    LogSpirvTrace(code, "CompileSPV", vk::ShaderStageFlagBits::eFragment);
+
+    if (SpirvContainsExtensionString(code, "SPV_EXT_shader_stencil_export")) {
+        LOG_ERROR(Render_Vulkan,
+                  "Refusing to create shader module: SPV_EXT_shader_stencil_export is present in SPIR-V");
+        LOG_ERROR(Render_Vulkan,
+                  "Trace hint: this module reached CompileSPV already contaminated; inspect the most recent SPIR-V trace lines above");
+        return MakeFallbackFragmentModule(device);
+    }
+
     const vk::ShaderModuleCreateInfo shader_info = {
         .codeSize = code.size() * sizeof(u32),
         .pCode = code.data(),
