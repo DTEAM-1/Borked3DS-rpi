@@ -207,8 +207,8 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
                   "PicaCore::WriteInternalReg trigger_draw id=0x{:03X} indexed={} num_vertices={} vertex_offset={} topology={} use_gs={}",
                   id, is_indexed, regs.internal.pipeline.num_vertices,
                   regs.internal.pipeline.vertex_offset,
-                  static_cast<u32>(regs.internal.pipeline.triangle_topology),
-                  static_cast<u32>(regs.internal.pipeline.use_gs));
+                  static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()),
+                  static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
         DrawArrays(is_indexed);
         break;
     }
@@ -512,7 +512,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
               is_indexed, regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
               Settings::values.use_hw_shader.GetValue(), Settings::values.skip_slow_draw.GetValue(),
               static_cast<u32>(primitive_assembler.GetTopology()),
-              static_cast<u32>(regs.internal.pipeline.use_gs));
+              static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
 
     // Track vertex in the debug recorder.
     if (debug_context) {
