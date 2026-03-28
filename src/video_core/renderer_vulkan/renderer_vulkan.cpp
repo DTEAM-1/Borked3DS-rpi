@@ -481,7 +481,10 @@ bool RendererVulkan::ConfigureFramebufferTexture(TextureInfo& texture,
             .mipLevels = 1,
             .arrayLayers = 1,
             .samples = vk::SampleCountFlagBits::e1,
-            .usage = vk::ImageUsageFlagBits::eSampled,
+            .tiling = vk::ImageTiling::eOptimal,
+            .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+            .sharingMode = vk::SharingMode::eExclusive,
+            .initialLayout = vk::ImageLayout::eUndefined,
         };
 
         const VmaAllocationCreateInfo alloc_info = {
@@ -527,6 +530,34 @@ bool RendererVulkan::ConfigureFramebufferTexture(TextureInfo& texture,
         texture.height = framebuffer.height;
         texture.format = framebuffer.color_format;
 
+        // Pi 5 / V3DV Vulkan compatibility:
+        // initialize managed presentation textures into SHADER_READ_ONLY_OPTIMAL so descriptor
+        // usage matches the actual image layout during DrawScreens.
+        scheduler.Record([image = texture.image](vk::CommandBuffer cmdbuf) {
+            const vk::ImageSubresourceRange range = {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            };
+
+            const vk::ImageMemoryBarrier init_barrier = {
+                .srcAccessMask = {},
+                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                .oldLayout = vk::ImageLayout::eUndefined,
+                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image,
+                .subresourceRange = range,
+            };
+
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+                                   vk::PipelineStageFlagBits::eFragmentShader,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, init_barrier);
+        });
+
         LOG_DEBUG(Render_Vulkan, "Framebuffer texture configured successfully");
         return true;
     } catch (const vk::SystemError& error) {
@@ -563,7 +594,7 @@ void RendererVulkan::FillScreen(Common::Vec3<u8> color, const TextureInfo& textu
         const vk::ImageMemoryBarrier pre_barrier = {
             .srcAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead,
             .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .oldLayout = vk::ImageLayout::eGeneral,
+            .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
             .newLayout = vk::ImageLayout::eTransferDstOptimal,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -575,7 +606,7 @@ void RendererVulkan::FillScreen(Common::Vec3<u8> color, const TextureInfo& textu
             .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
             .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead,
             .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-            .newLayout = vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = image,
