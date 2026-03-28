@@ -367,10 +367,6 @@ vk::UniqueInstance CreateInstance(const Common::DynamicLibrary& library,
 }
 
 vk::UniqueDebugUtilsMessengerEXT CreateDebugMessenger(vk::Instance instance) {
-    // Pi 5 / V3DV compatibility:
-    // Do not request eDeviceAddressBinding here. That message type requires
-    // VK_EXT_device_address_binding_report, which is not available on V3DV
-    // and was triggering validation errors followed by a crash in the current setup.
     const vk::DebugUtilsMessengerCreateInfoEXT msg_ci = {
         .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
                            vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
