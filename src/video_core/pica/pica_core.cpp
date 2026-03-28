@@ -114,6 +114,11 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         const u32 value = cmd_list.head[cmd_list.current_index++];
         const CommandHeader header{cmd_list.head[cmd_list.current_index++]};
 
+        LOG_DEBUG(HW_GPU,
+                  "PicaCore::ProcessCmdList cmd id=0x{:03X} value=0x{:08X} mask=0x{:X} extra_len={} grouped={}",
+                  header.cmd_id.Value(), value, header.parameter_mask.Value(),
+                  header.extra_data_length.Value(), header.group_commands.Value());
+
         // Write to the requested PICA register.
         WriteInternalReg(header.cmd_id, value, header.parameter_mask);
 
@@ -121,6 +126,9 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         for (u32 i = 0; i < header.extra_data_length; ++i) {
             const u32 cmd = header.cmd_id + (header.group_commands ? i + 1 : 0);
             const u32 extra_value = cmd_list.head[cmd_list.current_index++];
+            LOG_DEBUG(HW_GPU,
+                      "PicaCore::ProcessCmdList extra cmd id=0x{:03X} value=0x{:08X} mask=0x{:X}",
+                      cmd, extra_value, header.parameter_mask.Value());
             WriteInternalReg(cmd, extra_value, header.parameter_mask);
         }
     }
@@ -167,10 +175,13 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         break;
 
     case PICA_REG_INDEX(pipeline.triangle_topology):
+        LOG_DEBUG(HW_GPU, "PicaCore::WriteInternalReg triangle_topology={}",
+                  static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()));
         primitive_assembler.Reconfigure(regs.internal.pipeline.triangle_topology);
         break;
 
     case PICA_REG_INDEX(pipeline.restart_primitive):
+        LOG_DEBUG(HW_GPU, "PicaCore::WriteInternalReg restart_primitive value=0x{:08X}", value);
         primitive_assembler.Reset();
         break;
 
@@ -186,6 +197,7 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         break;
 
     case PICA_REG_INDEX(pipeline.gpu_mode):
+        LOG_DEBUG(HW_GPU, "PicaCore::WriteInternalReg gpu_mode value=0x{:08X}", value);
         // This register likely just enables vertex processing and doesn't need any special handling
         break;
 
@@ -194,6 +206,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         const u32 index = static_cast<u32>(id - PICA_REG_INDEX(pipeline.command_buffer.trigger[0]));
         const PAddr addr = regs.internal.pipeline.command_buffer.GetPhysicalAddress(index);
         const u32 size = regs.internal.pipeline.command_buffer.GetSize(index);
+        LOG_DEBUG(HW_GPU,
+                  "PicaCore::WriteInternalReg command_buffer.trigger index={} addr={:#010X} size={}",
+                  index, addr, size);
         const u8* head = memory.GetPhysicalPointer(addr);
         cmd_list.Reset(addr, head, size);
         break;
@@ -469,7 +484,6 @@ void PicaCore::SubmitImmediate(u32 value) {
 void PicaCore::DrawImmediate() {
     BORKED3DS_PROFILE("PicaCore", "Draw Immediate");
     LOG_DEBUG(HW_GPU, "PicaCore::DrawImmediate invoked");
-    LOG_DEBUG(HW_GPU, "PicaCore::DrawImmediate invoked");
 
     // Compile the vertex shader.
     shader_engine->SetupBatch(vs_setup, regs.internal.vs.main_offset);
@@ -508,12 +522,6 @@ void PicaCore::DrawImmediate() {
 
 void PicaCore::DrawArrays(bool is_indexed) {
     BORKED3DS_PROFILE("PicaCore", "Draw Arrays");
-    LOG_DEBUG(HW_GPU,
-              "PicaCore::DrawArrays begin indexed={} num_vertices={} vertex_offset={} use_hw_shader={} skip_slow_draw={} topology={} use_gs={}",
-              is_indexed, regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
-              Settings::values.use_hw_shader.GetValue(), Settings::values.skip_slow_draw.GetValue(),
-              static_cast<u32>(primitive_assembler.GetTopology()),
-              static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
     LOG_DEBUG(HW_GPU,
               "PicaCore::DrawArrays begin indexed={} num_vertices={} vertex_offset={} use_hw_shader={} skip_slow_draw={} topology={} use_gs={}",
               is_indexed, regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
@@ -580,10 +588,6 @@ void PicaCore::LoadVertices(bool is_indexed) {
               "PicaCore::LoadVertices begin indexed={} num_vertices={} vertex_offset={} base_address={:#010X}",
               is_indexed, pipeline.num_vertices, pipeline.vertex_offset,
               pipeline.vertex_attributes.GetPhysicalBaseAddress());
-    LOG_DEBUG(HW_GPU,
-              "PicaCore::LoadVertices begin indexed={} num_vertices={} vertex_offset={} base_address={:#010X}",
-              is_indexed, pipeline.num_vertices, pipeline.vertex_offset,
-              pipeline.vertex_attributes.GetPhysicalBaseAddress());
     const PAddr base_address = pipeline.vertex_attributes.GetPhysicalBaseAddress();
     const auto loader = VertexLoader(memory, pipeline);
     regs.internal.rasterizer.ValidateSemantics();
@@ -616,12 +620,6 @@ void PicaCore::LoadVertices(bool is_indexed) {
         const u32 vertex = is_indexed
                                ? (index_u16 ? index_address_16[index] : index_address_8[index])
                                : (index + pipeline.vertex_offset);
-
-        if (index < 4) {
-            LOG_DEBUG(HW_GPU,
-                      "PicaCore::LoadVertices vertex_index={} source_vertex={} indexed={}",
-                      index, vertex, is_indexed);
-        }
 
         if (index < 4) {
             LOG_DEBUG(HW_GPU,
