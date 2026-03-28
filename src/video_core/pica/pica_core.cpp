@@ -469,6 +469,7 @@ void PicaCore::SubmitImmediate(u32 value) {
 void PicaCore::DrawImmediate() {
     BORKED3DS_PROFILE("PicaCore", "Draw Immediate");
     LOG_DEBUG(HW_GPU, "PicaCore::DrawImmediate invoked");
+    LOG_DEBUG(HW_GPU, "PicaCore::DrawImmediate invoked");
 
     // Compile the vertex shader.
     shader_engine->SetupBatch(vs_setup, regs.internal.vs.main_offset);
@@ -507,6 +508,12 @@ void PicaCore::DrawImmediate() {
 
 void PicaCore::DrawArrays(bool is_indexed) {
     BORKED3DS_PROFILE("PicaCore", "Draw Arrays");
+    LOG_DEBUG(HW_GPU,
+              "PicaCore::DrawArrays begin indexed={} num_vertices={} vertex_offset={} use_hw_shader={} skip_slow_draw={} topology={} use_gs={}",
+              is_indexed, regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
+              Settings::values.use_hw_shader.GetValue(), Settings::values.skip_slow_draw.GetValue(),
+              static_cast<u32>(primitive_assembler.GetTopology()),
+              static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
     LOG_DEBUG(HW_GPU,
               "PicaCore::DrawArrays begin indexed={} num_vertices={} vertex_offset={} use_hw_shader={} skip_slow_draw={} topology={} use_gs={}",
               is_indexed, regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
@@ -573,6 +580,10 @@ void PicaCore::LoadVertices(bool is_indexed) {
               "PicaCore::LoadVertices begin indexed={} num_vertices={} vertex_offset={} base_address={:#010X}",
               is_indexed, pipeline.num_vertices, pipeline.vertex_offset,
               pipeline.vertex_attributes.GetPhysicalBaseAddress());
+    LOG_DEBUG(HW_GPU,
+              "PicaCore::LoadVertices begin indexed={} num_vertices={} vertex_offset={} base_address={:#010X}",
+              is_indexed, pipeline.num_vertices, pipeline.vertex_offset,
+              pipeline.vertex_attributes.GetPhysicalBaseAddress());
     const PAddr base_address = pipeline.vertex_attributes.GetPhysicalBaseAddress();
     const auto loader = VertexLoader(memory, pipeline);
     regs.internal.rasterizer.ValidateSemantics();
@@ -605,6 +616,12 @@ void PicaCore::LoadVertices(bool is_indexed) {
         const u32 vertex = is_indexed
                                ? (index_u16 ? index_address_16[index] : index_address_8[index])
                                : (index + pipeline.vertex_offset);
+
+        if (index < 4) {
+            LOG_DEBUG(HW_GPU,
+                      "PicaCore::LoadVertices vertex_index={} source_vertex={} indexed={}",
+                      index, vertex, is_indexed);
+        }
 
         if (index < 4) {
             LOG_DEBUG(HW_GPU,
