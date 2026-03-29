@@ -196,6 +196,15 @@ void LogSpirvTrace(std::span<const u32> code, std::string_view origin,
     }
 }
 
+void DumpProblematicShaderSource(std::string_view origin, vk::ShaderStageFlagBits stage,
+                                 std::string_view source) {
+    LOG_ERROR(Render_Vulkan,
+              "Problematic shader source dump: origin='{}', stage={}, bytes={}",
+              origin, ShaderStageName(stage), source.size());
+    LOG_ERROR(Render_Vulkan, "Problematic shader source BEGIN\n{}\nProblematic shader source END",
+              source);
+}
+
 bool InitializeCompiler() {
     static bool glslang_initialized = false;
 
@@ -349,6 +358,10 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
     }
 
     LogSpirvTrace(out_code, "CompileGLSLtoSPIRV/raw", stage);
+    if (stage == vk::ShaderStageFlagBits::eFragment &&
+        SpirvContainsExtensionString(out_code, "SPV_EXT_shader_stencil_export")) {
+        DumpProblematicShaderSource("CompileGLSLtoSPIRV/raw", stage, code);
+    }
 
     // Final pass through SPIRV-Optimizer
     if (Settings::values.optimize_spirv_output.GetValue() == Settings::OptimizeSpirv::Disabled) {
@@ -357,6 +370,10 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
         std::vector<u32> result;
         result = OptimizeSPIRV(out_code);
         LogSpirvTrace(result, "CompileGLSLtoSPIRV/optimized", stage);
+        if (stage == vk::ShaderStageFlagBits::eFragment &&
+            SpirvContainsExtensionString(result, "SPV_EXT_shader_stencil_export")) {
+            DumpProblematicShaderSource("CompileGLSLtoSPIRV/optimized", stage, code);
+        }
         return result;
     }
 }
