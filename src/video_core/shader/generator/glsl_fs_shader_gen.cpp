@@ -180,6 +180,18 @@ vec4 secondary_fragment_color = vec4(0.0);
     WriteScissor();
     WriteDepth();
 
+    // Pi 5 / Trixie / V3DV compatibility:
+    // short-circuit the Vulkan shadow-rendering path completely. This avoids
+    // re-entering older shadow code paths that were still leading to
+    // SPV_EXT_shader_stencil_export through glslang on V3DV.
+    if (profile.is_vulkan && config.framebuffer.shadow_rendering) {
+        out += "gl_FragDepth = depth;\n";
+        out += "color = vec4(primary_color.rgb, primary_color.a);\n";
+        out += "}";
+
+        return out;
+    }
+
     // Write shader source to emulate all enabled PICA lights
     WriteLighting();
 
@@ -216,14 +228,7 @@ vec4 secondary_fragment_color = vec4(0.0);
     }
 
     if (config.framebuffer.shadow_rendering) {
-        // Pi 5 / V3DV Vulkan compatibility:
-        // avoid the Vulkan shadow-rendering GLSL path because glslang is producing
-        // SPV_EXT_shader_stencil_export from this family of shaders on V3DV.
-        // Keep depth output valid and emit a harmless color instead of invoking WriteShadow().
-        if (profile.is_vulkan) {
-            out += "gl_FragDepth = depth;\n";
-            out += "color = vec4(primary_color.rgb, primary_color.a);\n";
-        } else if ((GLAD_GL_ARB_shader_image_load_store || GL_SHADER_IMAGE_ATOMIC)) { //gvx64 - apply guards to executing WriteShadow() only when running gles renderer
+        if ((GLAD_GL_ARB_shader_image_load_store || GL_SHADER_IMAGE_ATOMIC)) { //gvx64 - apply guards to executing WriteShadow() only when running gles renderer
             WriteShadow(); //gvx64
         }
     } else {
@@ -1725,9 +1730,10 @@ void FragmentModule::DefineBindingsVK() {
     }
 
     // Utility textures
-    if (config.framebuffer.shadow_rendering) {
-        out += "layout(set = 2, binding = 0, r32ui) uniform uimage2D shadow_buffer;\n\n";
-    }
+    // Pi 5 / Trixie / V3DV compatibility:
+    // do not declare Vulkan shadow_buffer for the Vulkan shadow-rendering path,
+    // because the shader now exits early and we want to avoid dragging any of the
+    // older shadow-image machinery back into compilation.
     if (config.user.use_custom_normal) {
         out += "layout(set = 2, binding = 1) uniform sampler2D tex_normal;\n";
     }
