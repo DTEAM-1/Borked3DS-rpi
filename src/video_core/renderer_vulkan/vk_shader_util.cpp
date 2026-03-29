@@ -372,7 +372,7 @@ vk::ShaderModule MakeFallbackFragmentModule(vk::Device device) {
     static constexpr std::string_view fallback_source = R"(
 layout(location = 0) out vec4 color;
 void main() {
-    color = vec4(0.0);
+    color = vec4(1.0);
     gl_FragDepth = gl_FragCoord.z;
 }
 )";
