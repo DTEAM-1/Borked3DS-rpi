@@ -222,7 +222,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // Keep depth output valid and emit a harmless color instead of invoking WriteShadow().
         if (profile.is_vulkan) {
             out += "gl_FragDepth = depth;\n";
-            out += "color = vec4(0.0);\n";
+            out += "color = vec4(primary_color.rgb, primary_color.a);\n";
         } else if ((GLAD_GL_ARB_shader_image_load_store || GL_SHADER_IMAGE_ATOMIC)) { //gvx64 - apply guards to executing WriteShadow() only when running gles renderer
             WriteShadow(); //gvx64
         }
@@ -1094,7 +1094,7 @@ void FragmentModule::WriteGas() {
     LOG_CRITICAL(Render, "Unimplemented gas mode");
     if (profile.is_vulkan) {
         out += "gl_FragDepth = depth;\n";
-        out += "color = vec4(0.0); }";
+        out += "color = vec4(1.0); }";
     } else {
         out += "discard; }";
     }
