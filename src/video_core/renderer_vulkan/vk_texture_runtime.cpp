@@ -88,9 +88,44 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
-[[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat /*pixel_format*/,
-                                                             vk::ImageAspectFlags /*aspect*/) {
-    return MakeIdentityComponentMapping();
+[[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat pixel_format,
+                                                             vk::ImageAspectFlags aspect) {
+    if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
+        return MakeIdentityComponentMapping();
+    }
+
+    switch (pixel_format) {
+    case VideoCore::PixelFormat::IA8:
+        return vk::ComponentMapping{
+            .r = vk::ComponentSwizzle::eR,
+            .g = vk::ComponentSwizzle::eR,
+            .b = vk::ComponentSwizzle::eR,
+            .a = vk::ComponentSwizzle::eG,
+        };
+    case VideoCore::PixelFormat::I8:
+        return vk::ComponentMapping{
+            .r = vk::ComponentSwizzle::eR,
+            .g = vk::ComponentSwizzle::eR,
+            .b = vk::ComponentSwizzle::eR,
+            .a = vk::ComponentSwizzle::eOne,
+        };
+    case VideoCore::PixelFormat::A8:
+        return vk::ComponentMapping{
+            .r = vk::ComponentSwizzle::eOne,
+            .g = vk::ComponentSwizzle::eOne,
+            .b = vk::ComponentSwizzle::eOne,
+            .a = vk::ComponentSwizzle::eR,
+        };
+    case VideoCore::PixelFormat::RG8:
+        return vk::ComponentMapping{
+            .r = vk::ComponentSwizzle::eR,
+            .g = vk::ComponentSwizzle::eG,
+            .b = vk::ComponentSwizzle::eZero,
+            .a = vk::ComponentSwizzle::eOne,
+        };
+    default:
+        return MakeIdentityComponentMapping();
+    }
 }
 
 u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
@@ -186,7 +221,10 @@ Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, T
         .mipLevels = levels,
         .arrayLayers = layers,
         .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
         .usage = usage,
+        .sharingMode = vk::SharingMode::eExclusive,
+        .initialLayout = vk::ImageLayout::eUndefined,
     };
 
     // Get memory requirements using Vulkan-Hpp
