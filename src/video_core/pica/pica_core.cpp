@@ -97,7 +97,9 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
     if (ignore_list) {
         LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList ignored list={:#010X}", list);
-        signal_interrupt(Service::GSP::InterruptId::P3D);
+        if (signal_interrupt) {
+            signal_interrupt(Service::GSP::InterruptId::P3D);
+        }
         return;
     }
     // Initialize command list tracking.
@@ -111,6 +113,13 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         }
 
         // Read the header and the value to write.
+        if (cmd_list.current_index + 1 >= cmd_list.length) {
+            LOG_ERROR(HW_GPU,
+                      "PicaCore::ProcessCmdList truncated command stream at list={:#010X}, index={}, length={}",
+                      list, cmd_list.current_index, cmd_list.length);
+            break;
+        }
+
         const u32 value = cmd_list.head[cmd_list.current_index++];
         const CommandHeader header{cmd_list.head[cmd_list.current_index++]};
 
@@ -124,6 +133,14 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
         // Write any extra paramters as well.
         for (u32 i = 0; i < header.extra_data_length; ++i) {
+            if (cmd_list.current_index >= cmd_list.length) {
+                LOG_ERROR(HW_GPU,
+                          "PicaCore::ProcessCmdList truncated extra data at list={:#010X}, cmd=0x{:03X}, extra_index={}, length={}",
+                          list, header.cmd_id.Value(), i, cmd_list.length);
+                cmd_list.current_index = cmd_list.length;
+                break;
+            }
+
             const u32 cmd = header.cmd_id + (header.group_commands ? i + 1 : 0);
             const u32 extra_value = cmd_list.head[cmd_list.current_index++];
             LOG_DEBUG(HW_GPU,
@@ -171,7 +188,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     switch (id) {
     // Trigger IRQ
     case PICA_REG_INDEX(trigger_irq):
-        signal_interrupt(Service::GSP::InterruptId::P3D);
+        if (signal_interrupt) {
+            signal_interrupt(Service::GSP::InterruptId::P3D);
+        }
         break;
 
     case PICA_REG_INDEX(pipeline.triangle_topology):
@@ -445,7 +464,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     }
 
     // Notify the rasterizer an internal register was updated.
-    rasterizer->NotifyPicaRegisterChanged(id);
+    if (rasterizer) {
+        rasterizer->NotifyPicaRegisterChanged(id);
+    }
 }
 
 void PicaCore::SubmitImmediate(u32 value) {
@@ -516,6 +537,11 @@ void PicaCore::DrawImmediate() {
     geometry_pipeline.SubmitVertex(output);
 
     // Flush the immediate triangle.
+    if (!rasterizer) {
+        LOG_ERROR(HW_GPU, "PicaCore::DrawImmediate called without a bound rasterizer");
+        immediate.current_attribute = 0;
+        return;
+    }
     rasterizer->DrawTriangles();
     immediate.current_attribute = 0;
 }
@@ -578,6 +604,10 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     // Draw emitted triangles.
     LOG_DEBUG(HW_GPU, "PicaCore::DrawArrays calling rasterizer->DrawTriangles()");
+    if (!rasterizer) {
+        LOG_ERROR(HW_GPU, "PicaCore::DrawArrays called without a bound rasterizer");
+        return;
+    }
     rasterizer->DrawTriangles();
 }
 
