@@ -560,14 +560,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     }
 
     vertex_batch.clear();
-
-    // Pi5 V3DV stability: force submit + wait
-    try {
-        scheduler.Submit();
-        scheduler.WaitIdle();
-    } catch (...) {
-        LOG_ERROR(Render_Vulkan, "Submit/Wait failed on Pi5");
-    }
     return succeeded;
 }
 
