@@ -313,8 +313,15 @@ vk::UniqueInstance CreateInstance(const Common::DynamicLibrary& library,
     };
 
     boost::container::static_vector<const char*, 2> layers;
+
+    // Pi 5 / Trixie / V3DV compatibility:
+    // preserve the normal CreateInstance() flow, but suppress
+    // VK_LAYER_KHRONOS_validation at instance creation on this platform path.
+    // The application-side validation layer was still being enabled "By the Application"
+    // and correlated with very early failure on Pi 5 / V3DV.
     if (enable_validation) {
-        layers.push_back("VK_LAYER_KHRONOS_validation");
+        LOG_WARNING(Render_Vulkan,
+                    "Pi5/V3DV compatibility: suppressing VK_LAYER_KHRONOS_validation at instance creation");
     }
     if (dump_command_buffers) {
         layers.push_back("VK_LAYER_LUNARG_api_dump");
