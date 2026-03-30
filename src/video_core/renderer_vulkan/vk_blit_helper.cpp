@@ -143,6 +143,23 @@ inline constexpr vk::SamplerCreateInfo SAMPLER_CREATE_INFO{
     .unnormalizedCoordinates = VK_FALSE,
 };
 
+// Pi 5 / Trixie / V3DV compatibility:
+// Vulkan stencil export is not supported on V3DV. Use a depth-only replacement for the
+// internal depth-stencil blit fragment shader so we stop compiling the path that writes
+// gl_FragStencilRefARB and triggers SPV_EXT_shader_stencil_export.
+constexpr std::string_view V3DV_DEPTH_ONLY_BLIT_FRAG = R"(
+#version 450 core
+
+layout(binding = 0) uniform sampler2D depth_tex;
+layout(binding = 1) uniform sampler2D unused_stencil_tex;
+
+layout(location = 0) in vec2 texcoord;
+
+void main() {
+    gl_FragDepth = textureLod(depth_tex, texcoord, 0).r;
+}
+)";
+
 constexpr vk::PipelineLayoutCreateInfo PipelineLayoutCreateInfo(
     const vk::DescriptorSetLayout* set_layout, bool compute = false) {
     return vk::PipelineLayoutCreateInfo{
@@ -198,7 +215,9 @@ BlitHelper::BlitHelper(const Instance& instance_, Scheduler& scheduler_,
                                   vk::ShaderStageFlagBits::eCompute, device)},
       depth_to_buffer_comp{Compile(HostShaders::VULKAN_DEPTH_TO_BUFFER_COMP,
                                    vk::ShaderStageFlagBits::eCompute, device)},
-      blit_depth_stencil_frag{Compile(HostShaders::VULKAN_BLIT_DEPTH_STENCIL_FRAG,
+      blit_depth_stencil_frag{Compile(instance.IsShaderStencilExportSupported()
+                                          ? HostShaders::VULKAN_BLIT_DEPTH_STENCIL_FRAG
+                                          : V3DV_DEPTH_ONLY_BLIT_FRAG,
                                       vk::ShaderStageFlagBits::eFragment, device)},
       d24s8_to_rgba8_pipeline{MakeComputePipeline(d24s8_to_rgba8_comp, compute_pipeline_layout)},
       depth_to_buffer_pipeline{
@@ -280,8 +299,8 @@ void BindBlitState(vk::CommandBuffer cmdbuf, vk::PipelineLayout layout,
 bool BlitHelper::BlitDepthStencil(Surface& source, Surface& dest,
                                   const VideoCore::TextureBlit& blit) {
     if (!instance.IsShaderStencilExportSupported()) {
-        LOG_ERROR(Render_Vulkan, "Unable to emulate depth stencil images");
-        return false;
+        LOG_WARNING(Render_Vulkan,
+                    "Pi5/V3DV compatibility: using depth-only depth-stencil blit path; stencil copy is skipped");
     }
 
     const vk::Rect2D dst_render_area = {
@@ -291,7 +310,10 @@ bool BlitHelper::BlitDepthStencil(Surface& source, Surface& dest,
 
     const auto descriptor_set = two_textures_provider.Commit();
     update_queue.AddImageSampler(descriptor_set, 0, 0, source.DepthView(), nearest_sampler);
-    update_queue.AddImageSampler(descriptor_set, 1, 0, source.StencilView(), nearest_sampler);
+    update_queue.AddImageSampler(descriptor_set, 1, 0,
+                                 instance.IsShaderStencilExportSupported() ? source.StencilView()
+                                                                           : source.DepthView(),
+                                 nearest_sampler);
 
     const RenderPass depth_pass = {
         .framebuffer = dest.Framebuffer(),
@@ -515,10 +537,6 @@ vk::Pipeline BlitHelper::MakeComputePipeline(vk::ShaderModule shader, vk::Pipeli
 }
 
 vk::Pipeline BlitHelper::MakeDepthStencilBlitPipeline() {
-    if (!instance.IsShaderStencilExportSupported()) {
-        return VK_NULL_HANDLE;
-    }
-
     const std::array stages = MakeStages(full_screen_vert, blit_depth_stencil_frag);
     const auto renderpass = renderpass_cache.GetRenderpass(VideoCore::PixelFormat::Invalid,
                                                            VideoCore::PixelFormat::D24S8, false);
