@@ -316,9 +316,9 @@ vk::UniqueInstance CreateInstance(const Common::DynamicLibrary& library,
 
     // Pi 5 / Trixie / V3DV compatibility:
     // preserve the normal CreateInstance() flow, but suppress
-    // VK_LAYER_KHRONOS_validation at instance creation on this platform path.
-    // The application-side validation layer was still being enabled "By the Application"
-    // and correlated with very early failure on Pi 5 / V3DV.
+    // VK_LAYER_KHRONOS_validation at instance creation.
+    // This keeps the rest of the backend logic intact while avoiding
+    // application-enabled validation on V3DV.
     if (enable_validation) {
         LOG_WARNING(Render_Vulkan,
                     "Pi5/V3DV compatibility: suppressing VK_LAYER_KHRONOS_validation at instance creation");
