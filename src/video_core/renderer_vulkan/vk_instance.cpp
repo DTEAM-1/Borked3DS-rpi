@@ -140,8 +140,13 @@ Instance::Instance(bool enable_validation, bool dump_command_buffers)
 
 Instance::Instance(Frontend::EmuWindow& window, u32 physical_device_index)
     : library{OpenLibrary(&window)},
+      // Pi 5 / Trixie / V3DV compatibility:
+      // force-disable Vulkan validation layers from the application side.
+      // On this platform the validation layer remains enabled "By the Application"
+      // even when environment variables try to clear VK_INSTANCE_LAYERS, and it
+      // has been causing runtime instability during actual GPU work.
       instance{CreateInstance(*library, window.GetWindowInfo().type,
-                              Settings::values.renderer_debug.GetValue(),
+                              false,
                               Settings::values.dump_command_buffers.GetValue())},
       debug_callback{CreateDebugCallback(*instance, debug_utils_supported)},
       physical_devices{instance->enumeratePhysicalDevices()} {
