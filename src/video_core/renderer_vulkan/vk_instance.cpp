@@ -140,11 +140,8 @@ Instance::Instance(bool enable_validation, bool dump_command_buffers)
 
 Instance::Instance(Frontend::EmuWindow& window, u32 physical_device_index)
     : library{OpenLibrary(&window)},
-      // Pi 5 / Trixie / V3DV compatibility:
-      // disable validation layers through the normal CreateInstance() path while
-      // preserving the usual constructor flow.
       instance{CreateInstance(*library, window.GetWindowInfo().type,
-                              false,
+                              Settings::values.renderer_debug.GetValue(),
                               Settings::values.dump_command_buffers.GetValue())},
       debug_callback{CreateDebugCallback(*instance, debug_utils_supported)},
       physical_devices{instance->enumeratePhysicalDevices()} {
