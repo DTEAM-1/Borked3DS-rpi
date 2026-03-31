@@ -136,6 +136,9 @@ u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
                                                        vk::ImageUsageFlags usage,
                                                        bool is_storage = false,
                                                        bool is_framebuffer = false) {
+    // Conservative Pi 5 / Trixie / V3DV policy inspired by mature Vulkan backends:
+    // sampled textures rest in SHADER_READ_ONLY_OPTIMAL, while storage / framebuffer /
+    // depth-stencil resources keep using GENERAL.
     if (is_storage || is_framebuffer) {
         return vk::ImageLayout::eGeneral;
     }
