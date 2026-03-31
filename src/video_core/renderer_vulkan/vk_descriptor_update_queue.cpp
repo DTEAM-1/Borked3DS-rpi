@@ -54,8 +54,11 @@ void DescriptorUpdateQueue::AddImageSampler(vk::DescriptorSet target, u8 binding
     auto& image_info = descriptor_infos[descriptor_write_end].image_info;
     image_info.sampler = sampler;
     image_info.imageView = image_view;
-    // Keep the descriptor layout aligned with the layout managed by the runtime.
-    image_info.imageLayout = image_layout;
+
+    // Pi 5 / Trixie / V3DV safety:
+    // keep the layout supplied by the caller, but avoid attaching a misleading
+    // layout to a null image view.
+    image_info.imageLayout = image_view ? image_layout : vk::ImageLayout::eUndefined;
 
     descriptor_writes[descriptor_write_end++] = vk::WriteDescriptorSet{
         .dstSet = target,

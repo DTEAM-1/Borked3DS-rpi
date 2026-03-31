@@ -106,7 +106,8 @@ vk::CommandBuffer CommandPool::Commit() {
     return cmd_buffers[index];
 }
 
-constexpr u32 DESCRIPTOR_SET_BATCH = 32;
+// Pi 5 / Trixie / V3DV compatibility:
+constexpr u32 DESCRIPTOR_SET_BATCH = 8;
 
 DescriptorHeap::DescriptorHeap(const Instance& instance, MasterSemaphore* master_semaphore,
                                std::span<const vk::DescriptorSetLayoutBinding> bindings,
