@@ -166,15 +166,35 @@ u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
     return depth_offset;
 }
 
+[[nodiscard]] vk::ImageLayout PreferredSteadyStateLayout(VideoCore::SurfaceType surface_type,
+                                                       vk::ImageAspectFlags aspect,
+                                                       vk::ImageUsageFlags usage,
+                                                       bool is_storage = false,
+                                                       bool is_framebuffer = false) {
+    if (is_storage || is_framebuffer) {
+        return vk::ImageLayout::eGeneral;
+    }
+    if (aspect & (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil)) {
+        return vk::ImageLayout::eGeneral;
+    }
+    if ((usage & vk::ImageUsageFlagBits::eStorage) == vk::ImageUsageFlagBits::eStorage) {
+        return vk::ImageLayout::eGeneral;
+    }
+    if (surface_type != VideoCore::SurfaceType::Texture) {
+        return vk::ImageLayout::eGeneral;
+    }
+    return vk::ImageLayout::eShaderReadOnlyOptimal;
+}
+
 boost::container::small_vector<vk::ImageMemoryBarrier, 3> MakeInitBarriers(
-    vk::ImageAspectFlags aspect, std::span<const vk::Image> images) {
+    vk::ImageAspectFlags aspect, std::span<const vk::Image> images, vk::ImageLayout initial_layout) {
     boost::container::small_vector<vk::ImageMemoryBarrier, 3> barriers;
     for (const vk::Image& image : images) {
         barriers.push_back(vk::ImageMemoryBarrier{
             .srcAccessMask = vk::AccessFlagBits::eNone,
             .dstAccessMask = vk::AccessFlagBits::eNone,
             .oldLayout = vk::ImageLayout::eUndefined,
-            .newLayout = vk::ImageLayout::eGeneral,
+            .newLayout = initial_layout,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = image,
@@ -435,7 +455,7 @@ bool TextureRuntime::ClearTexture(Surface& surface, const VideoCore::TextureClea
             const vk::ImageMemoryBarrier pre_barrier = {
                 .srcAccessMask = params.src_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-                .oldLayout = vk::ImageLayout::eGeneral,
+                .oldLayout = steady_layout,
                 .newLayout = vk::ImageLayout::eTransferDstOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -447,7 +467,7 @@ bool TextureRuntime::ClearTexture(Surface& surface, const VideoCore::TextureClea
                 .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
                 .dstAccessMask = params.src_access,
                 .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-                .newLayout = vk::ImageLayout::eGeneral,
+                .newLayout = steady_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
@@ -573,6 +593,10 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
         .src_image = source.Image(),
         .dst_image = dest.Image(),
     };
+    const vk::ImageLayout source_layout = PreferredSteadyStateLayout(
+        source.type, source.Aspect(), source.traits.usage, source.is_storage, source.is_framebuffer);
+    const vk::ImageLayout dest_layout = PreferredSteadyStateLayout(
+        dest.type, dest.Aspect(), dest.traits.usage, dest.is_storage, dest.is_framebuffer);
 
     boost::container::small_vector<vk::ImageCopy, 2> vk_copies;
     std::ranges::transform(copies, std::back_inserter(vk_copies), [&](const auto& copy) {
@@ -608,7 +632,7 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
             vk::ImageMemoryBarrier{
                 .srcAccessMask = params.src_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                .oldLayout = vk::ImageLayout::eGeneral,
+                .oldLayout = source_layout,
                 .newLayout = new_src_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -618,7 +642,7 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
             vk::ImageMemoryBarrier{
                 .srcAccessMask = params.dst_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-                .oldLayout = vk::ImageLayout::eGeneral,
+                .oldLayout = dest_layout,
                 .newLayout = new_dst_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -631,7 +655,7 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
                 .srcAccessMask = vk::AccessFlagBits::eNone,
                 .dstAccessMask = vk::AccessFlagBits::eNone,
                 .oldLayout = new_src_layout,
-                .newLayout = vk::ImageLayout::eGeneral,
+                .newLayout = source_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
@@ -641,7 +665,7 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
                 .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
                 .dstAccessMask = params.dst_access,
                 .oldLayout = new_dst_layout,
-                .newLayout = vk::ImageLayout::eGeneral,
+                .newLayout = dest_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.dst_image,
@@ -718,7 +742,7 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
             vk::ImageMemoryBarrier{
                 .srcAccessMask = params.src_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                .oldLayout = vk::ImageLayout::eGeneral,
+                .oldLayout = source_layout,
                 .newLayout = vk::ImageLayout::eTransferSrcOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -728,7 +752,7 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
             vk::ImageMemoryBarrier{
                 .srcAccessMask = params.dst_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-                .oldLayout = vk::ImageLayout::eGeneral,
+                .oldLayout = dest_layout,
                 .newLayout = vk::ImageLayout::eTransferDstOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -741,7 +765,7 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
                 .srcAccessMask = vk::AccessFlagBits::eTransferRead,
                 .dstAccessMask = params.src_access,
                 .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-                .newLayout = vk::ImageLayout::eGeneral,
+                .newLayout = source_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
@@ -751,7 +775,7 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
                 .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
                 .dstAccessMask = params.dst_access,
                 .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-                .newLayout = vk::ImageLayout::eGeneral,
+                .newLayout = dest_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.dst_image,
@@ -843,9 +867,12 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
         raw_images.emplace_back(handles[1].image);
     }
 
+    const vk::ImageLayout initial_layout =
+        PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false);
+
     runtime->renderpass_cache.EndRendering();
-    scheduler->Record([raw_images, aspect = traits.aspect](vk::CommandBuffer cmdbuf) {
-        const auto barriers = MakeInitBarriers(aspect, raw_images);
+    scheduler->Record([raw_images, aspect = traits.aspect, initial_layout](vk::CommandBuffer cmdbuf) {
+        const auto barriers = MakeInitBarriers(aspect, raw_images, initial_layout);
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                vk::PipelineStageFlagBits::eTopOfPipe,
                                vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
@@ -887,9 +914,12 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceBase& surface
         raw_images.emplace_back(handles[2].image);
     }
 
+    const vk::ImageLayout initial_layout =
+        PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false);
+
     runtime->renderpass_cache.EndRendering();
-    scheduler->Record([raw_images, aspect = traits.aspect](vk::CommandBuffer cmdbuf) {
-        const auto barriers = MakeInitBarriers(aspect, raw_images);
+    scheduler->Record([raw_images, aspect = traits.aspect, initial_layout](vk::CommandBuffer cmdbuf) {
+        const auto barriers = MakeInitBarriers(aspect, raw_images, initial_layout);
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                vk::PipelineStageFlagBits::eTopOfPipe,
                                vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
@@ -924,9 +954,11 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
         .src_access = AccessFlags(),
         .src_image = Image(0),
     };
+    const vk::ImageLayout steady_layout =
+        PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage, is_framebuffer);
 
     scheduler->Record([buffer = runtime->upload_buffer.Handle(), format = traits.native, params,
-                       staging, upload](vk::CommandBuffer cmdbuf) {
+                       steady_layout, staging, upload](vk::CommandBuffer cmdbuf) {
         boost::container::static_vector<vk::BufferImageCopy, 2> buffer_image_copies;
 
         const auto rect = upload.texture_rect;
@@ -1018,8 +1050,11 @@ void Surface::UploadCustom(const VideoCore::Material* material, u32 level) {
         std::memcpy(data, texture->data.data(), custom_size);
         runtime->upload_buffer.Commit(custom_size);
 
+        const vk::ImageLayout steady_layout =
+            PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage, is_framebuffer);
+
         scheduler->Record([buffer = runtime->upload_buffer.Handle(), level, params, rect,
-                           offset = offset](vk::CommandBuffer cmdbuf) {
+                           steady_layout, offset = offset](vk::CommandBuffer cmdbuf) {
             const vk::BufferImageCopy buffer_image_copy = {
                 .bufferOffset = offset,
                 .bufferRowLength = 0,
@@ -1048,7 +1083,7 @@ void Surface::UploadCustom(const VideoCore::Material* material, u32 level) {
                 .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
                 .dstAccessMask = params.src_access,
                 .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-                .newLayout = vk::ImageLayout::eGeneral,
+                .newLayout = copy_steady_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
@@ -1108,9 +1143,11 @@ void Surface::Download(const VideoCore::BufferTextureCopy& download,
         .src_access = AccessFlags(),
         .src_image = Image(0),
     };
+    const vk::ImageLayout steady_layout =
+        PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage, is_framebuffer);
 
     scheduler->Record(
-        [buffer = runtime->download_buffer.Handle(), params, download](vk::CommandBuffer cmdbuf) {
+        [buffer = runtime->download_buffer.Handle(), params, steady_layout, download](vk::CommandBuffer cmdbuf) {
             const auto rect = download.texture_rect;
             const vk::BufferImageCopy buffer_image_copy = {
                 .bufferOffset = download.buffer_offset,
@@ -1184,10 +1221,13 @@ void Surface::ScaleUp(u32 new_scale) {
         MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
                    traits.native, pixel_format, traits.usage, flags, traits.aspect, false, DebugName(true));
 
+    const vk::ImageLayout initial_layout =
+        PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false);
+
     runtime->renderpass_cache.EndRendering();
     scheduler->Record(
-        [raw_images = std::array{Image()}, aspect = traits.aspect](vk::CommandBuffer cmdbuf) {
-            const auto barriers = MakeInitBarriers(aspect, raw_images);
+        [raw_images = std::array{Image()}, aspect = traits.aspect, initial_layout](vk::CommandBuffer cmdbuf) {
+            const auto barriers = MakeInitBarriers(aspect, raw_images, initial_layout);
             cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                    vk::PipelineStageFlagBits::eTopOfPipe,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
@@ -1271,8 +1311,13 @@ vk::ImageView Surface::CopyImageView() noexcept {
         .src_image = Image(),
         .dst_image = copy_handle.image,
     };
+    const vk::ImageLayout source_layout =
+        PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage, is_framebuffer);
+    const vk::ImageLayout copy_steady_layout =
+        PreferredSteadyStateLayout(type, params.aspect, traits.usage, false, false);
 
-    scheduler->Record([params, copy_layout, levels = this->levels, width = GetScaledWidth(),
+    scheduler->Record([params, copy_layout, source_layout, copy_steady_layout,
+                       levels = this->levels, width = GetScaledWidth(),
                        height = GetScaledHeight()](vk::CommandBuffer cmdbuf) {
         std::array pre_barriers = {
             vk::ImageMemoryBarrier{
@@ -1465,7 +1510,12 @@ void Surface::BlitScale(const VideoCore::TextureBlit& blit, bool up_scale) {
         return;
     }
 
-    scheduler->Record([src_image = Image(!up_scale), aspect = Aspect(),
+    const vk::ImageLayout source_layout =
+        PreferredSteadyStateLayout(type, Aspect(), traits.usage, is_storage, is_framebuffer);
+    const vk::ImageLayout dest_layout =
+        PreferredSteadyStateLayout(type, Aspect(), traits.usage, false, false);
+
+    scheduler->Record([src_image = Image(!up_scale), aspect = Aspect(), source_layout, dest_layout,
                        filter = MakeFilter(pixel_format), dst_image = Image(up_scale),
                        blit](vk::CommandBuffer render_cmdbuf) {
         const std::array source_offsets = {
