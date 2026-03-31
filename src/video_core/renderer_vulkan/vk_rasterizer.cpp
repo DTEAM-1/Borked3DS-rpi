@@ -121,26 +121,15 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
     Sampler& null_sampler = res_cache.GetSampler(VideoCore::NULL_SAMPLER_ID);
 
     // Prepare texture and utility descriptor sets.
-    // Binding 0 can be used as an array binding for cube/shadow-cube paths.
-    // Pre-initialize all array elements so Set 1 / Binding 0 / Index 1..5 are
-    // never left undefined on V3DV.
-    for (u32 face = 0; face < 6; face++) {
-        update_queue.AddImageSampler(texture_set, 0, static_cast<u8>(face),
-                                     null_surface.ImageView(), null_sampler.Handle(),
-                                     vk::ImageLayout::eShaderReadOnlyOptimal);
-    }
-    for (u32 i = 1; i < 3; i++) {
+    for (u32 i = 0; i < 3; i++) {
         update_queue.AddImageSampler(texture_set, i, 0, null_surface.ImageView(),
-                                     null_sampler.Handle(),
-                                     vk::ImageLayout::eShaderReadOnlyOptimal);
+                                     null_sampler.Handle());
     }
 
     const auto utility_set = pipeline_cache.Acquire(DescriptorHeapType::Utility);
-    update_queue.AddStorageImage(utility_set, 0, null_surface.StorageView(),
-                                 vk::ImageLayout::eGeneral);
+    update_queue.AddStorageImage(utility_set, 0, null_surface.StorageView());
     update_queue.AddImageSampler(utility_set, 1, 0, null_surface.ImageView(),
-                                 null_sampler.Handle(),
-                                 vk::ImageLayout::eShaderReadOnlyOptimal);
+                                 null_sampler.Handle());
     update_queue.Flush();
 
     SyncEntireState();
@@ -536,10 +525,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncAndUploadLUTsLF();
     UploadUniforms(accelerate);
 
-    // Pi 5 / V3DV descriptor safety:
-    // commit pending descriptor writes before binding/drawing.
-    update_queue.Flush();
-
     // Begin rendering
     const auto draw_rect = fb_helper.DrawRect();
     renderpass_cache.BeginRendering(framebuffer, draw_rect);
@@ -587,19 +572,6 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
     const auto texture_set = pipeline_cache.Acquire(use_cube_heap ? DescriptorHeapType::Texture
                                                                   : DescriptorHeapType::Texture);
 
-    // Binding 0 may be interpreted as an array binding by cube/shadow-cube
-    // pipelines. Always initialize the full array first so later non-cube draws
-    // cannot inherit partially-written descriptors.
-    {
-        const Surface& null_surface = res_cache.GetSurface(VideoCore::NULL_SURFACE_ID);
-        const Sampler& null_sampler = res_cache.GetSampler(VideoCore::NULL_SAMPLER_ID);
-        for (u32 face = 0; face < 6; face++) {
-            update_queue.AddImageSampler(texture_set, 0, static_cast<u8>(face),
-                                         null_surface.ImageView(), null_sampler.Handle(),
-                                         vk::ImageLayout::eShaderReadOnlyOptimal);
-        }
-    }
-
     for (u32 texture_index = 0; texture_index < pica_textures.size(); ++texture_index) {
         const auto& texture = pica_textures[texture_index];
 
@@ -608,8 +580,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
             const Surface& null_surface = res_cache.GetSurface(VideoCore::NULL_SURFACE_ID);
             const Sampler& null_sampler = res_cache.GetSampler(VideoCore::NULL_SAMPLER_ID);
             update_queue.AddImageSampler(texture_set, texture_index, 0, null_surface.ImageView(),
-                                         null_sampler.Handle(),
-                                         vk::ImageLayout::eShaderReadOnlyOptimal);
+                                         null_sampler.Handle());
             continue;
         }
 
@@ -621,8 +592,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
                 Sampler& sampler = res_cache.GetSampler(texture.config);
                 surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
                 update_queue.AddImageSampler(texture_set, texture_index, 0, surface.ImageView(),
-                                             sampler.Handle(),
-                                             vk::ImageLayout::eShaderReadOnlyOptimal);
+                                             sampler.Handle());
                 continue;
             }
             case TextureType::ShadowCube: {
@@ -645,8 +615,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         const bool is_feedback_loop = color_view == surface.ImageView();
         const vk::ImageView texture_view =
             is_feedback_loop ? surface.CopyImageView() : surface.ImageView();
-        update_queue.AddImageSampler(texture_set, texture_index, 0, texture_view, sampler.Handle(),
-                                     vk::ImageLayout::eShaderReadOnlyOptimal);
+        update_queue.AddImageSampler(texture_set, texture_index, 0, texture_view, sampler.Handle());
     }
 }
 
@@ -657,8 +626,7 @@ void RasterizerVulkan::SyncUtilityTextures(const Framebuffer* framebuffer) {
     }
 
     const auto utility_set = pipeline_cache.Acquire(DescriptorHeapType::Utility);
-    update_queue.AddStorageImage(utility_set, 0, framebuffer->ImageView(SurfaceType::Color),
-                                 vk::ImageLayout::eGeneral);
+    update_queue.AddStorageImage(utility_set, 0, framebuffer->ImageView(SurfaceType::Color));
 }
 
 void RasterizerVulkan::BindShadowCube(const Pica::TexturingRegs::FullTextureConfig& texture,
@@ -680,8 +648,7 @@ void RasterizerVulkan::BindShadowCube(const Pica::TexturingRegs::FullTextureConf
         Surface& surface = res_cache.GetSurface(surface_id);
         surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
         update_queue.AddImageSampler(texture_set, 0, binding, surface.ImageView(),
-                                     sampler.Handle(),
-                                     vk::ImageLayout::eShaderReadOnlyOptimal);
+                                     sampler.Handle());
     }
 }
 
@@ -702,8 +669,7 @@ void RasterizerVulkan::BindTextureCube(const Pica::TexturingRegs::FullTextureCon
 
     Surface& surface = res_cache.GetTextureCube(config);
     Sampler& sampler = res_cache.GetSampler(texture.config);
-    update_queue.AddImageSampler(texture_set, 0, 0, surface.ImageView(), sampler.Handle(),
-                                 vk::ImageLayout::eShaderReadOnlyOptimal);
+    update_queue.AddImageSampler(texture_set, 0, 0, surface.ImageView(), sampler.Handle());
 }
 
 void RasterizerVulkan::NotifyFixedFunctionPicaRegisterChanged(u32 id) {
