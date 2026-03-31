@@ -88,9 +88,44 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
-[[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat /*pixel_format*/,
-                                                             vk::ImageAspectFlags /*aspect*/) {
-    return MakeIdentityComponentMapping();
+[[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat pixel_format,
+                                                             vk::ImageAspectFlags aspect) {
+    if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
+        return MakeIdentityComponentMapping();
+    }
+
+    switch (pixel_format) {
+    case VideoCore::PixelFormat::IA8:
+        return vk::ComponentMapping{
+            .r = vk::ComponentSwizzle::eR,
+            .g = vk::ComponentSwizzle::eR,
+            .b = vk::ComponentSwizzle::eR,
+            .a = vk::ComponentSwizzle::eG,
+        };
+    case VideoCore::PixelFormat::I8:
+        return vk::ComponentMapping{
+            .r = vk::ComponentSwizzle::eR,
+            .g = vk::ComponentSwizzle::eR,
+            .b = vk::ComponentSwizzle::eR,
+            .a = vk::ComponentSwizzle::eOne,
+        };
+    case VideoCore::PixelFormat::A8:
+        return vk::ComponentMapping{
+            .r = vk::ComponentSwizzle::eOne,
+            .g = vk::ComponentSwizzle::eOne,
+            .b = vk::ComponentSwizzle::eOne,
+            .a = vk::ComponentSwizzle::eR,
+        };
+    case VideoCore::PixelFormat::RG8:
+        return vk::ComponentMapping{
+            .r = vk::ComponentSwizzle::eR,
+            .g = vk::ComponentSwizzle::eG,
+            .b = vk::ComponentSwizzle::eZero,
+            .a = vk::ComponentSwizzle::eOne,
+        };
+    default:
+        return MakeIdentityComponentMapping();
+    }
 }
 
 u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
@@ -136,9 +171,6 @@ u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
                                                        vk::ImageUsageFlags usage,
                                                        bool is_storage = false,
                                                        bool is_framebuffer = false) {
-    // Conservative Pi 5 / Trixie / V3DV policy inspired by mature Vulkan backends:
-    // sampled textures rest in SHADER_READ_ONLY_OPTIMAL, while storage / framebuffer /
-    // depth-stencil resources keep using GENERAL.
     if (is_storage || is_framebuffer) {
         return vk::ImageLayout::eGeneral;
     }
@@ -209,7 +241,10 @@ Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, T
         .mipLevels = levels,
         .arrayLayers = layers,
         .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
         .usage = usage,
+        .sharingMode = vk::SharingMode::eExclusive,
+        .initialLayout = vk::ImageLayout::eUndefined,
     };
 
     // Get memory requirements using Vulkan-Hpp
@@ -558,10 +593,6 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
         .src_image = source.Image(),
         .dst_image = dest.Image(),
     };
-    const vk::ImageLayout source_layout = PreferredSteadyStateLayout(
-        source.type, source.Aspect(), source.traits.usage, source.is_storage, source.is_framebuffer);
-    const vk::ImageLayout dest_layout = PreferredSteadyStateLayout(
-        dest.type, dest.Aspect(), dest.traits.usage, dest.is_storage, dest.is_framebuffer);
 
     boost::container::small_vector<vk::ImageCopy, 2> vk_copies;
     std::ranges::transform(copies, std::back_inserter(vk_copies), [&](const auto& copy) {
@@ -586,7 +617,13 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
         };
     });
 
-    scheduler.Record([params, source_layout, dest_layout, copies = std::move(vk_copies)](vk::CommandBuffer cmdbuf) {
+    scheduler.Record(
+        [params, copies = std::move(vk_copies),
+         source_layout = PreferredSteadyStateLayout(source.type, source.Aspect(), source.traits.usage,
+                                                    source.is_storage, source.is_framebuffer),
+         dest_layout = PreferredSteadyStateLayout(dest.type, dest.Aspect(), dest.traits.usage,
+                                                  dest.is_storage, dest.is_framebuffer)](
+            vk::CommandBuffer cmdbuf) {
         const bool self_copy = params.src_image == params.dst_image;
         const vk::ImageLayout new_src_layout =
             self_copy ? vk::ImageLayout::eGeneral : vk::ImageLayout::eTransferSrcOptimal;
@@ -670,12 +707,14 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
         .src_image = source.Image(),
         .dst_image = dest.Image(),
     };
-    const vk::ImageLayout source_layout = PreferredSteadyStateLayout(
-        source.type, source.Aspect(), source.traits.usage, source.is_storage, source.is_framebuffer);
-    const vk::ImageLayout dest_layout = PreferredSteadyStateLayout(
-        dest.type, dest.Aspect(), dest.traits.usage, dest.is_storage, dest.is_framebuffer);
 
-    scheduler.Record([params, source_layout, dest_layout, blit](vk::CommandBuffer cmdbuf) {
+    scheduler.Record(
+        [params, blit,
+         source_layout = PreferredSteadyStateLayout(source.type, source.Aspect(), source.traits.usage,
+                                                    source.is_storage, source.is_framebuffer),
+         dest_layout = PreferredSteadyStateLayout(dest.type, dest.Aspect(), dest.traits.usage,
+                                                  dest.is_storage, dest.is_framebuffer)](
+            vk::CommandBuffer cmdbuf) {
         const std::array source_offsets = {
             vk::Offset3D{static_cast<s32>(blit.src_rect.left),
                          static_cast<s32>(blit.src_rect.bottom), 0},
@@ -836,16 +875,16 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
         raw_images.emplace_back(handles[1].image);
     }
 
-    const vk::ImageLayout initial_layout =
-        PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false);
-
     runtime->renderpass_cache.EndRendering();
-    scheduler->Record([raw_images, aspect = traits.aspect, initial_layout](vk::CommandBuffer cmdbuf) {
-        const auto barriers = MakeInitBarriers(aspect, raw_images, initial_layout);
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
-                               vk::PipelineStageFlagBits::eTopOfPipe,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
-    });
+    scheduler->Record(
+        [raw_images, aspect = traits.aspect,
+         initial_layout = PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false)](
+            vk::CommandBuffer cmdbuf) {
+            const auto barriers = MakeInitBarriers(aspect, raw_images, initial_layout);
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+                                   vk::PipelineStageFlagBits::eTopOfPipe,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
+        });
 }
 
 Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceBase& surface,
@@ -883,16 +922,16 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceBase& surface
         raw_images.emplace_back(handles[2].image);
     }
 
-    const vk::ImageLayout initial_layout =
-        PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false);
-
     runtime->renderpass_cache.EndRendering();
-    scheduler->Record([raw_images, aspect = traits.aspect, initial_layout](vk::CommandBuffer cmdbuf) {
-        const auto barriers = MakeInitBarriers(aspect, raw_images, initial_layout);
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
-                               vk::PipelineStageFlagBits::eTopOfPipe,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
-    });
+    scheduler->Record(
+        [raw_images, aspect = traits.aspect,
+         initial_layout = PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false)](
+            vk::CommandBuffer cmdbuf) {
+            const auto barriers = MakeInitBarriers(aspect, raw_images, initial_layout);
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+                                   vk::PipelineStageFlagBits::eTopOfPipe,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
+        });
 
     custom_format = mat->format;
     material = mat;
@@ -923,11 +962,11 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
         .src_access = AccessFlags(),
         .src_image = Image(0),
     };
-    const vk::ImageLayout steady_layout =
-        PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage, is_framebuffer);
 
-    scheduler->Record([buffer = runtime->upload_buffer.Handle(), format = traits.native, params,
-                       steady_layout, staging, upload](vk::CommandBuffer cmdbuf) {
+    scheduler->Record(
+        [buffer = runtime->upload_buffer.Handle(), format = traits.native, params, staging, upload,
+         steady_layout = PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage,
+                                                    is_framebuffer)](vk::CommandBuffer cmdbuf) {
         boost::container::static_vector<vk::BufferImageCopy, 2> buffer_image_copies;
 
         const auto rect = upload.texture_rect;
@@ -1019,11 +1058,10 @@ void Surface::UploadCustom(const VideoCore::Material* material, u32 level) {
         std::memcpy(data, texture->data.data(), custom_size);
         runtime->upload_buffer.Commit(custom_size);
 
-        const vk::ImageLayout steady_layout =
-            PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage, is_framebuffer);
-
-        scheduler->Record([buffer = runtime->upload_buffer.Handle(), level, params, rect,
-                           steady_layout, offset = offset](vk::CommandBuffer cmdbuf) {
+        scheduler->Record(
+            [buffer = runtime->upload_buffer.Handle(), level, params, rect, offset = offset,
+             steady_layout = PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage,
+                                                        is_framebuffer)](vk::CommandBuffer cmdbuf) {
             const vk::BufferImageCopy buffer_image_copy = {
                 .bufferOffset = offset,
                 .bufferRowLength = 0,
@@ -1112,11 +1150,11 @@ void Surface::Download(const VideoCore::BufferTextureCopy& download,
         .src_access = AccessFlags(),
         .src_image = Image(0),
     };
-    const vk::ImageLayout steady_layout =
-        PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage, is_framebuffer);
 
     scheduler->Record(
-        [buffer = runtime->download_buffer.Handle(), params, steady_layout, download](vk::CommandBuffer cmdbuf) {
+        [buffer = runtime->download_buffer.Handle(), params, download,
+         steady_layout = PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage,
+                                                    is_framebuffer)](vk::CommandBuffer cmdbuf) {
             const auto rect = download.texture_rect;
             const vk::BufferImageCopy buffer_image_copy = {
                 .bufferOffset = download.buffer_offset,
@@ -1190,12 +1228,11 @@ void Surface::ScaleUp(u32 new_scale) {
         MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
                    traits.native, pixel_format, traits.usage, flags, traits.aspect, false, DebugName(true));
 
-    const vk::ImageLayout initial_layout =
-        PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false);
-
     runtime->renderpass_cache.EndRendering();
     scheduler->Record(
-        [raw_images = std::array{Image()}, aspect = traits.aspect, initial_layout](vk::CommandBuffer cmdbuf) {
+        [raw_images = std::array{Image()}, aspect = traits.aspect,
+         initial_layout = PreferredSteadyStateLayout(type, traits.aspect, traits.usage, false, false)](
+            vk::CommandBuffer cmdbuf) {
             const auto barriers = MakeInitBarriers(aspect, raw_images, initial_layout);
             cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                    vk::PipelineStageFlagBits::eTopOfPipe,
@@ -1280,14 +1317,14 @@ vk::ImageView Surface::CopyImageView() noexcept {
         .src_image = Image(),
         .dst_image = copy_handle.image,
     };
-    const vk::ImageLayout source_layout =
-        PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage, is_framebuffer);
-    const vk::ImageLayout copy_steady_layout =
-        PreferredSteadyStateLayout(type, params.aspect, traits.usage, false, false);
 
-    scheduler->Record([params, copy_layout, source_layout, copy_steady_layout,
-                       levels = this->levels, width = GetScaledWidth(),
-                       height = GetScaledHeight()](vk::CommandBuffer cmdbuf) {
+    scheduler->Record(
+        [params, copy_layout, levels = this->levels, width = GetScaledWidth(),
+         height = GetScaledHeight(),
+         source_layout = PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage,
+                                                    is_framebuffer),
+         copy_steady_layout = PreferredSteadyStateLayout(type, params.aspect, traits.usage, false,
+                                                         false)](vk::CommandBuffer cmdbuf) {
         std::array pre_barriers = {
             vk::ImageMemoryBarrier{
                 .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
@@ -1479,14 +1516,13 @@ void Surface::BlitScale(const VideoCore::TextureBlit& blit, bool up_scale) {
         return;
     }
 
-    const vk::ImageLayout source_layout =
-        PreferredSteadyStateLayout(type, Aspect(), traits.usage, is_storage, is_framebuffer);
-    const vk::ImageLayout dest_layout =
-        PreferredSteadyStateLayout(type, Aspect(), traits.usage, false, false);
-
-    scheduler->Record([src_image = Image(!up_scale), aspect = Aspect(), source_layout, dest_layout,
-                       filter = MakeFilter(pixel_format), dst_image = Image(up_scale),
-                       blit](vk::CommandBuffer render_cmdbuf) {
+    scheduler->Record(
+        [src_image = Image(!up_scale), aspect = Aspect(), filter = MakeFilter(pixel_format),
+         dst_image = Image(up_scale), blit,
+         source_layout = PreferredSteadyStateLayout(type, Aspect(), traits.usage, is_storage,
+                                                    is_framebuffer),
+         dest_layout = PreferredSteadyStateLayout(type, Aspect(), traits.usage, false, false)](
+            vk::CommandBuffer render_cmdbuf) {
         const std::array source_offsets = {
             vk::Offset3D{static_cast<s32>(blit.src_rect.left),
                          static_cast<s32>(blit.src_rect.bottom), 0},
