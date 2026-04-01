@@ -62,7 +62,7 @@ namespace {
     return vk::Format::eR8G8B8A8Unorm;
 }
 
-[[nodiscard]] bool IsTextureInfoValid(const RendererVulkan::TextureInfo& texture) {
+[[nodiscard]] bool IsTextureInfoValid(const TextureInfo& texture) {
     return static_cast<bool>(texture.image) && static_cast<bool>(texture.image_view);
 }
 
@@ -108,12 +108,12 @@ RendererVulkan::~RendererVulkan() {
     for (auto& info : screen_infos) {
         if (info.texture.image_view) {
             device.destroyImageView(info.texture.image_view);
-            info.texture.image_view = {};
+            info.texture.image_view = nullptr;
         }
         if (info.texture.image) {
             vmaDestroyImage(instance.GetAllocator(), info.texture.image, info.texture.allocation);
-            info.texture.image = {};
-            info.texture.allocation = {};
+            info.texture.image = nullptr;
+            info.texture.allocation = nullptr;
         }
     }
 }
@@ -145,7 +145,7 @@ void RendererVulkan::PrepareRendertarget() {
                 if (!ConfigureFramebufferTexture(texture, framebuffer)) {
                     LOG_CRITICAL(Render_Vulkan,
                                  "Failed to configure framebuffer texture at index {}", i);
-                    screen_infos[i].image_view = {};
+                    screen_infos[i].image_view = nullptr;
                     screen_infos[i].texcoords = {0.f, 0.f, 1.f, 1.f};
                     continue;
                 }
@@ -494,13 +494,13 @@ bool RendererVulkan::ConfigureFramebufferTexture(TextureInfo& texture,
         if (texture.image_view) {
             main_window.WaitPresent();
             device.destroyImageView(texture.image_view);
-            texture.image_view = {};
+            texture.image_view = nullptr;
         }
         if (texture.image) {
             main_window.WaitPresent();
             vmaDestroyImage(instance.GetAllocator(), texture.image, texture.allocation);
-            texture.image = {};
-            texture.allocation = {};
+            texture.image = nullptr;
+            texture.allocation = nullptr;
         }
 
         const VideoCore::PixelFormat pixel_format =
