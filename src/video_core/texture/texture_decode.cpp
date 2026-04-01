@@ -22,8 +22,8 @@ constexpr std::size_t ETC1_SUBTILES = 2 * 2;
 
 namespace {
 
-[[nodiscard]] constexpr Common::Vec4<u8> MakeWhiteAlpha(const u8 alpha) {
-    return {255, 255, 255, alpha};
+[[nodiscard]] constexpr Common::Vec4<u8> MakeBlackAlpha(const u8 alpha) {
+    return {0, 0, 0, alpha};
 }
 
 [[nodiscard]] constexpr Common::Vec4<u8> MakeIntensityAlpha(const u8 intensity, const u8 alpha) {
@@ -122,7 +122,6 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
         const u8 intensity = source_ptr[1];
 
         if (disable_alpha) {
-            // Preserve the old debug visualization mode.
             return {intensity, alpha, 0, 255};
         }
         return MakeIntensityAlpha(intensity, alpha);
@@ -146,9 +145,7 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
             return {alpha, alpha, alpha, 255};
         }
 
-        // Vulkan-safe decode path for alpha-only textures:
-        // represent them as white + alpha instead of black + alpha.
-        return MakeWhiteAlpha(alpha);
+        return MakeBlackAlpha(alpha);
     }
 
     case TextureFormat::IA4: {
@@ -158,7 +155,6 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
         const u8 alpha = Common::Color::Convert4To8((*source_ptr) & 0xF);
 
         if (disable_alpha) {
-            // Preserve the old debug visualization mode.
             return {intensity, alpha, 0, 255};
         }
         return MakeIntensityAlpha(intensity, alpha);
@@ -185,9 +181,7 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
             return {alpha, alpha, alpha, 255};
         }
 
-        // Vulkan-safe decode path for alpha-only textures:
-        // represent them as white + alpha instead of black + alpha.
-        return MakeWhiteAlpha(alpha);
+        return MakeBlackAlpha(alpha);
     }
 
     case TextureFormat::ETC1:
@@ -211,8 +205,8 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
             std::memcpy(&packed_alpha, subtile_ptr, sizeof(u64));
             subtile_ptr += sizeof(u64);
 
-            alpha =
-                Common::Color::Convert4To8((packed_alpha >> (4 * (x * subtile_width + y))) & 0xF);
+            alpha = Common::Color::Convert4To8(
+                (packed_alpha >> (4 * (x * subtile_width + y))) & 0xF);
         }
 
         u64_le subtile_data;
