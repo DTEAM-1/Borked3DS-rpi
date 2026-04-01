@@ -297,9 +297,15 @@ void Instance::CreateFormatTable() {
         const vk::Format format = MakeFormat(pixel_format);
         FormatTraits traits = DetermineTraits(pixel_format, format);
 
-        const bool is_suitable =
-            traits.transfer_support && traits.attachment_support &&
-            (traits.blit_support || traits.aspect & vk::ImageAspectFlagBits::eDepth);
+        const bool is_depth_format =
+            static_cast<bool>(traits.aspect & vk::ImageAspectFlagBits::eDepth);
+        const bool is_texture_only =
+            VideoCore::GetFormatType(pixel_format) == VideoCore::SurfaceType::Texture;
+
+        const bool is_suitable = is_texture_only
+                                     ? traits.transfer_support
+                                     : (traits.transfer_support && traits.attachment_support &&
+                                        (traits.blit_support || is_depth_format));
 
         // Fall back if the native format is not suitable.
         if (!is_suitable) {
