@@ -21,8 +21,6 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_format_traits.hpp>
 
-#include <vector>
-
 // Ignore the -Wclass-memaccess warning on memcpy for non-trivially default constructible objects.
 #if defined(__GNUC__) && !defined(__clang__) && !defined(__INTEL_COMPILER)
 #pragma GCC diagnostic push
@@ -90,35 +88,9 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
-[[nodiscard]] constexpr bool NeedsPi5UIFormatExpansion(VideoCore::PixelFormat pixel_format) {
-    switch (pixel_format) {
-    case VideoCore::PixelFormat::A8:
-    case VideoCore::PixelFormat::I8:
-    case VideoCore::PixelFormat::IA8:
-    case VideoCore::PixelFormat::RG8:
-        return true;
-    default:
-        return false;
-    }
-}
-
-[[nodiscard]] vk::Format GetEffectiveImageFormat(VideoCore::PixelFormat pixel_format,
-                                                 vk::Format native_format,
-                                                 vk::ImageAspectFlags aspect) {
-    if ((aspect & vk::ImageAspectFlagBits::eColor) && NeedsPi5UIFormatExpansion(pixel_format)) {
-        return vk::Format::eR8G8B8A8Unorm;
-    }
-    return native_format;
-}
-
 [[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat pixel_format,
-                                                             vk::ImageAspectFlags aspect,
-                                                             vk::Format image_format) {
+                                                             vk::ImageAspectFlags aspect) {
     if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
-        return MakeIdentityComponentMapping();
-    }
-
-    if (image_format == vk::Format::eR8G8B8A8Unorm && NeedsPi5UIFormatExpansion(pixel_format)) {
         return MakeIdentityComponentMapping();
     }
 
@@ -154,94 +126,6 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     default:
         return MakeIdentityComponentMapping();
     }
-}
-
-[[nodiscard]] u32 GetEffectiveBytesPerPixel(VideoCore::PixelFormat pixel_format,
-                                            vk::Format native_format,
-                                            vk::ImageAspectFlags aspect) {
-    const vk::Format effective_format = GetEffectiveImageFormat(pixel_format, native_format, aspect);
-    return vk::blockSize(effective_format);
-}
-
-void ExpandA8ToRGBA8(std::span<u8> dst, std::span<const u8> src) {
-    const size_t pixels = src.size();
-    ASSERT(dst.size() >= pixels * 4);
-
-    for (size_t i = 0, o = 0; i < pixels; ++i, o += 4) {
-        dst[o + 0] = 0xFF;
-        dst[o + 1] = 0xFF;
-        dst[o + 2] = 0xFF;
-        dst[o + 3] = src[i];
-    }
-}
-
-void ExpandI8ToRGBA8(std::span<u8> dst, std::span<const u8> src) {
-    const size_t pixels = src.size();
-    ASSERT(dst.size() >= pixels * 4);
-
-    for (size_t i = 0, o = 0; i < pixels; ++i, o += 4) {
-        dst[o + 0] = src[i];
-        dst[o + 1] = src[i];
-        dst[o + 2] = src[i];
-        dst[o + 3] = 0xFF;
-    }
-}
-
-void ExpandIA8ToRGBA8(std::span<u8> dst, std::span<const u8> src) {
-    ASSERT((src.size() % 2) == 0);
-    const size_t pixels = src.size() / 2;
-    ASSERT(dst.size() >= pixels * 4);
-
-    for (size_t i = 0, o = 0; i < pixels; ++i, o += 4) {
-        const u8 intensity = src[i * 2 + 0];
-        const u8 alpha = src[i * 2 + 1];
-        dst[o + 0] = intensity;
-        dst[o + 1] = intensity;
-        dst[o + 2] = intensity;
-        dst[o + 3] = alpha;
-    }
-}
-
-void ExpandRG8ToRGBA8(std::span<u8> dst, std::span<const u8> src) {
-    ASSERT((src.size() % 2) == 0);
-    const size_t pixels = src.size() / 2;
-    ASSERT(dst.size() >= pixels * 4);
-
-    for (size_t i = 0, o = 0; i < pixels; ++i, o += 4) {
-        dst[o + 0] = src[i * 2 + 0];
-        dst[o + 1] = src[i * 2 + 1];
-        dst[o + 2] = 0x00;
-        dst[o + 3] = 0xFF;
-    }
-}
-
-bool ExpandPi5UIUploadInPlace(VideoCore::PixelFormat pixel_format, const VideoCore::StagingData& staging) {
-    if (staging.mapped.empty()) {
-        return false;
-    }
-
-    std::vector<u8> expanded(staging.mapped.size() * 4, 0);
-
-    switch (pixel_format) {
-    case VideoCore::PixelFormat::A8:
-        ExpandA8ToRGBA8(expanded, staging.mapped);
-        break;
-    case VideoCore::PixelFormat::I8:
-        ExpandI8ToRGBA8(expanded, staging.mapped);
-        break;
-    case VideoCore::PixelFormat::IA8:
-        ExpandIA8ToRGBA8(expanded, staging.mapped);
-        break;
-    case VideoCore::PixelFormat::RG8:
-        ExpandRG8ToRGBA8(expanded, staging.mapped);
-        break;
-    default:
-        return false;
-    }
-
-    ASSERT(expanded.size() == staging.mapped.size());
-    std::memcpy(staging.mapped.data(), expanded.data(), expanded.size());
-    return true;
 }
 
 [[maybe_unused]] u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
@@ -418,7 +302,7 @@ allocation_success:
         .viewType =
             type == TextureType::CubeMap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D,
         .format = format,
-        .components = MakeUIViewComponentMapping(pixel_format, aspect, format),
+        .components = MakeUIViewComponentMapping(pixel_format, aspect),
         .subresourceRange{
             .aspectMask = aspect,
             .baseMipLevel = 0,
@@ -931,8 +815,8 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
         return;
     }
 
-    const vk::Format format = GetEffectiveImageFormat(pixel_format, traits.native, traits.aspect);
-    const bool is_mutable = format == vk::Format::eR8G8B8A8Unorm;
+    const bool is_mutable = pixel_format == VideoCore::PixelFormat::RGBA8;
+    const vk::Format format = traits.native;
 
     ASSERT_MSG(format != vk::Format::eUndefined && levels >= 1,
                "Image allocation parameters are invalid");
@@ -1041,16 +925,7 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
         .src_image = Image(0),
     };
 
-    const vk::Format upload_format = GetEffectiveImageFormat(pixel_format, traits.native, traits.aspect);
-    if (upload_format == vk::Format::eR8G8B8A8Unorm) {
-        [[maybe_unused]] const bool expanded = ExpandPi5UIUploadInPlace(pixel_format, staging);
-        if (expanded) {
-            LOG_DEBUG(Render_Vulkan, "Expanded UI texture upload to RGBA8 for format {}",
-                      VideoCore::PixelFormatAsString(pixel_format));
-        }
-    }
-
-    scheduler->Record([buffer = runtime->upload_buffer.Handle(), format = upload_format, params,
+    scheduler->Record([buffer = runtime->upload_buffer.Handle(), format = traits.native, params,
                        staging, upload](vk::CommandBuffer cmdbuf) {
         boost::container::static_vector<vk::BufferImageCopy, 2> buffer_image_copies;
 
@@ -1295,8 +1170,7 @@ void Surface::ScaleUp(u32 new_scale) {
 
     res_scale = new_scale;
 
-    const vk::Format format = GetEffectiveImageFormat(pixel_format, traits.native, traits.aspect);
-    const bool is_mutable = format == vk::Format::eR8G8B8A8Unorm;
+    const bool is_mutable = pixel_format == VideoCore::PixelFormat::RGBA8;
 
     vk::ImageCreateFlags flags{};
     if (texture_type == VideoCore::TextureType::CubeMap) {
@@ -1307,8 +1181,8 @@ void Surface::ScaleUp(u32 new_scale) {
     }
 
     handles[1] =
-        MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type, format,
-                   pixel_format, traits.usage, flags, traits.aspect, false, DebugName(true));
+        MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
+                   traits.native, pixel_format, traits.usage, flags, traits.aspect, false, DebugName(true));
 
     runtime->renderpass_cache.EndRendering();
     scheduler->Record(
@@ -1337,7 +1211,7 @@ u32 Surface::GetInternalBytesPerPixel() const {
         return 5;
     }
 
-    return GetEffectiveBytesPerPixel(pixel_format, traits.native, traits.aspect);
+    return vk::blockSize(traits.native);
 }
 
 vk::AccessFlags Surface::AccessFlags() const noexcept {
@@ -1384,8 +1258,7 @@ vk::ImageView Surface::CopyImageView() noexcept {
         }
         copy_handle =
             MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
-                       GetEffectiveImageFormat(pixel_format, traits.native, traits.aspect),
-                       pixel_format, traits.usage, flags, traits.aspect, false);
+                       traits.native, pixel_format, traits.usage, flags, traits.aspect, false);
         copy_layout = vk::ImageLayout::eUndefined;
     }
 
