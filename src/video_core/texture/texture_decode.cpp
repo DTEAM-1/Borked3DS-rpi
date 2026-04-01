@@ -20,6 +20,18 @@ namespace Pica::Texture {
 constexpr std::size_t TILE_SIZE = 8 * 8;
 constexpr std::size_t ETC1_SUBTILES = 2 * 2;
 
+namespace {
+
+[[nodiscard]] constexpr Common::Vec4<u8> MakeWhiteAlpha(const u8 alpha) {
+    return {255, 255, 255, alpha};
+}
+
+[[nodiscard]] constexpr Common::Vec4<u8> MakeIntensityAlpha(const u8 intensity, const u8 alpha) {
+    return {intensity, intensity, intensity, alpha};
+}
+
+} // namespace
+
 size_t CalculateTileSize(TextureFormat format) {
     switch (format) {
     case TextureFormat::RGBA8:
@@ -106,13 +118,14 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
 
     case TextureFormat::IA8: {
         const u8* source_ptr = source + MortonInterleave(x, y) * 2;
+        const u8 alpha = source_ptr[0];
+        const u8 intensity = source_ptr[1];
 
         if (disable_alpha) {
-            // Show intensity as red, alpha as green
-            return {source_ptr[1], source_ptr[0], 0, 255};
-        } else {
-            return {source_ptr[1], source_ptr[1], source_ptr[1], source_ptr[0]};
+            // Preserve the old debug visualization mode.
+            return {intensity, alpha, 0, 255};
         }
+        return MakeIntensityAlpha(intensity, alpha);
     }
 
     case TextureFormat::RG8: {
@@ -122,67 +135,71 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
 
     case TextureFormat::I8: {
         const u8* source_ptr = source + MortonInterleave(x, y);
-        return {*source_ptr, *source_ptr, *source_ptr, 255};
+        return MakeIntensityAlpha(*source_ptr, 255);
     }
 
     case TextureFormat::A8: {
         const u8* source_ptr = source + MortonInterleave(x, y);
+        const u8 alpha = *source_ptr;
 
         if (disable_alpha) {
-            return {*source_ptr, *source_ptr, *source_ptr, 255};
-        } else {
-            return {0, 0, 0, *source_ptr};
+            return {alpha, alpha, alpha, 255};
         }
+
+        // Vulkan-safe decode path for alpha-only textures:
+        // represent them as white + alpha instead of black + alpha.
+        return MakeWhiteAlpha(alpha);
     }
 
     case TextureFormat::IA4: {
         const u8* source_ptr = source + MortonInterleave(x, y);
 
-        u8 i = Common::Color::Convert4To8(((*source_ptr) & 0xF0) >> 4);
-        u8 a = Common::Color::Convert4To8((*source_ptr) & 0xF);
+        const u8 intensity = Common::Color::Convert4To8(((*source_ptr) & 0xF0) >> 4);
+        const u8 alpha = Common::Color::Convert4To8((*source_ptr) & 0xF);
 
         if (disable_alpha) {
-            // Show intensity as red, alpha as green
-            return {i, a, 0, 255};
-        } else {
-            return {i, i, i, a};
+            // Preserve the old debug visualization mode.
+            return {intensity, alpha, 0, 255};
         }
+        return MakeIntensityAlpha(intensity, alpha);
     }
 
     case TextureFormat::I4: {
-        u32 morton_offset = MortonInterleave(x, y);
+        const u32 morton_offset = MortonInterleave(x, y);
         const u8* source_ptr = source + morton_offset / 2;
 
-        u8 i = (morton_offset % 2) ? ((*source_ptr & 0xF0) >> 4) : (*source_ptr & 0xF);
-        i = Common::Color::Convert4To8(i);
+        u8 intensity = (morton_offset % 2) ? ((*source_ptr & 0xF0) >> 4) : (*source_ptr & 0xF);
+        intensity = Common::Color::Convert4To8(intensity);
 
-        return {i, i, i, 255};
+        return MakeIntensityAlpha(intensity, 255);
     }
 
     case TextureFormat::A4: {
-        u32 morton_offset = MortonInterleave(x, y);
+        const u32 morton_offset = MortonInterleave(x, y);
         const u8* source_ptr = source + morton_offset / 2;
 
-        u8 a = (morton_offset % 2) ? ((*source_ptr & 0xF0) >> 4) : (*source_ptr & 0xF);
-        a = Common::Color::Convert4To8(a);
+        u8 alpha = (morton_offset % 2) ? ((*source_ptr & 0xF0) >> 4) : (*source_ptr & 0xF);
+        alpha = Common::Color::Convert4To8(alpha);
 
         if (disable_alpha) {
-            return {a, a, a, 255};
-        } else {
-            return {0, 0, 0, a};
+            return {alpha, alpha, alpha, 255};
         }
+
+        // Vulkan-safe decode path for alpha-only textures:
+        // represent them as white + alpha instead of black + alpha.
+        return MakeWhiteAlpha(alpha);
     }
 
     case TextureFormat::ETC1:
     case TextureFormat::ETC1A4: {
-        bool has_alpha = (info.format == TextureFormat::ETC1A4);
-        std::size_t subtile_size = has_alpha ? 16 : 8;
+        const bool has_alpha = (info.format == TextureFormat::ETC1A4);
+        const std::size_t subtile_size = has_alpha ? 16 : 8;
 
         // ETC1 further subdivides each 8x8 tile into four 4x4 subtiles
         constexpr unsigned int subtile_width = 4;
         constexpr unsigned int subtile_height = 4;
 
-        unsigned int subtile_index = (x / subtile_width) + 2 * (y / subtile_height);
+        const unsigned int subtile_index = (x / subtile_width) + 2 * (y / subtile_height);
         x %= subtile_width;
         y %= subtile_height;
 
@@ -202,11 +219,11 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
         std::memcpy(&subtile_data, subtile_ptr, sizeof(u64));
 
         return Common::MakeVec(SampleETC1Subtile(subtile_data, x, y),
-                               disable_alpha ? (u8)255 : alpha);
+                               disable_alpha ? static_cast<u8>(255) : alpha);
     }
 
     default:
-        LOG_ERROR(HW_GPU, "Unknown texture format: {:x}", (u32)info.format);
+        LOG_ERROR(HW_GPU, "Unknown texture format: {:x}", static_cast<u32>(info.format));
         DEBUG_ASSERT(false);
         return {};
     }
