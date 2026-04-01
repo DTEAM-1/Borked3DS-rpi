@@ -88,8 +88,42 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
+[[nodiscard]] constexpr bool NeedsPi5UIUploadExpansion(VideoCore::PixelFormat pixel_format) {
+    switch (pixel_format) {
+    case VideoCore::PixelFormat::A8:
+    case VideoCore::PixelFormat::I8:
+    case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::RG8:
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] constexpr u32 SourceBytesPerPixel(VideoCore::PixelFormat pixel_format) {
+    switch (pixel_format) {
+    case VideoCore::PixelFormat::A8:
+    case VideoCore::PixelFormat::I8:
+        return 1;
+    case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::RG8:
+        return 2;
+    default:
+        return 0;
+    }
+}
+
+[[nodiscard]] constexpr vk::Format GetEffectiveTextureFormat(VideoCore::PixelFormat pixel_format,
+                                                            vk::Format native_format) {
+    return NeedsPi5UIUploadExpansion(pixel_format) ? vk::Format::eR8G8B8A8Unorm : native_format;
+}
+
 [[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat pixel_format,
-                                                             vk::ImageAspectFlags aspect) {
+                                                             vk::ImageAspectFlags aspect,
+                                                             vk::Format format) {
+    if (NeedsPi5UIUploadExpansion(pixel_format) && format == vk::Format::eR8G8B8A8Unorm) {
+        return MakeIdentityComponentMapping();
+    }
     if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
         return MakeIdentityComponentMapping();
     }
@@ -125,6 +159,62 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
         };
     default:
         return MakeIdentityComponentMapping();
+    }
+}
+
+bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
+                         VideoCore::PixelFormat pixel_format) {
+    switch (pixel_format) {
+    case VideoCore::PixelFormat::A8: {
+        if (dst.size() != src.size() * 4) {
+            return false;
+        }
+        for (size_t i = 0, o = 0; i < src.size(); ++i, o += 4) {
+            const u8 alpha = src[i];
+            dst[o + 0] = 0xFF;
+            dst[o + 1] = 0xFF;
+            dst[o + 2] = 0xFF;
+            dst[o + 3] = alpha;
+        }
+        return true;
+    }
+    case VideoCore::PixelFormat::I8: {
+        if (dst.size() != src.size() * 4) {
+            return false;
+        }
+        for (size_t i = 0, o = 0; i < src.size(); ++i, o += 4) {
+            const u8 intensity = src[i];
+            dst[o + 0] = intensity;
+            dst[o + 1] = intensity;
+            dst[o + 2] = intensity;
+            dst[o + 3] = 0xFF;
+        }
+        return true;
+    }
+    case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::RG8: {
+        if ((src.size() % 2) != 0 || dst.size() != (src.size() / 2) * 4) {
+            return false;
+        }
+        for (size_t i = 0, o = 0; i < src.size(); i += 2, o += 4) {
+            if (pixel_format == VideoCore::PixelFormat::IA8) {
+                const u8 intensity = src[i + 0];
+                const u8 alpha = src[i + 1];
+                dst[o + 0] = intensity;
+                dst[o + 1] = intensity;
+                dst[o + 2] = intensity;
+                dst[o + 3] = alpha;
+            } else {
+                dst[o + 0] = src[i + 0];
+                dst[o + 1] = src[i + 1];
+                dst[o + 2] = 0x00;
+                dst[o + 3] = 0xFF;
+            }
+        }
+        return true;
+    }
+    default:
+        return false;
     }
 }
 
@@ -302,7 +392,7 @@ allocation_success:
         .viewType =
             type == TextureType::CubeMap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D,
         .format = format,
-        .components = MakeUIViewComponentMapping(pixel_format, aspect),
+        .components = MakeUIViewComponentMapping(pixel_format, aspect, format),
         .subresourceRange{
             .aspectMask = aspect,
             .baseMipLevel = 0,
@@ -815,8 +905,8 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
         return;
     }
 
+    const vk::Format format = GetEffectiveTextureFormat(pixel_format, traits.native);
     const bool is_mutable = pixel_format == VideoCore::PixelFormat::RGBA8;
-    const vk::Format format = traits.native;
 
     ASSERT_MSG(format != vk::Format::eUndefined && levels >= 1,
                "Image allocation parameters are invalid");
@@ -861,7 +951,7 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceBase& surface
     }
 
     const bool has_normal = mat && mat->Map(MapType::Normal);
-    const vk::Format format = traits.native;
+    const vk::Format format = GetEffectiveTextureFormat(VideoCore::PixelFormat::RGBA8, traits.native);
 
     boost::container::static_vector<vk::Image, 2> raw_images;
 
@@ -925,8 +1015,29 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
         .src_image = Image(0),
     };
 
-    scheduler->Record([buffer = runtime->upload_buffer.Handle(), format = traits.native, params,
-                       staging, upload](vk::CommandBuffer cmdbuf) {
+    VideoCore::BufferTextureCopy effective_upload = upload;
+    VideoCore::StagingData effective_staging = staging;
+    const vk::Format effective_format = GetEffectiveTextureFormat(pixel_format, traits.native);
+
+    if (NeedsPi5UIUploadExpansion(pixel_format)) {
+        const u32 source_bpp = SourceBytesPerPixel(pixel_format);
+        const u32 expected_source_size = upload.texture_rect.GetWidth() * upload.texture_rect.GetHeight() * source_bpp;
+        if (source_bpp != 0 && staging.size == expected_source_size) {
+            const u32 expanded_size = upload.texture_rect.GetWidth() * upload.texture_rect.GetHeight() * 4;
+            auto converted_staging = runtime->FindStaging(expanded_size, true);
+            if (ExpandPi5UIUpload(converted_staging.mapped, staging.mapped, pixel_format)) {
+                effective_upload.buffer_offset = converted_staging.offset;
+                effective_staging = converted_staging;
+            } else {
+                LOG_WARNING(Render_Vulkan,
+                            "Pi5 UI upload expansion failed for {} ({} bytes)",
+                            VideoCore::PixelFormatAsString(pixel_format), staging.size);
+            }
+        }
+    }
+
+    scheduler->Record([buffer = runtime->upload_buffer.Handle(), format = effective_format, params,
+                       staging = effective_staging, upload = effective_upload](vk::CommandBuffer cmdbuf) {
         boost::container::static_vector<vk::BufferImageCopy, 2> buffer_image_copies;
 
         const auto rect = upload.texture_rect;
@@ -985,7 +1096,7 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
                                vk::DependencyFlagBits::eByRegion, {}, {}, write_barrier);
     });
 
-    runtime->upload_buffer.Commit(staging.size);
+    runtime->upload_buffer.Commit(effective_staging.size);
 
     if (res_scale != 1) {
         const VideoCore::TextureBlit blit = {
@@ -1170,6 +1281,7 @@ void Surface::ScaleUp(u32 new_scale) {
 
     res_scale = new_scale;
 
+    const vk::Format format = GetEffectiveTextureFormat(pixel_format, traits.native);
     const bool is_mutable = pixel_format == VideoCore::PixelFormat::RGBA8;
 
     vk::ImageCreateFlags flags{};
@@ -1182,7 +1294,7 @@ void Surface::ScaleUp(u32 new_scale) {
 
     handles[1] =
         MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
-                   traits.native, pixel_format, traits.usage, flags, traits.aspect, false, DebugName(true));
+                   format, pixel_format, traits.usage, flags, traits.aspect, false, DebugName(true));
 
     runtime->renderpass_cache.EndRendering();
     scheduler->Record(
@@ -1207,11 +1319,11 @@ void Surface::ScaleUp(u32 new_scale) {
 u32 Surface::GetInternalBytesPerPixel() const {
     // Request 5 bytes for D24S8 as well because we can use the
     // extra space when deinterleaving the data during upload
-    if (traits.native == vk::Format::eD24UnormS8Uint) {
+    if (GetEffectiveTextureFormat(pixel_format, traits.native) == vk::Format::eD24UnormS8Uint) {
         return 5;
     }
 
-    return vk::blockSize(traits.native);
+    return vk::blockSize(GetEffectiveTextureFormat(pixel_format, traits.native));
 }
 
 vk::AccessFlags Surface::AccessFlags() const noexcept {
@@ -1258,7 +1370,8 @@ vk::ImageView Surface::CopyImageView() noexcept {
         }
         copy_handle =
             MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
-                       traits.native, pixel_format, traits.usage, flags, traits.aspect, false);
+                       GetEffectiveTextureFormat(pixel_format, traits.native), pixel_format,
+                       traits.usage, flags, traits.aspect, false);
         copy_layout = vk::ImageLayout::eUndefined;
     }
 
