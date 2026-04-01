@@ -128,6 +128,103 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     }
 }
 
+
+[[nodiscard]] constexpr bool NeedsRGBA8UIUploadFix(VideoCore::PixelFormat pixel_format) {
+    switch (pixel_format) {
+    case VideoCore::PixelFormat::A8:
+    case VideoCore::PixelFormat::I8:
+    case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::A4:
+    case VideoCore::PixelFormat::I4:
+    case VideoCore::PixelFormat::IA4:
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] constexpr vk::Format ChooseSurfaceFormat(VideoCore::PixelFormat pixel_format,
+                                                       vk::Format native_format,
+                                                       vk::ImageAspectFlags aspect) {
+    if ((aspect & vk::ImageAspectFlagBits::eColor) && NeedsRGBA8UIUploadFix(pixel_format)) {
+        return vk::Format::eR8G8B8A8Unorm;
+    }
+    return native_format;
+}
+
+[[nodiscard]] constexpr VideoCore::PixelFormat ChooseViewPixelFormat(
+    VideoCore::PixelFormat pixel_format, vk::Format actual_format) {
+    if (actual_format == vk::Format::eR8G8B8A8Unorm && NeedsRGBA8UIUploadFix(pixel_format)) {
+        return VideoCore::PixelFormat::RGBA8;
+    }
+    return pixel_format;
+}
+
+[[nodiscard]] constexpr u8 Expand4To8(u8 value) {
+    return static_cast<u8>((value << 4) | value);
+}
+
+[[nodiscard]] std::vector<u8> ConvertUITextureToRGBA8(VideoCore::PixelFormat pixel_format,
+                                                      std::span<const u8> src, u32 width,
+                                                      u32 height) {
+    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+    std::vector<u8> out(pixel_count * 4, 0);
+
+    auto write_pixel = [&](size_t index, u8 r, u8 g, u8 b, u8 a) {
+        const size_t base = index * 4;
+        out[base + 0] = r;
+        out[base + 1] = g;
+        out[base + 2] = b;
+        out[base + 3] = a;
+    };
+
+    switch (pixel_format) {
+    case VideoCore::PixelFormat::A8:
+        for (size_t i = 0; i < pixel_count && i < src.size(); ++i) {
+            write_pixel(i, 0xFF, 0xFF, 0xFF, src[i]);
+        }
+        break;
+    case VideoCore::PixelFormat::I8:
+        for (size_t i = 0; i < pixel_count && i < src.size(); ++i) {
+            write_pixel(i, src[i], src[i], src[i], 0xFF);
+        }
+        break;
+    case VideoCore::PixelFormat::IA8:
+        for (size_t i = 0; i < pixel_count && (i * 2 + 1) < src.size(); ++i) {
+            const u8 intensity = src[i * 2 + 0];
+            const u8 alpha = src[i * 2 + 1];
+            write_pixel(i, intensity, intensity, intensity, alpha);
+        }
+        break;
+    case VideoCore::PixelFormat::A4:
+        for (size_t i = 0; i < pixel_count; ++i) {
+            const u8 packed = src[i / 2];
+            const u8 alpha4 = (i & 1) == 0 ? (packed & 0x0F) : (packed >> 4);
+            write_pixel(i, 0xFF, 0xFF, 0xFF, Expand4To8(alpha4));
+        }
+        break;
+    case VideoCore::PixelFormat::I4:
+        for (size_t i = 0; i < pixel_count; ++i) {
+            const u8 packed = src[i / 2];
+            const u8 intensity4 = (i & 1) == 0 ? (packed & 0x0F) : (packed >> 4);
+            const u8 intensity = Expand4To8(intensity4);
+            write_pixel(i, intensity, intensity, intensity, 0xFF);
+        }
+        break;
+    case VideoCore::PixelFormat::IA4:
+        for (size_t i = 0; i < pixel_count && i < src.size(); ++i) {
+            const u8 packed = src[i];
+            const u8 alpha = Expand4To8(packed & 0x0F);
+            const u8 intensity = Expand4To8((packed >> 4) & 0x0F);
+            write_pixel(i, intensity, intensity, intensity, alpha);
+        }
+        break;
+    default:
+        break;
+    }
+    return out;
+}
+
 u32 UnpackDepthStencil(const VideoCore::StagingData& data, vk::Format dest) {
     u32 depth_offset = 0;
     u32 stencil_offset = 4 * data.size / 5;
@@ -322,7 +419,7 @@ allocation_success:
         .viewType =
             type == TextureType::CubeMap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D,
         .format = format,
-        .components = MakeUIViewComponentMapping(pixel_format, aspect),
+        .components = MakeUIViewComponentMapping(ChooseViewPixelFormat(pixel_format, format), aspect),
         .subresourceRange{
             .aspectMask = aspect,
             .baseMipLevel = 0,
@@ -750,7 +847,7 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
             vk::ImageMemoryBarrier{
                 .srcAccessMask = params.src_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .oldLayout = steady_layout,
                 .newLayout = vk::ImageLayout::eTransferSrcOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -760,7 +857,7 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
             vk::ImageMemoryBarrier{
                 .srcAccessMask = params.dst_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-                .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .oldLayout = steady_layout,
                 .newLayout = vk::ImageLayout::eTransferDstOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -773,7 +870,7 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
                 .srcAccessMask = vk::AccessFlagBits::eTransferRead,
                 .dstAccessMask = params.src_access,
                 .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .newLayout = steady_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
@@ -783,7 +880,7 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
                 .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
                 .dstAccessMask = params.dst_access,
                 .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .newLayout = copy_steady_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.dst_image,
@@ -847,8 +944,8 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
         return;
     }
 
-    const bool is_mutable = pixel_format == VideoCore::PixelFormat::RGBA8;
-    const vk::Format format = traits.native;
+    const vk::Format format = ChooseSurfaceFormat(pixel_format, traits.native, traits.aspect);
+    const bool is_mutable = format == vk::Format::eR8G8B8A8Unorm;
 
     ASSERT_MSG(format != vk::Format::eUndefined && levels >= 1,
                "Image allocation parameters are invalid");
@@ -963,69 +1060,95 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
         .src_image = Image(0),
     };
 
+    const auto rect = upload.texture_rect;
+    const bool apply_ui_fix =
+        static_cast<bool>(params.aspect & vk::ImageAspectFlagBits::eColor) &&
+        NeedsRGBA8UIUploadFix(pixel_format) && upload.texture_level == 0;
+
+    u32 buffer_offset = upload.buffer_offset;
+    u32 upload_size = staging.size;
+
+    if (apply_ui_fix) {
+        runtime->upload_buffer.Commit(staging.size);
+
+        const std::vector<u8> converted =
+            ConvertUITextureToRGBA8(pixel_format, staging.mapped, rect.GetWidth(), rect.GetHeight());
+        const auto [data, offset, invalidate] =
+            runtime->upload_buffer.Map(static_cast<u32>(converted.size()), 0);
+        std::memcpy(data, converted.data(), converted.size());
+
+        buffer_offset = offset;
+        upload_size = static_cast<u32>(converted.size());
+
+        LOG_INFO(Render_Vulkan,
+                 "Pi5/V3DV UI upload fix: converted {} upload to RGBA8 ({}x{}, {} bytes)",
+                 VideoCore::PixelFormatAsString(pixel_format), rect.GetWidth(), rect.GetHeight(),
+                 upload_size);
+    }
+
     scheduler->Record(
-        [buffer = runtime->upload_buffer.Handle(), format = traits.native, params, staging, upload,
+        [buffer = runtime->upload_buffer.Handle(), format = traits.native, params, rect, upload,
+         buffer_offset, upload_size, apply_ui_fix,
          steady_layout = PreferredSteadyStateLayout(type, params.aspect, traits.usage, is_storage,
                                                     is_framebuffer)](vk::CommandBuffer cmdbuf) {
-        boost::container::static_vector<vk::BufferImageCopy, 2> buffer_image_copies;
+            boost::container::static_vector<vk::BufferImageCopy, 2> buffer_image_copies;
 
-        const auto rect = upload.texture_rect;
-        buffer_image_copies.emplace_back(vk::BufferImageCopy{
-            .bufferOffset = upload.buffer_offset,
-            .bufferRowLength = rect.GetWidth(),
-            .bufferImageHeight = rect.GetHeight(),
-            .imageSubresource{
-                .aspectMask = params.aspect,
-                .mipLevel = upload.texture_level,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .imageOffset = {static_cast<s32>(rect.left), static_cast<s32>(rect.bottom), 0},
-            .imageExtent = {rect.GetWidth(), rect.GetHeight(), 1},
+            buffer_image_copies.emplace_back(vk::BufferImageCopy{
+                .bufferOffset = buffer_offset,
+                .bufferRowLength = rect.GetWidth(),
+                .bufferImageHeight = rect.GetHeight(),
+                .imageSubresource{
+                    .aspectMask = params.aspect,
+                    .mipLevel = upload.texture_level,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .imageOffset = {static_cast<s32>(rect.left), static_cast<s32>(rect.bottom), 0},
+                .imageExtent = {rect.GetWidth(), rect.GetHeight(), 1},
+            });
+
+            if (!apply_ui_fix && (params.aspect & vk::ImageAspectFlagBits::eStencil)) {
+                buffer_image_copies[0].imageSubresource.aspectMask = vk::ImageAspectFlagBits::eDepth;
+
+                vk::BufferImageCopy& stencil_copy =
+                    buffer_image_copies.emplace_back(buffer_image_copies[0]);
+                stencil_copy = buffer_image_copies[0];
+                stencil_copy.bufferOffset += 4 * upload_size / 5;
+                stencil_copy.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eStencil;
+            }
+
+            const vk::ImageMemoryBarrier read_barrier = {
+                .srcAccessMask = params.src_access,
+                .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .oldLayout = steady_layout,
+                .newLayout = vk::ImageLayout::eTransferDstOptimal,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = params.src_image,
+                .subresourceRange = MakeSubresourceRange(params.aspect, upload.texture_level),
+            };
+            const vk::ImageMemoryBarrier write_barrier = {
+                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask = params.src_access,
+                .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+                .newLayout = steady_layout,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = params.src_image,
+                .subresourceRange = MakeSubresourceRange(params.aspect, upload.texture_level),
+            };
+
+            cmdbuf.pipelineBarrier(params.pipeline_flags, vk::PipelineStageFlagBits::eTransfer,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, read_barrier);
+
+            cmdbuf.copyBufferToImage(buffer, params.src_image, vk::ImageLayout::eTransferDstOptimal,
+                                     buffer_image_copies);
+
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, params.pipeline_flags,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, write_barrier);
         });
 
-        if (params.aspect & vk::ImageAspectFlagBits::eStencil) {
-            buffer_image_copies[0].imageSubresource.aspectMask = vk::ImageAspectFlagBits::eDepth;
-
-            vk::BufferImageCopy& stencil_copy =
-                buffer_image_copies.emplace_back(buffer_image_copies[0]);
-            stencil_copy = buffer_image_copies[0];
-            stencil_copy.bufferOffset += UnpackDepthStencil(staging, format);
-            stencil_copy.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eStencil;
-        }
-
-        const vk::ImageMemoryBarrier read_barrier = {
-            .srcAccessMask = params.src_access,
-            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .oldLayout = steady_layout,
-            .newLayout = vk::ImageLayout::eTransferDstOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = params.src_image,
-            .subresourceRange = MakeSubresourceRange(params.aspect, upload.texture_level),
-        };
-        const vk::ImageMemoryBarrier write_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .dstAccessMask = params.src_access,
-            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-            .newLayout = steady_layout,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = params.src_image,
-            .subresourceRange = MakeSubresourceRange(params.aspect, upload.texture_level),
-        };
-
-        cmdbuf.pipelineBarrier(params.pipeline_flags, vk::PipelineStageFlagBits::eTransfer,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, read_barrier);
-
-        cmdbuf.copyBufferToImage(buffer, params.src_image, vk::ImageLayout::eTransferDstOptimal,
-                                 buffer_image_copies);
-
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, params.pipeline_flags,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, write_barrier);
-    });
-
-    runtime->upload_buffer.Commit(staging.size);
+    runtime->upload_buffer.Commit(upload_size);
 
     if (res_scale != 1) {
         const VideoCore::TextureBlit blit = {
@@ -1173,7 +1296,7 @@ void Surface::Download(const VideoCore::BufferTextureCopy& download,
             const vk::ImageMemoryBarrier read_barrier = {
                 .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
                 .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .oldLayout = source_layout,
                 .newLayout = vk::ImageLayout::eTransferSrcOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1184,7 +1307,7 @@ void Surface::Download(const VideoCore::BufferTextureCopy& download,
                 .srcAccessMask = vk::AccessFlagBits::eNone,
                 .dstAccessMask = vk::AccessFlagBits::eMemoryWrite,
                 .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .newLayout = source_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
@@ -1214,7 +1337,8 @@ void Surface::ScaleUp(u32 new_scale) {
 
     res_scale = new_scale;
 
-    const bool is_mutable = pixel_format == VideoCore::PixelFormat::RGBA8;
+    const vk::Format actual_format = ChooseSurfaceFormat(pixel_format, traits.native, traits.aspect);
+    const bool is_mutable = actual_format == vk::Format::eR8G8B8A8Unorm;
 
     vk::ImageCreateFlags flags{};
     if (texture_type == VideoCore::TextureType::CubeMap) {
@@ -1226,7 +1350,8 @@ void Surface::ScaleUp(u32 new_scale) {
 
     handles[1] =
         MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
-                   traits.native, pixel_format, traits.usage, flags, traits.aspect, false, DebugName(true));
+                   actual_format, pixel_format, traits.usage, flags, traits.aspect, false,
+                   DebugName(true));
 
     runtime->renderpass_cache.EndRendering();
     scheduler->Record(
@@ -1304,7 +1429,8 @@ vk::ImageView Surface::CopyImageView() noexcept {
         }
         copy_handle =
             MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type,
-                       traits.native, pixel_format, traits.usage, flags, traits.aspect, false);
+                       ChooseSurfaceFormat(pixel_format, traits.native, traits.aspect), pixel_format,
+                       traits.usage, flags, traits.aspect, false);
         copy_layout = vk::ImageLayout::eUndefined;
     }
 
@@ -1329,7 +1455,7 @@ vk::ImageView Surface::CopyImageView() noexcept {
             vk::ImageMemoryBarrier{
                 .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
                 .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .oldLayout = source_layout,
                 .newLayout = vk::ImageLayout::eTransferSrcOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1352,7 +1478,7 @@ vk::ImageView Surface::CopyImageView() noexcept {
                 .srcAccessMask = vk::AccessFlagBits::eTransferRead,
                 .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
                 .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .newLayout = source_layout,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = params.src_image,
