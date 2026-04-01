@@ -297,11 +297,14 @@ void Instance::CreateFormatTable() {
         const vk::Format format = MakeFormat(pixel_format);
         FormatTraits traits = DetermineTraits(pixel_format, format);
 
+        const VideoCore::SurfaceType surface_type = VideoCore::GetFormatType(pixel_format);
         const bool is_depth_format =
             static_cast<bool>(traits.aspect & vk::ImageAspectFlagBits::eDepth);
-        const bool is_texture_only =
-            VideoCore::GetFormatType(pixel_format) == VideoCore::SurfaceType::Texture;
+        const bool is_texture_only = surface_type == VideoCore::SurfaceType::Texture;
 
+        // Pi5/V3DV-safe suitability rule:
+        // - sampled textures only need transfer/sample support
+        // - render targets/depth still require attachment support
         const bool is_suitable = is_texture_only
                                      ? traits.transfer_support
                                      : (traits.transfer_support && traits.attachment_support &&
@@ -317,8 +320,10 @@ void Instance::CreateFormatTable() {
                     fallback = vk::Format::eD32SfloatS8Uint;
                 }
             }
-            LOG_WARNING(Render_Vulkan, "Format {} unsupported, falling back unconditionally to {}",
-                        vk::to_string(format), vk::to_string(fallback));
+            LOG_WARNING(Render_Vulkan,
+                        "Format {} unsupported for surface_type={}, falling back unconditionally to {}",
+                        vk::to_string(format), static_cast<u32>(surface_type),
+                        vk::to_string(fallback));
             traits = DetermineTraits(pixel_format, fallback);
             // Always requires conversion if backing format does not match.
             traits.needs_conversion = true;
