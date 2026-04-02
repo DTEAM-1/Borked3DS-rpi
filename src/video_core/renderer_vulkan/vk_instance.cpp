@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
 #include <span>
 #include <boost/container/static_vector.hpp>
 #include <fmt/ranges.h>
@@ -129,6 +130,14 @@ std::string GetReadableVersion(u32 version) {
     return fmt::format("{}.{}.{}", VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version),
                        VK_VERSION_PATCH(version));
 }
+
+[[nodiscard]] bool IsEnvEnabled(const char* name) {
+    if (const char* value = std::getenv(name)) {
+        return value[0] != '\0' && value[0] != '0';
+    }
+    return false;
+}
+
 
 } // Anonymous namespace
 
@@ -459,6 +468,16 @@ bool Instance::CreateDevice() {
 
     const bool is_v3dv_driver = driver_id == vk::DriverId::eMesaV3Dv ||
                                 driver_id == vk::DriverId::eBroadcomProprietary;
+    const bool v3dv_strict_compat = is_v3dv_driver && IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+
+    if (is_v3dv_driver) {
+        LOG_WARNING(Render_Vulkan,
+                    "Pi5/V3DV detected: strict_compat={} maxPerStageDescriptorSampledImages={} maxDescriptorSetSampledImages={} maxPerStageDescriptorSamplers={} maxDescriptorSetSamplers={}",
+                    v3dv_strict_compat, properties.limits.maxPerStageDescriptorSampledImages,
+                    properties.limits.maxDescriptorSetSampledImages,
+                    properties.limits.maxPerStageDescriptorSamplers,
+                    properties.limits.maxDescriptorSetSamplers);
+    }
 
     features = feature_chain.get().features;
     if (available_extensions.empty()) {
@@ -503,7 +522,9 @@ bool Instance::CreateDevice() {
         const bool block_on_v3dv =
             is_v3dv_driver &&
             (std::strcmp(ext.name, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME) == 0 ||
-             std::strcmp(ext.name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0);
+             std::strcmp(ext.name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0 ||
+             (v3dv_strict_compat && std::strcmp(ext.name, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME) == 0) ||
+             (v3dv_strict_compat && std::strcmp(ext.name, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME) == 0));
 
         if (available && !block_on_v3dv) {
             enabled_extensions.push_back(ext.name);
@@ -530,6 +551,12 @@ bool Instance::CreateDevice() {
     if (is_v3dv_driver) {
         shader_stencil_export = false;
         fragment_shader_barycentric = false;
+        if (v3dv_strict_compat) {
+            fragment_shader_interlock = false;
+            extended_dynamic_state3 = false;
+            LOG_WARNING(Render_Vulkan,
+                        "Pi5/V3DV strict compatibility mode enabled via BORKED3DS_V3DV_STRICT_COMPAT=1");
+        }
     }
 
     const auto family_properties = physical_device.getQueueFamilyProperties();

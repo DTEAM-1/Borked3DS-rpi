@@ -3,6 +3,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
+#include <cstdlib>
 #include "common/alignment.h"
 #include "common/literals.h"
 #include "common/logging/log.h"
@@ -33,6 +35,23 @@ constexpr u64 TEXTURE_BUFFER_SIZE = 2_MiB;
 
 constexpr vk::BufferUsageFlags BUFFER_USAGE =
     vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer;
+
+[[nodiscard]] bool IsEnvEnabled(const char* name) {
+    if (const char* value = std::getenv(name)) {
+        return value[0] != '\0' && value[0] != '0';
+    }
+    return false;
+}
+
+[[nodiscard]] bool ShouldTraceV3DV() {
+    return IsEnvEnabled("BORKED3DS_V3DV_TRACE");
+}
+
+[[nodiscard]] bool ShouldBypassFirstRasterDraw() {
+    return IsEnvEnabled("BORKED3DS_V3DV_BYPASS_FIRST_DRAW");
+}
+
+std::atomic<u64> g_v3dv_draw_counter{0};
 
 struct DrawParams {
     u32 vertex_count;
@@ -467,7 +486,8 @@ void RasterizerVulkan::DrawTriangles() {
         // make sure a fragment shader is always bound for the software vertex path.
         pipeline_cache.UseFragmentShader(regs, user_config);
 
-        LOG_DEBUG(Render_Vulkan, "Pipeline configured, attempting draw");
+        LOG_DEBUG(Render_Vulkan, "Pipeline configured, attempting draw (draw_index={})",
+                  g_v3dv_draw_counter.load());
         bool draw_result = Draw(false, false);
         LOG_DEBUG(Render_Vulkan, "Draw completed with result: {}", draw_result);
     } catch (const vk::SystemError& e) {
@@ -500,6 +520,23 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     pipeline_info.attachments.color = framebuffer->Format(SurfaceType::Color);
     pipeline_info.attachments.depth = framebuffer->Format(SurfaceType::Depth);
+
+    const u64 draw_index = ++g_v3dv_draw_counter;
+    if (ShouldTraceV3DV()) {
+        LOG_WARNING(Render_Vulkan,
+                    "V3DV draw diagnostics: draw_index={} accelerate={} indexed={} topology={} color_format={} depth_format={} color_fb={} depth_fb={}",
+                    draw_index, accelerate, is_indexed,
+                    static_cast<u32>(pipeline_info.rasterization.topology.Value()),
+                    static_cast<u32>(pipeline_info.attachments.color.Value()),
+                    static_cast<u32>(pipeline_info.attachments.depth.Value()), using_color_fb,
+                    using_depth_fb);
+    }
+    if (ShouldBypassFirstRasterDraw() && draw_index == 1) {
+        LOG_WARNING(Render_Vulkan,
+                    "V3DV test bypass: skipping first raster draw because BORKED3DS_V3DV_BYPASS_FIRST_DRAW=1");
+        vertex_batch.clear();
+        return true;
+    }
 
     // Update scissor uniforms
     const auto [scissor_x1, scissor_y2, scissor_x2, scissor_y1] = fb_helper.Scissor();
@@ -571,6 +608,23 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
     using TextureType = Pica::TexturingRegs::TextureConfig::TextureType;
 
     const auto pica_textures = regs.texturing.GetTextures();
+    u32 enabled_texture_units = 0;
+    for (const auto& texture : pica_textures) {
+        if (texture.enabled) {
+            ++enabled_texture_units;
+        }
+    }
+    if (ShouldTraceV3DV()) {
+        LOG_WARNING(Render_Vulkan,
+                    "V3DV texture diagnostics: enabled_units={} hw_limit_per_stage_sampled_images={} hw_limit_per_stage_samplers={}",
+                    enabled_texture_units, instance.MaxPerStageDescriptorSampledImages(),
+                    instance.MaxPerStageDescriptorSamplers());
+    }
+    if (enabled_texture_units > instance.MaxPerStageDescriptorSampledImages()) {
+        LOG_WARNING(Render_Vulkan,
+                    "Enabled texture units ({}) exceed device sampled-image limit ({}). Draw may fail on V3DV.",
+                    enabled_texture_units, instance.MaxPerStageDescriptorSampledImages());
+    }
     const bool use_cube_heap =
         pica_textures[0].enabled && pica_textures[0].config.type == TextureType::ShadowCube;
     const auto texture_set = pipeline_cache.Acquire(use_cube_heap ? DescriptorHeapType::Texture
