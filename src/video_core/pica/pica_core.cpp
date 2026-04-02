@@ -3,6 +3,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
+#include <cstdlib>
 #include "common/arch.h"
 #include "common/archives.h"
 #include "common/profiling.h"
@@ -28,6 +30,16 @@ union CommandHeader {
     BitField<31, 1, u32> group_commands;
 };
 static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect size!");
+
+[[nodiscard]] bool IsEnvEnabled(const char* name) {
+    if (const char* value = std::getenv(name)) {
+        return value[0] != '\0' && value[0] != '0';
+    }
+    return false;
+}
+
+std::atomic<u64> g_pica_draw_counter{0};
+std::atomic<u64> g_pica_cmdlist_counter{0};
 
 PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> debug_context_)
     : memory{memory_}, debug_context{std::move(debug_context_)},
@@ -97,9 +109,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
     if (ignore_list) {
         LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList ignored list={:#010X}", list);
-        if (signal_interrupt) {
-            signal_interrupt(Service::GSP::InterruptId::P3D);
-        }
+        signal_interrupt(Service::GSP::InterruptId::P3D);
         return;
     }
     // Initialize command list tracking.
@@ -113,13 +123,6 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         }
 
         // Read the header and the value to write.
-        if (cmd_list.current_index + 1 >= cmd_list.length) {
-            LOG_ERROR(HW_GPU,
-                      "PicaCore::ProcessCmdList truncated command stream at list={:#010X}, index={}, length={}",
-                      list, cmd_list.current_index, cmd_list.length);
-            break;
-        }
-
         const u32 value = cmd_list.head[cmd_list.current_index++];
         const CommandHeader header{cmd_list.head[cmd_list.current_index++]};
 
@@ -133,14 +136,6 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
         // Write any extra paramters as well.
         for (u32 i = 0; i < header.extra_data_length; ++i) {
-            if (cmd_list.current_index >= cmd_list.length) {
-                LOG_ERROR(HW_GPU,
-                          "PicaCore::ProcessCmdList truncated extra data at list={:#010X}, cmd=0x{:03X}, extra_index={}, length={}",
-                          list, header.cmd_id.Value(), i, cmd_list.length);
-                cmd_list.current_index = cmd_list.length;
-                break;
-            }
-
             const u32 cmd = header.cmd_id + (header.group_commands ? i + 1 : 0);
             const u32 extra_value = cmd_list.head[cmd_list.current_index++];
             LOG_DEBUG(HW_GPU,
@@ -188,9 +183,7 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     switch (id) {
     // Trigger IRQ
     case PICA_REG_INDEX(trigger_irq):
-        if (signal_interrupt) {
-            signal_interrupt(Service::GSP::InterruptId::P3D);
-        }
+        signal_interrupt(Service::GSP::InterruptId::P3D);
         break;
 
     case PICA_REG_INDEX(pipeline.triangle_topology):
@@ -464,9 +457,7 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     }
 
     // Notify the rasterizer an internal register was updated.
-    if (rasterizer) {
-        rasterizer->NotifyPicaRegisterChanged(id);
-    }
+    rasterizer->NotifyPicaRegisterChanged(id);
 }
 
 void PicaCore::SubmitImmediate(u32 value) {
@@ -537,23 +528,25 @@ void PicaCore::DrawImmediate() {
     geometry_pipeline.SubmitVertex(output);
 
     // Flush the immediate triangle.
-    if (!rasterizer) {
-        LOG_ERROR(HW_GPU, "PicaCore::DrawImmediate called without a bound rasterizer");
-        immediate.current_attribute = 0;
-        return;
-    }
     rasterizer->DrawTriangles();
     immediate.current_attribute = 0;
 }
 
 void PicaCore::DrawArrays(bool is_indexed) {
     BORKED3DS_PROFILE("PicaCore", "Draw Arrays");
+    const u64 draw_index = ++g_pica_draw_counter;
     LOG_DEBUG(HW_GPU,
-              "PicaCore::DrawArrays begin indexed={} num_vertices={} vertex_offset={} use_hw_shader={} skip_slow_draw={} topology={} use_gs={}",
-              is_indexed, regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
+              "PicaCore::DrawArrays begin draw_index={} indexed={} num_vertices={} vertex_offset={} use_hw_shader={} skip_slow_draw={} topology={} use_gs={}",
+              draw_index, is_indexed, regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
               Settings::values.use_hw_shader.GetValue(), Settings::values.skip_slow_draw.GetValue(),
               static_cast<u32>(primitive_assembler.GetTopology()),
               static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
+
+    if (IsEnvEnabled("BORKED3DS_V3DV_BYPASS_FIRST_DRAW") && draw_index == 1) {
+        LOG_WARNING(HW_GPU,
+                    "V3DV test bypass: skipping first PICA draw because BORKED3DS_V3DV_BYPASS_FIRST_DRAW=1");
+        return;
+    }
 
     // Track vertex in the debug recorder.
     if (debug_context) {
@@ -604,10 +597,6 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     // Draw emitted triangles.
     LOG_DEBUG(HW_GPU, "PicaCore::DrawArrays calling rasterizer->DrawTriangles()");
-    if (!rasterizer) {
-        LOG_ERROR(HW_GPU, "PicaCore::DrawArrays called without a bound rasterizer");
-        return;
-    }
     rasterizer->DrawTriangles();
 }
 
