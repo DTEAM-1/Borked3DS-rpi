@@ -49,13 +49,8 @@ struct DrawParams {
     return std::min(max_size, TEXTURE_BUFFER_SIZE);
 }
 
-
-[[nodiscard]] vk::ImageView SafeNullImageView(RasterizerVulkan& rast) {
-    return rast.res_cache.GetSurface(VideoCore::NULL_SURFACE_ID).ImageView();
-}
-
-[[nodiscard]] vk::Sampler SafeNullSampler(RasterizerVulkan& rast) {
-    return rast.res_cache.GetSampler(VideoCore::NULL_SAMPLER_ID).Handle();
+[[nodiscard]] bool IsValidImageView(const vk::ImageView view) {
+    return static_cast<bool>(view);
 }
 
 } // Anonymous namespace
@@ -584,30 +579,34 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
     const Surface& null_surface = res_cache.GetSurface(VideoCore::NULL_SURFACE_ID);
     const Sampler& null_sampler = res_cache.GetSampler(VideoCore::NULL_SAMPLER_ID);
     const vk::ImageView null_view = null_surface.ImageView();
-    const vk::Sampler null_sampler_handle = null_sampler.Handle();
-
-    const vk::ImageView framebuffer_color_view = framebuffer ? framebuffer->ImageView(SurfaceType::Color)
-                                                             : vk::ImageView{};
+    const vk::Sampler null_handle = null_sampler.Handle();
+    const vk::ImageView color_view =
+        framebuffer ? framebuffer->ImageView(SurfaceType::Color) : vk::ImageView{};
 
     for (u32 texture_index = 0; texture_index < pica_textures.size(); ++texture_index) {
         const auto& texture = pica_textures[texture_index];
 
+        auto bind_null = [&] {
+            update_queue.AddImageSampler(texture_set, texture_index, 0, null_view, null_handle);
+        };
+
+        // If the texture unit is disabled bind a null surface to it
         if (!texture.enabled) {
-            update_queue.AddImageSampler(texture_set, texture_index, 0, null_view,
-                                         null_sampler_handle);
+            bind_null();
             continue;
         }
 
+        // Handle special tex0 configurations
         if (texture_index == 0) {
             switch (texture.config.type.Value()) {
             case TextureType::Shadow2D: {
                 Surface& surface = res_cache.GetTextureSurface(texture);
                 Sampler& sampler = res_cache.GetSampler(texture.config);
                 surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
-                const vk::ImageView view = surface.ImageView() ? surface.ImageView() : null_view;
-                const vk::Sampler sampler_handle = sampler.Handle() ? sampler.Handle() : null_sampler_handle;
-                update_queue.AddImageSampler(texture_set, texture_index, 0, view,
-                                             sampler_handle);
+                const vk::ImageView view = surface.ImageView();
+                update_queue.AddImageSampler(texture_set, texture_index, 0,
+                                             IsValidImageView(view) ? view : null_view,
+                                             IsValidImageView(view) ? sampler.Handle() : null_handle);
                 continue;
             }
             case TextureType::ShadowCube: {
@@ -623,35 +622,32 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
             }
         }
 
+        // Bind the texture provided by the rasterizer cache.
+        // Pi 5 / V3DV stability fix:
+        // - never submit a null ImageView
+        // - avoid direct feedback loops by preferring CopyImageView()
         Surface& surface = res_cache.GetTextureSurface(texture);
         Sampler& sampler = res_cache.GetSampler(texture.config);
 
-        vk::ImageView base_view = surface.ImageView();
-        if (!base_view) {
-            LOG_WARNING(Render_Vulkan,
-                        "Texture unit {} produced a null image view; binding null surface",
-                        texture_index);
-            update_queue.AddImageSampler(texture_set, texture_index, 0, null_view,
-                                         null_sampler_handle);
+        const vk::ImageView base_view = surface.ImageView();
+        if (!IsValidImageView(base_view)) {
+            bind_null();
             continue;
         }
 
-        const bool is_feedback_loop = framebuffer_color_view && framebuffer_color_view == base_view;
         vk::ImageView texture_view = base_view;
-        if (is_feedback_loop) {
-            texture_view = surface.CopyImageView();
-            if (!texture_view) {
-                LOG_WARNING(Render_Vulkan,
-                            "Texture unit {} feedback-loop copy view creation failed; binding null surface",
-                            texture_index);
-                update_queue.AddImageSampler(texture_set, texture_index, 0, null_view,
-                                             null_sampler_handle);
+        if (IsValidImageView(color_view) && color_view == base_view) {
+            const vk::ImageView copy_view = surface.CopyImageView();
+            if (IsValidImageView(copy_view)) {
+                texture_view = copy_view;
+            } else {
+                bind_null();
                 continue;
             }
         }
 
-        const vk::Sampler sampler_handle = sampler.Handle() ? sampler.Handle() : null_sampler_handle;
-        update_queue.AddImageSampler(texture_set, texture_index, 0, texture_view, sampler_handle);
+        update_queue.AddImageSampler(texture_set, texture_index, 0, texture_view,
+                                     sampler.Handle());
     }
 }
 
