@@ -38,6 +38,10 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return false;
 }
 
+[[nodiscard]] bool IsInterestingPicaStateReg(u32 id) {
+    return id == 0x203 || id == 0x206 || (id >= 0x1C8 && id <= 0x1CF);
+}
+
 std::atomic<u64> g_pica_draw_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 
@@ -103,51 +107,108 @@ void PicaCore::SetInterruptHandler(Service::GSP::InterruptHandler& signal_interr
 }
 
 void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
+    const u64 cmdlist_index = ++g_pica_cmdlist_counter;
+    const bool trace_state = IsEnvEnabled("BORKED3DS_V3DV_TRACE_PICA_STATE");
+
     LOG_DEBUG(HW_GPU,
-              "PicaCore::ProcessCmdList begin list={:#010X} size={} ignore_list={}",
-              list, size, ignore_list);
+              "PicaCore::ProcessCmdList begin cmdlist_index={} list={:#010X} size={} ignore_list={}",
+              cmdlist_index, list, size, ignore_list);
 
     if (ignore_list) {
         LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList ignored list={:#010X}", list);
         signal_interrupt(Service::GSP::InterruptId::P3D);
         return;
     }
-    // Initialize command list tracking.
+
     const u8* head = memory.GetPhysicalPointer(list);
     cmd_list.Reset(list, head, size);
 
+    u32 repeated_state_group_count = 0;
+    bool repeated_state_group_saw_non_zero = false;
+    u32 repeated_state_group_first_non_zero_reg = 0;
+    u32 repeated_state_group_first_non_zero_value = 0;
+    u32 repeated_state_group_first_non_zero_mask = 0;
+
+    auto flush_repeated_state_group = [&]() {
+        if (repeated_state_group_count != 0) {
+            if (repeated_state_group_saw_non_zero) {
+                LOG_DEBUG(
+                    HW_GPU,
+                    "PicaCore::ProcessCmdList repeated PICA state group 0x1C8..0x1CF count={} first_non_zero_reg=0x{:03X} value=0x{:08X} mask=0x{:X}",
+                    repeated_state_group_count, repeated_state_group_first_non_zero_reg,
+                    repeated_state_group_first_non_zero_value, repeated_state_group_first_non_zero_mask);
+            } else {
+                LOG_DEBUG(HW_GPU,
+                          "PicaCore::ProcessCmdList repeated PICA state group 0x1C8..0x1CF count={} all_zero=true",
+                          repeated_state_group_count);
+            }
+            repeated_state_group_count = 0;
+            repeated_state_group_saw_non_zero = false;
+            repeated_state_group_first_non_zero_reg = 0;
+            repeated_state_group_first_non_zero_value = 0;
+            repeated_state_group_first_non_zero_mask = 0;
+        }
+    };
+
     while (cmd_list.current_index < cmd_list.length) {
-        // Align read pointer to 8 bytes
         if (cmd_list.current_index % 2 != 0) {
             cmd_list.current_index++;
         }
 
-        // Read the header and the value to write.
         const u32 value = cmd_list.head[cmd_list.current_index++];
         const CommandHeader header{cmd_list.head[cmd_list.current_index++]};
 
-        LOG_DEBUG(HW_GPU,
-                  "PicaCore::ProcessCmdList cmd id=0x{:03X} value=0x{:08X} mask=0x{:X} extra_len={} grouped={}",
-                  header.cmd_id.Value(), value, header.parameter_mask.Value(),
-                  header.extra_data_length.Value(), header.group_commands.Value());
+        const bool repeated_state_group =
+            header.group_commands.Value() && header.extra_data_length.Value() == 7 &&
+            header.cmd_id.Value() == 0x1C8;
 
-        // Write to the requested PICA register.
+        if (repeated_state_group) {
+            repeated_state_group_count++;
+            if (!repeated_state_group_saw_non_zero && value != 0) {
+                repeated_state_group_saw_non_zero = true;
+                repeated_state_group_first_non_zero_reg = header.cmd_id.Value();
+                repeated_state_group_first_non_zero_value = value;
+                repeated_state_group_first_non_zero_mask = header.parameter_mask.Value();
+            }
+        } else {
+            flush_repeated_state_group();
+        }
+
+        if (!repeated_state_group || trace_state) {
+            LOG_DEBUG(HW_GPU,
+                      "PicaCore::ProcessCmdList cmdlist_index={} cmd id=0x{:03X} value=0x{:08X} mask=0x{:X} extra_len={} grouped={}",
+                      cmdlist_index, header.cmd_id.Value(), value, header.parameter_mask.Value(),
+                      header.extra_data_length.Value(), header.group_commands.Value());
+        }
+
         WriteInternalReg(header.cmd_id, value, header.parameter_mask);
 
-        // Write any extra paramters as well.
         for (u32 i = 0; i < header.extra_data_length; ++i) {
             const u32 cmd = header.cmd_id + (header.group_commands ? i + 1 : 0);
             const u32 extra_value = cmd_list.head[cmd_list.current_index++];
-            LOG_DEBUG(HW_GPU,
-                      "PicaCore::ProcessCmdList extra cmd id=0x{:03X} value=0x{:08X} mask=0x{:X}",
-                      cmd, extra_value, header.parameter_mask.Value());
+
+            if (repeated_state_group && !repeated_state_group_saw_non_zero && extra_value != 0) {
+                repeated_state_group_saw_non_zero = true;
+                repeated_state_group_first_non_zero_reg = cmd;
+                repeated_state_group_first_non_zero_value = extra_value;
+                repeated_state_group_first_non_zero_mask = header.parameter_mask.Value();
+            }
+
+            if (!repeated_state_group || trace_state) {
+                LOG_DEBUG(HW_GPU,
+                          "PicaCore::ProcessCmdList cmdlist_index={} extra cmd id=0x{:03X} value=0x{:08X} mask=0x{:X}",
+                          cmdlist_index, cmd, extra_value, header.parameter_mask.Value());
+            }
+
             WriteInternalReg(cmd, extra_value, header.parameter_mask);
         }
     }
 
+    flush_repeated_state_group();
+
     LOG_DEBUG(HW_GPU,
-              "PicaCore::ProcessCmdList end list={:#010X} processed_words={} length={}",
-              list, cmd_list.current_index, cmd_list.length);
+              "PicaCore::ProcessCmdList end cmdlist_index={} list={:#010X} processed_words={} length={}",
+              cmdlist_index, list, cmd_list.current_index, cmd_list.length);
 }
 
 void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
@@ -178,6 +239,12 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     if (debug_context) {
         debug_context->OnEvent(DebugContext::Event::PicaCommandLoaded, &id);
         SCOPE_EXIT({ debug_context->OnEvent(DebugContext::Event::PicaCommandProcessed, &id); });
+    }
+
+    if (IsInterestingPicaStateReg(id)) {
+        LOG_DEBUG(HW_GPU,
+                  "PicaCore::WriteInternalReg interesting_state_reg id=0x{:03X} value=0x{:08X} mask=0x{:X}",
+                  id, regs.internal.reg_array[id], mask);
     }
 
     switch (id) {
