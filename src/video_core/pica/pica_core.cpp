@@ -39,7 +39,10 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
 }
 
 [[nodiscard]] bool IsInterestingPicaStateReg(u32 id) {
-    return id == 0x203 || id == 0x206 || (id >= 0x1C8 && id <= 0x1CF);
+    if (id >= 0x1C8 && id <= 0x1CF) {
+        return IsEnvEnabled("BORKED3DS_V3DV_TRACE_PICA_STATE");
+    }
+    return id == 0x203 || id == 0x206;
 }
 
 std::atomic<u64> g_pica_draw_counter{0};
@@ -109,6 +112,8 @@ void PicaCore::SetInterruptHandler(Service::GSP::InterruptHandler& signal_interr
 void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     const u64 cmdlist_index = ++g_pica_cmdlist_counter;
     const bool trace_state = IsEnvEnabled("BORKED3DS_V3DV_TRACE_PICA_STATE");
+    const bool bypass_zero_state_group =
+        IsEnvEnabled("BORKED3DS_V3DV_BYPASS_ZERO_STATE_GROUP");
 
     LOG_DEBUG(HW_GPU,
               "PicaCore::ProcessCmdList begin cmdlist_index={} list={:#010X} size={} ignore_list={}",
@@ -128,6 +133,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     u32 repeated_state_group_first_non_zero_reg = 0;
     u32 repeated_state_group_first_non_zero_value = 0;
     u32 repeated_state_group_first_non_zero_mask = 0;
+    u32 bypassed_zero_state_group_count = 0;
 
     auto flush_repeated_state_group = [&]() {
         if (repeated_state_group_count != 0) {
@@ -139,14 +145,15 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
                     repeated_state_group_first_non_zero_value, repeated_state_group_first_non_zero_mask);
             } else {
                 LOG_DEBUG(HW_GPU,
-                          "PicaCore::ProcessCmdList repeated PICA state group 0x1C8..0x1CF count={} all_zero=true",
-                          repeated_state_group_count);
+                          "PicaCore::ProcessCmdList repeated PICA state group 0x1C8..0x1CF count={} all_zero=true bypassed={}",
+                          repeated_state_group_count, bypassed_zero_state_group_count);
             }
             repeated_state_group_count = 0;
             repeated_state_group_saw_non_zero = false;
             repeated_state_group_first_non_zero_reg = 0;
             repeated_state_group_first_non_zero_value = 0;
             repeated_state_group_first_non_zero_mask = 0;
+            bypassed_zero_state_group_count = 0;
         }
     };
 
@@ -161,6 +168,9 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         const bool repeated_state_group =
             header.group_commands.Value() && header.extra_data_length.Value() == 7 &&
             header.cmd_id.Value() == 0x1C8;
+
+        std::array<u32, 8> group_values{};
+        group_values[0] = value;
 
         if (repeated_state_group) {
             repeated_state_group_count++;
@@ -181,17 +191,20 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
                       header.extra_data_length.Value(), header.group_commands.Value());
         }
 
-        WriteInternalReg(header.cmd_id, value, header.parameter_mask);
-
+        std::array<u32, 7> extra_values{};
         for (u32 i = 0; i < header.extra_data_length; ++i) {
             const u32 cmd = header.cmd_id + (header.group_commands ? i + 1 : 0);
             const u32 extra_value = cmd_list.head[cmd_list.current_index++];
+            extra_values[i] = extra_value;
 
-            if (repeated_state_group && !repeated_state_group_saw_non_zero && extra_value != 0) {
-                repeated_state_group_saw_non_zero = true;
-                repeated_state_group_first_non_zero_reg = cmd;
-                repeated_state_group_first_non_zero_value = extra_value;
-                repeated_state_group_first_non_zero_mask = header.parameter_mask.Value();
+            if (repeated_state_group) {
+                group_values[i + 1] = extra_value;
+                if (!repeated_state_group_saw_non_zero && extra_value != 0) {
+                    repeated_state_group_saw_non_zero = true;
+                    repeated_state_group_first_non_zero_reg = cmd;
+                    repeated_state_group_first_non_zero_value = extra_value;
+                    repeated_state_group_first_non_zero_mask = header.parameter_mask.Value();
+                }
             }
 
             if (!repeated_state_group || trace_state) {
@@ -199,8 +212,27 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
                           "PicaCore::ProcessCmdList cmdlist_index={} extra cmd id=0x{:03X} value=0x{:08X} mask=0x{:X}",
                           cmdlist_index, cmd, extra_value, header.parameter_mask.Value());
             }
+        }
 
-            WriteInternalReg(cmd, extra_value, header.parameter_mask);
+        const bool all_zero_state_group =
+            repeated_state_group &&
+            std::all_of(group_values.begin(), group_values.end(), [](u32 v) { return v == 0; });
+
+        if (all_zero_state_group && bypass_zero_state_group) {
+            bypassed_zero_state_group_count++;
+            if (trace_state) {
+                LOG_WARNING(
+                    HW_GPU,
+                    "PicaCore::ProcessCmdList bypassing all-zero PICA state group 0x1C8..0x1CF cmdlist_index={}",
+                    cmdlist_index);
+            }
+            continue;
+        }
+
+        WriteInternalReg(header.cmd_id, value, header.parameter_mask);
+        for (u32 i = 0; i < header.extra_data_length; ++i) {
+            const u32 cmd = header.cmd_id + (header.group_commands ? i + 1 : 0);
+            WriteInternalReg(cmd, extra_values[i], header.parameter_mask);
         }
     }
 
