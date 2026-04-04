@@ -38,6 +38,13 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return false;
 }
 
+[[nodiscard]] bool IsInterestingPicaStateReg(u32 id) {
+    if (id >= 0x1C8 && id <= 0x1CF) {
+        return IsEnvEnabled("BORKED3DS_V3DV_TRACE_PICA_STATE");
+    }
+    return id == 0x203 || id == 0x206;
+}
+
 std::atomic<u64> g_pica_draw_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 
@@ -115,9 +122,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
     if (ignore_list) {
         LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList ignored list={:#010X}", list);
-        if (signal_interrupt) {
-            signal_interrupt(Service::GSP::InterruptId::P3D);
-        }
+        signal_interrupt(Service::GSP::InterruptId::P3D);
         return;
     }
 
@@ -229,29 +234,34 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         return;
     }
 
+    // Expand a 4-bit mask to 4-byte mask, e.g. 0b0101 -> 0x00FF00FF
     constexpr std::array<u32, 16> ExpandBitsToBytes = {
         0x00000000, 0x000000ff, 0x0000ff00, 0x0000ffff, 0x00ff0000, 0x00ff00ff,
         0x00ffff00, 0x00ffffff, 0xff000000, 0xff0000ff, 0xff00ff00, 0xff00ffff,
         0xffff0000, 0xffff00ff, 0xffffff00, 0xffffffff,
     };
 
+    // TODO: Figure out how register masking acts on e.g. vs.uniform_setup.set_value
     const u32 old_value = regs.internal.reg_array[id];
     const u32 write_mask = ExpandBitsToBytes[mask];
     regs.internal.reg_array[id] = (old_value & ~write_mask) | (value & write_mask);
 
+    // Track register write.
     DebugUtils::OnPicaRegWrite(id, mask, regs.internal.reg_array[id]);
 
+    // Track events.
     if (debug_context) {
         debug_context->OnEvent(DebugContext::Event::PicaCommandLoaded, &id);
         SCOPE_EXIT({ debug_context->OnEvent(DebugContext::Event::PicaCommandProcessed, &id); });
     }
 
-    if ((id == 0x203 || id == 0x206) || IsInterestingPicaStateReg(id)) {
+    if (IsInterestingPicaStateReg(id)) {
         LOG_DEBUG(HW_GPU,
                   "PicaCore::WriteInternalReg interesting_state_reg id=0x{:03X} value=0x{:08X} mask=0x{:X}",
                   id, regs.internal.reg_array[id], mask);
     }
 
+    switch (id) {
     // Trigger IRQ
     case PICA_REG_INDEX(trigger_irq):
         signal_interrupt(Service::GSP::InterruptId::P3D);
