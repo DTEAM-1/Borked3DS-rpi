@@ -469,9 +469,10 @@ void RasterizerVulkan::DrawTriangles() {
         // make sure a fragment shader is always bound for the software vertex path.
         pipeline_cache.UseFragmentShader(regs, user_config);
 
+        const u64 draw_index = ++g_vk_draw_counter;
         LOG_DEBUG(Render_Vulkan, "Pipeline configured, attempting draw draw_index={}", draw_index);
         bool draw_result = Draw(false, false);
-        LOG_DEBUG(Render_Vulkan, "Draw completed with result: {}", draw_result);
+        LOG_DEBUG(Render_Vulkan, "Draw completed draw_index={} result={}", draw_index, draw_result);
     } catch (const vk::SystemError& e) {
         LOG_CRITICAL(Render_Vulkan, "Vulkan error in DrawTriangles: {}", e.what());
     } catch (const std::exception& e) {
