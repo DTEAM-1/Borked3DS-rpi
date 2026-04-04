@@ -116,8 +116,8 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         IsEnvEnabled("BORKED3DS_V3DV_BYPASS_ZERO_STATE_GROUP");
 
     LOG_DEBUG(HW_GPU,
-              "PicaCore::ProcessCmdList begin cmdlist_index={} list={:#010X} size={} ignore_list={}",
-              cmdlist_index, list, size, ignore_list);
+              "PicaCore::ProcessCmdList begin cmdlist_index={} list={:#010X} size={} ignore_list={} bypass_zero_state_group={}",
+              cmdlist_index, list, size, ignore_list, bypass_zero_state_group);
 
     if (ignore_list) {
         LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList ignored list={:#010X}", list);
@@ -140,9 +140,10 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
             if (repeated_state_group_saw_non_zero) {
                 LOG_DEBUG(
                     HW_GPU,
-                    "PicaCore::ProcessCmdList repeated PICA state group 0x1C8..0x1CF count={} first_non_zero_reg=0x{:03X} value=0x{:08X} mask=0x{:X}",
+                    "PicaCore::ProcessCmdList repeated PICA state group 0x1C8..0x1CF count={} first_non_zero_reg=0x{:03X} value=0x{:08X} mask=0x{:X} bypassed={}",
                     repeated_state_group_count, repeated_state_group_first_non_zero_reg,
-                    repeated_state_group_first_non_zero_value, repeated_state_group_first_non_zero_mask);
+                    repeated_state_group_first_non_zero_value, repeated_state_group_first_non_zero_mask,
+                    bypassed_zero_state_group_count);
             } else {
                 LOG_DEBUG(HW_GPU,
                           "PicaCore::ProcessCmdList repeated PICA state group 0x1C8..0x1CF count={} all_zero=true bypassed={}",
@@ -220,12 +221,6 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
         if (all_zero_state_group && bypass_zero_state_group) {
             bypassed_zero_state_group_count++;
-            if (trace_state) {
-                LOG_WARNING(
-                    HW_GPU,
-                    "PicaCore::ProcessCmdList bypassing all-zero PICA state group 0x1C8..0x1CF cmdlist_index={}",
-                    cmdlist_index);
-            }
             continue;
         }
 
