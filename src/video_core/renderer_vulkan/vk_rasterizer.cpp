@@ -19,6 +19,8 @@
 
 namespace Vulkan {
 
+std::atomic<u64> g_vk_draw_counter{0};
+
 namespace {
 
 using TriangleTopology = Pica::PipelineRegs::TriangleTopology;
@@ -467,7 +469,7 @@ void RasterizerVulkan::DrawTriangles() {
         // make sure a fragment shader is always bound for the software vertex path.
         pipeline_cache.UseFragmentShader(regs, user_config);
 
-        LOG_DEBUG(Render_Vulkan, "Pipeline configured, attempting draw");
+        LOG_DEBUG(Render_Vulkan, "Pipeline configured, attempting draw draw_index={}", draw_index);
         bool draw_result = Draw(false, false);
         LOG_DEBUG(Render_Vulkan, "Draw completed with result: {}", draw_result);
     } catch (const vk::SystemError& e) {
