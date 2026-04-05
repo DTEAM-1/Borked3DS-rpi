@@ -832,7 +832,19 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         (float)src_rect.bottom / (float)scaled_height, (float)src_rect.left / (float)scaled_width,
         (float)src_rect.top / (float)scaled_height, (float)src_rect.right / (float)scaled_width);
 
-    screen_info.image_view = src_surface.ImageView();
+    // Pi 5 / V3DV presentation fix:
+    // Prefer a copy-backed image view for the final screen path when available.
+    // This avoids sampling directly from a surface that may still be tied to the
+    // active render path or carry layout/feedback-loop hazards on V3DV.
+    vk::ImageView display_view = src_surface.CopyImageView();
+    if (!IsValidImageView(display_view)) {
+        display_view = src_surface.ImageView();
+    }
+    if (!IsValidImageView(display_view)) {
+        return false;
+    }
+
+    screen_info.image_view = display_view;
 
     return true;
 }
