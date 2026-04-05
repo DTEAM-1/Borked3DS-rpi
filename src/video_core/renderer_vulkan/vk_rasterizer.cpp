@@ -470,8 +470,8 @@ void RasterizerVulkan::DrawTriangles() {
         pipeline_cache.UseFragmentShader(regs, user_config);
 
         LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles pipeline_ready");
-        bool draw_result = Draw(false, false);
-        LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles pipeline_ready");
+        Draw(false, false);
+        LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles draw_submitted");
     } catch (const vk::SystemError& e) {
         LOG_CRITICAL(Render_Vulkan, "Vulkan error in DrawTriangles: {}", e.what());
     } catch (const std::exception& e) {
