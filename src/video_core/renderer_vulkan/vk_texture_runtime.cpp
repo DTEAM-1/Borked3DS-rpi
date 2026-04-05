@@ -91,9 +91,6 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
 [[nodiscard]] constexpr bool NeedsPi5UIUploadExpansion(VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A4:
-    case VideoCore::PixelFormat::I4:
-    case VideoCore::PixelFormat::IA4:
-    case VideoCore::PixelFormat::A4:
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I4:
     case VideoCore::PixelFormat::I8:
