@@ -90,8 +90,14 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
 
 [[nodiscard]] constexpr bool NeedsPi5UIUploadExpansion(VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
+    case VideoCore::PixelFormat::A4:
+    case VideoCore::PixelFormat::I4:
+    case VideoCore::PixelFormat::IA4:
+    case VideoCore::PixelFormat::A4:
     case VideoCore::PixelFormat::A8:
+    case VideoCore::PixelFormat::I4:
     case VideoCore::PixelFormat::I8:
+    case VideoCore::PixelFormat::IA4:
     case VideoCore::PixelFormat::IA8:
     case VideoCore::PixelFormat::RG8:
         return true;
@@ -108,6 +114,26 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     case VideoCore::PixelFormat::IA8:
     case VideoCore::PixelFormat::RG8:
         return 2;
+    default:
+        return 0;
+    }
+}
+
+[[nodiscard]] constexpr u32 ComputeExpectedPi5UploadSize(VideoCore::PixelFormat pixel_format,
+                                                         u32 width, u32 height) {
+    const u32 pixel_count = width * height;
+    switch (pixel_format) {
+    case VideoCore::PixelFormat::A4:
+    case VideoCore::PixelFormat::I4:
+        return (pixel_count + 1) / 2;
+    case VideoCore::PixelFormat::IA4:
+        return pixel_count;
+    case VideoCore::PixelFormat::A8:
+    case VideoCore::PixelFormat::I8:
+        return pixel_count;
+    case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::RG8:
+        return pixel_count * 2;
     default:
         return 0;
     }
@@ -164,7 +190,64 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
 
 bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
                          VideoCore::PixelFormat pixel_format) {
+    const auto expand_nibble = [](u8 value) -> u8 { return static_cast<u8>((value << 4) | value); };
+
     switch (pixel_format) {
+    case VideoCore::PixelFormat::A4: {
+        if (dst.size() != src.size() * 8) {
+            return false;
+        }
+        for (size_t i = 0, o = 0; i < src.size(); ++i) {
+            const u8 packed = src[i];
+            const u8 a0 = expand_nibble(static_cast<u8>(packed & 0x0F));
+            const u8 a1 = expand_nibble(static_cast<u8>((packed >> 4) & 0x0F));
+            dst[o + 0] = 0xFF;
+            dst[o + 1] = 0xFF;
+            dst[o + 2] = 0xFF;
+            dst[o + 3] = a0;
+            dst[o + 4] = 0xFF;
+            dst[o + 5] = 0xFF;
+            dst[o + 6] = 0xFF;
+            dst[o + 7] = a1;
+            o += 8;
+        }
+        return true;
+    }
+    case VideoCore::PixelFormat::I4: {
+        if (dst.size() != src.size() * 8) {
+            return false;
+        }
+        for (size_t i = 0, o = 0; i < src.size(); ++i) {
+            const u8 packed = src[i];
+            const u8 i0 = expand_nibble(static_cast<u8>(packed & 0x0F));
+            const u8 i1 = expand_nibble(static_cast<u8>((packed >> 4) & 0x0F));
+            dst[o + 0] = i0;
+            dst[o + 1] = i0;
+            dst[o + 2] = i0;
+            dst[o + 3] = 0xFF;
+            dst[o + 4] = i1;
+            dst[o + 5] = i1;
+            dst[o + 6] = i1;
+            dst[o + 7] = 0xFF;
+            o += 8;
+        }
+        return true;
+    }
+    case VideoCore::PixelFormat::IA4: {
+        if (dst.size() != src.size() * 4) {
+            return false;
+        }
+        for (size_t i = 0, o = 0; i < src.size(); ++i, o += 4) {
+            const u8 packed = src[i];
+            const u8 intensity = expand_nibble(static_cast<u8>(packed & 0x0F));
+            const u8 alpha = expand_nibble(static_cast<u8>((packed >> 4) & 0x0F));
+            dst[o + 0] = intensity;
+            dst[o + 1] = intensity;
+            dst[o + 2] = intensity;
+            dst[o + 3] = alpha;
+        }
+        return true;
+    }
     case VideoCore::PixelFormat::A8: {
         if (dst.size() != src.size() * 4) {
             return false;
@@ -966,10 +1049,11 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
     const vk::Format effective_format = GetEffectiveTextureFormat(pixel_format, traits.native);
 
     if (NeedsPi5UIUploadExpansion(pixel_format)) {
-        const u32 source_bpp = SourceBytesPerPixel(pixel_format);
-        const u32 expected_source_size = upload.texture_rect.GetWidth() * upload.texture_rect.GetHeight() * source_bpp;
-        if (source_bpp != 0 && staging.size == expected_source_size) {
-            const u32 expanded_size = upload.texture_rect.GetWidth() * upload.texture_rect.GetHeight() * 4;
+        const u32 expected_source_size = ComputeExpectedPi5UploadSize(
+            pixel_format, upload.texture_rect.GetWidth(), upload.texture_rect.GetHeight());
+        if (expected_source_size != 0 && staging.size == expected_source_size) {
+            const u32 expanded_size =
+                upload.texture_rect.GetWidth() * upload.texture_rect.GetHeight() * 4;
             auto converted_staging = runtime->FindStaging(expanded_size, true);
             if (ExpandPi5UIUpload(converted_staging.mapped, staging.mapped, pixel_format)) {
                 effective_upload.buffer_offset = converted_staging.offset;
