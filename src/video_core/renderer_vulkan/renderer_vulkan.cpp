@@ -4,6 +4,7 @@
 // Refer to the license.txt file included.
 
 #include "common/assert.h"
+#include <cstdlib>
 #include "common/logging/log.h"
 #include "common/memory_detect.h"
 #include "common/profiling.h"
@@ -25,6 +26,16 @@
 #include <vk_mem_alloc.h>
 
 namespace Vulkan {
+
+namespace {
+
+[[nodiscard]] bool IsPresentTraceEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_PRESENT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+} // namespace
+
 
 struct ScreenRectVertex {
     ScreenRectVertex() = default;
@@ -101,6 +112,10 @@ void RendererVulkan::PrepareRendertarget() {
     const auto& framebuffer_config = pica.regs.framebuffer_config;
     const auto& regs_lcd = pica.regs_lcd;
 
+    if (IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan, "TRACE_PRESENT prepare_rendertarget begin");
+    }
+
     for (u32 i = 0; i < 3; i++) {
         const u32 fb_id = i == 2 ? 1 : 0;
         const auto& framebuffer = framebuffer_config[fb_id];
@@ -128,9 +143,16 @@ void RendererVulkan::PrepareRendertarget() {
             }
         }
 
-        if (!LoadFBToScreenInfo(framebuffer, screen_infos[i], i == 1)) {
+        const bool loaded = LoadFBToScreenInfo(framebuffer, screen_infos[i], i == 1);
+        if (!loaded) {
             screen_infos[i].image_view = texture.image_view;
             screen_infos[i].texcoords = {0.f, 0.f, 1.f, 1.f};
+        }
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT screen_info index={} loaded={} view_valid={} size={}x{}",
+                     i, loaded, static_cast<bool>(screen_infos[i].image_view),
+                     framebuffer.width.Value(), framebuffer.height.Value());
         }
     }
 }
@@ -201,6 +223,13 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
 
 bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuffer,
                                         ScreenInfo& screen_info, bool right_eye) {
+    if (IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT load_fb_to_screen right_eye={} active_fb={} width={} height={} stride={} format={}",
+                 right_eye, framebuffer.active_fb, framebuffer.width.Value(),
+                 framebuffer.height.Value(), framebuffer.stride,
+                 static_cast<u32>(framebuffer.color_format.Value()));
+    }
     if (framebuffer.address_right1 == 0 || framebuffer.address_right2 == 0) {
         right_eye = false;
     }
@@ -829,6 +858,17 @@ void RendererVulkan::DrawBottomScreen(const Layout::FramebufferLayout& layout,
 
 void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& layout,
                                  bool flipped) {
+    if (IsPresentTraceEnabled()) {
+        static u64 trace_frame_counter = 0;
+        ++trace_frame_counter;
+        if (trace_frame_counter <= 8 || (trace_frame_counter % 120) == 0) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT draw_screens frame={} layout={}x{} top={} bottom={} additional={}",
+                     trace_frame_counter, layout.width, layout.height,
+                     layout.top_screen_enabled, layout.bottom_screen_enabled,
+                     layout.additional_screen_enabled);
+        }
+    }
     if (settings.bg_color_update_requested.exchange(false)) {
         clear_color.float32[0] = Settings::values.bg_red.GetValue();
         clear_color.float32[1] = Settings::values.bg_green.GetValue();
@@ -870,6 +910,10 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
 
 void RendererVulkan::SwapBuffers() {
     const Layout::FramebufferLayout& layout = render_window.GetFramebufferLayout();
+    if (IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan, "TRACE_PRESENT swap_buffers begin layout={}x{}", layout.width,
+                 layout.height);
+    }
     PrepareRendertarget();
     RenderScreenshot();
     RenderToWindow(main_window, layout, false);
