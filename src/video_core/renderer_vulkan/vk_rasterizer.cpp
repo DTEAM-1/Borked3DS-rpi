@@ -4,6 +4,7 @@
 // Refer to the license.txt file included.
 
 #include "common/alignment.h"
+#include <cstdlib>
 #include "common/literals.h"
 #include "common/logging/log.h"
 #include "common/math_util.h"
@@ -53,6 +54,11 @@ struct DrawParams {
 
 [[nodiscard]] bool IsValidImageView(const vk::ImageView view) {
     return static_cast<bool>(view);
+}
+
+[[nodiscard]] bool IsDrawTraceEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_DRAW");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
 } // Anonymous namespace
@@ -390,12 +396,20 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
 }
 
 bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW accel_internal indexed={} vertex_count={} binding_count={}",
+                 is_indexed, regs.pipeline.num_vertices, pipeline_info.vertex_layout.binding_count);
+    }
     if (is_indexed) {
         SetupIndexArray();
     }
 
     const bool wait_built = !async_shaders || regs.pipeline.num_vertices <= 6;
     if (!pipeline_cache.BindPipeline(pipeline_info, wait_built)) {
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_DRAW pipeline not ready wait_built={}", wait_built);
+        }
         return true;
     }
 
@@ -481,11 +495,32 @@ void RasterizerVulkan::DrawTriangles() {
 bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     BORKED3DS_PROFILE("Vulkan", "Drawing");
+    if (IsDrawTraceEnabled()) {
+        const u64 draw_index = ++g_vk_draw_counter;
+        if (draw_index <= 16 || (draw_index % 256) == 0) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW begin index={} accelerate={} indexed={} num_vertices={} topology={} shadow={} color_mask=0x{:x} depth_test={} depth_write={} stencil_test={}",
+                     draw_index, accelerate, is_indexed, regs.pipeline.num_vertices,
+                     static_cast<u32>(regs.pipeline.triangle_topology.Value()),
+                     regs.framebuffer.IsShadowRendering(),
+                     static_cast<u32>(pipeline_info.blending.color_write_mask),
+                     static_cast<bool>(pipeline_info.depth_stencil.depth_test_enable),
+                     static_cast<bool>(pipeline_info.depth_stencil.depth_write_enable),
+                     static_cast<bool>(pipeline_info.depth_stencil.stencil_test_enable));
+        }
+    }
     const bool shadow_rendering = regs.framebuffer.IsShadowRendering();
     const bool has_stencil = regs.framebuffer.HasStencil();
 
     const bool write_color_fb = shadow_rendering || pipeline_info.blending.color_write_mask;
     const bool write_depth_fb = pipeline_info.IsDepthWriteEnabled();
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW targets write_color={} write_depth={} has_stencil={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                 write_color_fb, write_depth_fb, has_stencil,
+                 regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                 regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+    }
     const bool using_color_fb =
         regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress() != 0 && write_color_fb;
     const bool using_depth_fb =
@@ -496,11 +531,20 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     const auto fb_helper = res_cache.GetFramebufferSurfaces(using_color_fb, using_depth_fb);
     const Framebuffer* framebuffer = fb_helper.Framebuffer();
     if (!framebuffer->Handle()) {
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_DRAW skipped: framebuffer handle invalid");
+        }
         return true;
     }
 
     pipeline_info.attachments.color = framebuffer->Format(SurfaceType::Color);
     pipeline_info.attachments.depth = framebuffer->Format(SurfaceType::Depth);
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW attachments color_format={} depth_format={} using_color={} using_depth={}",
+                 static_cast<u32>(pipeline_info.attachments.color),
+                 static_cast<u32>(pipeline_info.attachments.depth), using_color_fb, using_depth_fb);
+    }
 
     // Update scissor uniforms
     const auto [scissor_x1, scissor_y2, scissor_x2, scissor_y1] = fb_helper.Scissor();
@@ -535,6 +579,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     // Configure viewport and scissor
     const auto viewport = fb_helper.Viewport();
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW render_area x={} y={} w={} h={} viewport=({}, {}, {}, {})",
+                 draw_rect.left, draw_rect.bottom, draw_rect.GetWidth(), draw_rect.GetHeight(),
+                 viewport.x, viewport.y, viewport.width, viewport.height);
+    }
     pipeline_info.dynamic.viewport = Common::Rectangle<s32>{
         viewport.x,
         viewport.y,
@@ -548,6 +598,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (accelerate) {
         succeeded = AccelerateDrawBatchInternal(is_indexed);
     } else {
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_DRAW software_path vertex_batch_size={}", vertex_batch.size());
+        }
         pipeline_cache.BindPipeline(pipeline_info, true);
 
         const u32 vertex_count = static_cast<u32>(vertex_batch.size());
@@ -563,11 +616,17 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         });
     }
 
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan, "TRACE_DRAW end succeeded={} remaining_batch={}", succeeded, vertex_batch.size());
+    }
     vertex_batch.clear();
     return succeeded;
 }
 
 void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan, "TRACE_DRAW sync_textures begin framebuffer_valid={}", framebuffer != nullptr);
+    }
     using TextureType = Pica::TexturingRegs::TextureConfig::TextureType;
 
     const auto pica_textures = regs.texturing.GetTextures();
@@ -592,6 +651,9 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
 
         // If the texture unit is disabled bind a null surface to it
         if (!texture.enabled) {
+            if (IsDrawTraceEnabled() && texture_index < 3) {
+                LOG_INFO(Render_Vulkan, "TRACE_DRAW tex{} disabled -> null", texture_index);
+            }
             bind_null();
             continue;
         }
@@ -631,6 +693,9 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
 
         const vk::ImageView base_view = surface.ImageView();
         if (!IsValidImageView(base_view)) {
+            if (IsDrawTraceEnabled()) {
+                LOG_INFO(Render_Vulkan, "TRACE_DRAW tex{} invalid base view -> null", texture_index);
+            }
             bind_null();
             continue;
         }
@@ -646,6 +711,11 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
             }
         }
 
+        if (IsDrawTraceEnabled() && texture_index < 3) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW tex{} bound feedback_copy={} sampler_valid={}",
+                     texture_index, texture_view != base_view, static_cast<bool>(sampler.Handle()));
+        }
         update_queue.AddImageSampler(texture_set, texture_index, 0, texture_view,
                                      sampler.Handle());
     }
