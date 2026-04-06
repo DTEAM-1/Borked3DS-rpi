@@ -4,6 +4,7 @@
 // Refer to the license.txt file included.
 
 #include <boost/container/static_vector.hpp>
+#include <cstdlib>
 
 #include "common/common_paths.h"
 #include "common/file_util.h"
@@ -27,6 +28,15 @@ using namespace Pica::Shader::Generator;
 using Pica::Shader::FSConfig;
 
 namespace Vulkan {
+
+namespace {
+
+[[nodiscard]] bool IsPi5StrictCompatEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+} // namespace
 
 u32 AttribBytes(Pica::PipelineRegs::VertexAttributeFormat format, u32 size) {
     switch (format) {
@@ -90,6 +100,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
       trivial_vertex_shader{
           instance, SPIRV::GenerateTrivialVertexShader(instance.IsShaderClipDistanceSupported())} {
     scheduler.RegisterOnDispatch([this] { update_queue.Flush(); });
+    const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
     profile = Pica::Shader::Profile{
         .has_separable_shaders = true,
         .has_clip_planes = instance.IsShaderClipDistanceSupported(),
@@ -99,7 +110,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .has_fragment_shader_barycentric = instance.IsFragmentShaderBarycentricSupported(),
         .has_blend_minmax_factor = false,
         .has_minus_one_to_one_range = false,
-        .has_logic_op = !instance.NeedsLogicOpEmulation(),
+        .has_logic_op = !pi5_strict_compat && !instance.NeedsLogicOpEmulation(),
         .is_vulkan = true,
     };
     BuildLayout();
@@ -214,9 +225,13 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         return false;
     }
 
+    const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
+    const bool use_extended_dynamic_state =
+        instance.IsExtendedDynamicStateSupported() && !pi5_strict_compat;
+
     const bool is_dirty = scheduler.IsStateDirty(StateFlags::Pipeline);
     const bool pipeline_dirty = (current_pipeline != pipeline) || is_dirty;
-    scheduler.Record([this, is_dirty, pipeline_dirty, pipeline,
+    scheduler.Record([this, is_dirty, pipeline_dirty, pipeline, use_extended_dynamic_state,
                       current_dynamic = current_info.dynamic, dynamic = info.dynamic,
                       descriptor_sets = bound_descriptor_sets, offsets = offsets,
                       current_rasterization = current_info.rasterization,
@@ -269,7 +284,7 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
             cmdbuf.setBlendConstants(color.AsArray());
         }
 
-        if (instance.IsExtendedDynamicStateSupported()) {
+        if (use_extended_dynamic_state) {
             if (rasterization.cull_mode != current_rasterization.cull_mode || is_dirty) {
                 cmdbuf.setCullModeEXT(PicaToVK::CullMode(rasterization.cull_mode));
                 cmdbuf.setFrontFaceEXT(PicaToVK::FrontFace(rasterization.cull_mode));

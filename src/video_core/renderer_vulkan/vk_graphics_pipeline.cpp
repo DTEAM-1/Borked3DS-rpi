@@ -155,19 +155,12 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         .primitiveRestartEnable = false,
     };
 
-    const vk::CullModeFlags cull_mode =
-        pi5_strict_compat ? vk::CullModeFlagBits::eNone
-                          : PicaToVK::CullMode(info.rasterization.cull_mode);
-    const vk::FrontFace front_face =
-        pi5_strict_compat ? vk::FrontFace::eCounterClockwise
-                          : PicaToVK::FrontFace(info.rasterization.cull_mode);
-
     const vk::PipelineRasterizationStateCreateInfo raster_state = {
         .depthClampEnable = false,
         .rasterizerDiscardEnable = false,
         .polygonMode = vk::PolygonMode::eFill,
-        .cullMode = cull_mode,
-        .frontFace = front_face,
+        .cullMode = PicaToVK::CullMode(info.rasterization.cull_mode),
+        .frontFace = PicaToVK::FrontFace(info.rasterization.cull_mode),
         .depthBiasEnable = false,
         .lineWidth = 1.0f,
     };
@@ -177,9 +170,8 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         .sampleShadingEnable = false,
     };
 
-    const vk::Bool32 blend_enable = pi5_strict_compat ? VK_FALSE : info.blending.blend_enable;
     const vk::PipelineColorBlendAttachmentState colorblend_attachment = {
-        .blendEnable = blend_enable,
+        .blendEnable = info.blending.blend_enable,
         .srcColorBlendFactor = PicaToVK::BlendFunc(info.blending.src_color_blend_factor),
         .dstColorBlendFactor = PicaToVK::BlendFunc(info.blending.dst_color_blend_factor),
         .colorBlendOp = PicaToVK::BlendEquation(info.blending.color_blend_eq),
@@ -190,9 +182,7 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     };
 
     const vk::Bool32 logic_op_enable =
-        pi5_strict_compat ? VK_FALSE
-                          : static_cast<vk::Bool32>(
-                                !info.blending.blend_enable && !instance.NeedsLogicOpEmulation());
+        (!pi5_strict_compat && !info.blending.blend_enable && !instance.NeedsLogicOpEmulation());
 
     const vk::PipelineColorBlendStateCreateInfo color_blending = {
         .logicOpEnable = logic_op_enable,
@@ -251,22 +241,12 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         .compareOp = PicaToVK::CompareFunc(info.depth_stencil.stencil_compare_op),
     };
 
-    const vk::Bool32 depth_test_enable =
-        pi5_strict_compat ? VK_FALSE
-                          : static_cast<vk::Bool32>(info.depth_stencil.depth_test_enable.Value());
-    const vk::Bool32 depth_write_enable =
-        pi5_strict_compat ? VK_FALSE
-                          : static_cast<vk::Bool32>(info.depth_stencil.depth_write_enable.Value());
-    const vk::Bool32 stencil_test_enable =
-        pi5_strict_compat ? VK_FALSE
-                          : static_cast<vk::Bool32>(info.depth_stencil.stencil_test_enable.Value());
-
     const vk::PipelineDepthStencilStateCreateInfo depth_info = {
-        .depthTestEnable = depth_test_enable,
-        .depthWriteEnable = depth_write_enable,
+        .depthTestEnable = static_cast<vk::Bool32>(info.depth_stencil.depth_test_enable.Value()),
+        .depthWriteEnable = static_cast<vk::Bool32>(info.depth_stencil.depth_write_enable.Value()),
         .depthCompareOp = PicaToVK::CompareFunc(info.depth_stencil.depth_compare_op),
         .depthBoundsTestEnable = false,
-        .stencilTestEnable = stencil_test_enable,
+        .stencilTestEnable = static_cast<vk::Bool32>(info.depth_stencil.stencil_test_enable.Value()),
         .front = stencil_op_state,
         .back = stencil_op_state,
     };
