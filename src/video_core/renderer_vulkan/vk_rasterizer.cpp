@@ -4,6 +4,7 @@
 // Refer to the license.txt file included.
 
 #include "common/alignment.h"
+#include <cstdlib>
 #include "common/literals.h"
 #include "common/logging/log.h"
 #include "common/math_util.h"
@@ -53,6 +54,11 @@ struct DrawParams {
 
 [[nodiscard]] bool IsValidImageView(const vk::ImageView view) {
     return static_cast<bool>(view);
+}
+
+[[nodiscard]] bool IsPresentTraceEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_PRESENT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
 } // Anonymous namespace
@@ -482,6 +488,16 @@ void RasterizerVulkan::DrawTriangles() {
 bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     BORKED3DS_PROFILE("Vulkan", "Drawing");
+    if (IsPresentTraceEnabled()) {
+        const u64 draw_index = ++g_vk_draw_counter;
+        if (draw_index <= 8 || (draw_index % 256) == 0) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT raster_draw index={} accelerate={} indexed={} vertices={} topology={} color_mask=0x{:x}",
+                     draw_index, accelerate, is_indexed, regs.pipeline.num_vertices,
+                     static_cast<u32>(regs.pipeline.triangle_topology.Value()),
+                     static_cast<u32>(pipeline_info.blending.color_write_mask));
+        }
+    }
     const bool shadow_rendering = regs.framebuffer.IsShadowRendering();
     const bool has_stencil = regs.framebuffer.HasStencil();
 
@@ -497,6 +513,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     const auto fb_helper = res_cache.GetFramebufferSurfaces(using_color_fb, using_depth_fb);
     const Framebuffer* framebuffer = fb_helper.Framebuffer();
     if (!framebuffer->Handle()) {
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_PRESENT raster_draw skipped: framebuffer handle invalid");
+        }
         return true;
     }
 
@@ -804,7 +823,17 @@ bool RasterizerVulkan::AccelerateFill(const Pica::MemoryFillConfig& config) {
 bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
                                          PAddr framebuffer_addr, u32 pixel_stride,
                                          ScreenInfo& screen_info) {
+    if (IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT accelerate_display addr=0x{:08x} width={} height={} stride_px={} format={}",
+                 framebuffer_addr, config.width.Value(), config.height.Value(), pixel_stride,
+                 static_cast<u32>(config.color_format));
+    }
+
     if (framebuffer_addr == 0) [[unlikely]] {
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_PRESENT accelerate_display aborted: framebuffer_addr=0");
+        }
         return false;
     }
 
@@ -821,6 +850,9 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         res_cache.GetSurfaceSubRect(src_params, VideoCore::ScaleMatch::Ignore, true);
 
     if (!src_surface_id) {
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_PRESENT accelerate_display aborted: no source surface");
+        }
         return false;
     }
 
@@ -838,10 +870,21 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
     // the presentation path just to test a fallback.
     const vk::ImageView display_view = src_surface.ImageView();
     if (!IsValidImageView(display_view)) {
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_PRESENT accelerate_display aborted: invalid image view");
+        }
         return false;
     }
 
     screen_info.image_view = display_view;
+
+    if (IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT accelerate_display success scaled={}x{} texcoords=({}, {}, {}, {})",
+                 scaled_width, scaled_height, screen_info.texcoords.left,
+                 screen_info.texcoords.top, screen_info.texcoords.right,
+                 screen_info.texcoords.bottom);
+    }
 
     return true;
 }
