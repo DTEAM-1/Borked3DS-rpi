@@ -467,8 +467,7 @@ void RasterizerVulkan::DrawTriangles() {
         pipeline_cache.UseTrivialGeometryShader();
         // Pi 5 / V3DV stability fix:
         // make sure a fragment shader is always bound for the software vertex path.
-        pipeline_cache.UseFragmentShader(regs, user_config);
-
+    
         LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles pipeline_ready");
         Draw(false, false);
         LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles draw_submitted");
@@ -523,7 +522,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     // Pi 5 / V3DV stability fix:
     // always bind the fragment shader here to avoid stale or incomplete pipeline state.
-    pipeline_cache.UseFragmentShader(regs, user_config);
     shader_dirty = false;
 
     // Sync the LUTs within the texture buffer
