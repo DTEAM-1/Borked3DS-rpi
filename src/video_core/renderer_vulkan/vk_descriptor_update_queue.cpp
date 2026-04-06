@@ -3,10 +3,21 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
+
 #include "video_core/renderer_vulkan/vk_descriptor_update_queue.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 
 namespace Vulkan {
+
+namespace {
+
+[[nodiscard]] bool IsPi5StrictCompatEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+} // namespace
 
 DescriptorUpdateQueue::DescriptorUpdateQueue(const Instance& instance, u32 descriptor_write_max_)
     : device{instance.GetDevice()}, descriptor_write_max{descriptor_write_max_} {
@@ -42,6 +53,10 @@ void DescriptorUpdateQueue::AddStorageImage(vk::DescriptorSet target, u8 binding
         .descriptorType = vk::DescriptorType::eStorageImage,
         .pImageInfo = &image_info,
     };
+
+    if (IsPi5StrictCompatEnabled()) {
+        Flush();
+    }
 }
 
 void DescriptorUpdateQueue::AddImageSampler(vk::DescriptorSet target, u8 binding, u8 array_index,
@@ -54,7 +69,13 @@ void DescriptorUpdateQueue::AddImageSampler(vk::DescriptorSet target, u8 binding
     auto& image_info = descriptor_infos[descriptor_write_end].image_info;
     image_info.sampler = sampler;
     image_info.imageView = image_view;
-    image_info.imageLayout = sampler ? vk::ImageLayout::eShaderReadOnlyOptimal : image_layout;
+
+    if (IsPi5StrictCompatEnabled()) {
+        image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    } else {
+        image_info.imageLayout =
+            sampler ? vk::ImageLayout::eShaderReadOnlyOptimal : image_layout;
+    }
 
     descriptor_writes[descriptor_write_end++] = vk::WriteDescriptorSet{
         .dstSet = target,
@@ -65,6 +86,10 @@ void DescriptorUpdateQueue::AddImageSampler(vk::DescriptorSet target, u8 binding
             sampler ? vk::DescriptorType::eCombinedImageSampler : vk::DescriptorType::eSampledImage,
         .pImageInfo = &image_info,
     };
+
+    if (IsPi5StrictCompatEnabled()) {
+        Flush();
+    }
 }
 
 void DescriptorUpdateQueue::AddBuffer(vk::DescriptorSet target, u8 binding, vk::Buffer buffer,
@@ -87,6 +112,10 @@ void DescriptorUpdateQueue::AddBuffer(vk::DescriptorSet target, u8 binding, vk::
         .descriptorType = type,
         .pBufferInfo = &buffer_info,
     };
+
+    if (IsPi5StrictCompatEnabled()) {
+        Flush();
+    }
 }
 
 void DescriptorUpdateQueue::AddTexelBuffer(vk::DescriptorSet target, u8 binding,
@@ -105,6 +134,10 @@ void DescriptorUpdateQueue::AddTexelBuffer(vk::DescriptorSet target, u8 binding,
         .descriptorType = vk::DescriptorType::eUniformTexelBuffer,
         .pTexelBufferView = &buffer_info,
     };
+
+    if (IsPi5StrictCompatEnabled()) {
+        Flush();
+    }
 }
 
 } // namespace Vulkan
