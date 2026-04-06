@@ -4,6 +4,7 @@
 // Refer to the license.txt file included.
 
 #include <boost/container/static_vector.hpp>
+#include <cstdlib>
 
 #include "common/hash.h"
 #include "common/profiling.h"
@@ -15,6 +16,15 @@
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 namespace Vulkan {
+
+namespace {
+
+[[nodiscard]] bool IsPi5StrictCompatEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+} // namespace
 
 vk::ShaderStageFlagBits MakeShaderStage(std::size_t index) {
     switch (index) {
@@ -79,25 +89,20 @@ GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& ren
 GraphicsPipeline::~GraphicsPipeline() = default;
 
 bool GraphicsPipeline::TryBuild(bool wait_built) {
-    // The pipeline is currently being compiled. We can either wait for it
-    // or skip the draw.
     if (is_pending) {
         return wait_built;
     }
 
-    // If the shaders haven't been compiled yet, we cannot proceed.
     const bool shaders_pending = std::any_of(
         stages.begin(), stages.end(), [](Shader* shader) { return shader && !shader->IsDone(); });
     if (!wait_built && shaders_pending) {
         return false;
     }
 
-    // Ask the driver if it can give us the pipeline quickly.
     if (!shaders_pending && instance.IsPipelineCreationCacheControlSupported() && Build(true)) {
         return true;
     }
 
-    // Fallback to (a)synchronous compilation
     worker->QueueWork([this] { Build(); });
     is_pending = true;
     return wait_built;
@@ -106,6 +111,9 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
 bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     BORKED3DS_PROFILE("Vulkan", "Pipeline Building");
     const vk::Device device = instance.GetDevice();
+    const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
+    const bool use_extended_dynamic_state =
+        instance.IsExtendedDynamicStateSupported() && !pi5_strict_compat;
 
     std::array<vk::VertexInputBindingDescription, MAX_VERTEX_BINDINGS> bindings;
     for (u32 i = 0; i < info.vertex_layout.binding_count; i++) {
@@ -129,8 +137,6 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
             .offset = attr.offset,
         };
 
-        // At the end there's always the fixed binding which takes up
-        // at least 16 bytes so we should always be able to alias.
         if (traits.needs_emulation) {
             const FormatTraits& comp_four_traits = instance.GetTraits(attr.type, 4);
             attributes[i].format = comp_four_traits.native;
@@ -149,26 +155,31 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         .primitiveRestartEnable = false,
     };
 
+    const vk::CullModeFlags cull_mode =
+        pi5_strict_compat ? vk::CullModeFlagBits::eNone
+                          : PicaToVK::CullMode(info.rasterization.cull_mode);
+    const vk::FrontFace front_face =
+        pi5_strict_compat ? vk::FrontFace::eCounterClockwise
+                          : PicaToVK::FrontFace(info.rasterization.cull_mode);
+
     const vk::PipelineRasterizationStateCreateInfo raster_state = {
         .depthClampEnable = false,
         .rasterizerDiscardEnable = false,
-        .cullMode = PicaToVK::CullMode(info.rasterization.cull_mode),
-        .frontFace = PicaToVK::FrontFace(info.rasterization.cull_mode),
+        .polygonMode = vk::PolygonMode::eFill,
+        .cullMode = cull_mode,
+        .frontFace = front_face,
         .depthBiasEnable = false,
         .lineWidth = 1.0f,
     };
 
     const vk::PipelineMultisampleStateCreateInfo multisampling = {
         .rasterizationSamples = vk::SampleCountFlagBits::e1,
-        // Pi 5 / V3DV compatibility:
-        // sample shading must stay disabled here unless sampleRateShading was enabled
-        // as a Vulkan device feature. On Pi 5 we hit pipeline creation failures when
-        // this followed the UI setting directly.
         .sampleShadingEnable = false,
     };
 
+    const vk::Bool32 blend_enable = pi5_strict_compat ? VK_FALSE : info.blending.blend_enable;
     const vk::PipelineColorBlendAttachmentState colorblend_attachment = {
-        .blendEnable = info.blending.blend_enable,
+        .blendEnable = blend_enable,
         .srcColorBlendFactor = PicaToVK::BlendFunc(info.blending.src_color_blend_factor),
         .dstColorBlendFactor = PicaToVK::BlendFunc(info.blending.dst_color_blend_factor),
         .colorBlendOp = PicaToVK::BlendEquation(info.blending.color_blend_eq),
@@ -178,8 +189,13 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         .colorWriteMask = static_cast<vk::ColorComponentFlags>(info.blending.color_write_mask),
     };
 
+    const vk::Bool32 logic_op_enable =
+        pi5_strict_compat ? VK_FALSE
+                          : static_cast<vk::Bool32>(
+                                !info.blending.blend_enable && !instance.NeedsLogicOpEmulation());
+
     const vk::PipelineColorBlendStateCreateInfo color_blending = {
-        .logicOpEnable = !info.blending.blend_enable && !instance.NeedsLogicOpEmulation(),
+        .logicOpEnable = logic_op_enable,
         .logicOp = PicaToVK::LogicOp(info.blending.logic_op),
         .attachmentCount = 1,
         .pAttachments = &colorblend_attachment,
@@ -213,7 +229,7 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         vk::DynamicState::eStencilReference,   vk::DynamicState::eBlendConstants,
     };
 
-    if (instance.IsExtendedDynamicStateSupported()) {
+    if (use_extended_dynamic_state) {
         constexpr std::array extended = {
             vk::DynamicState::eCullModeEXT,        vk::DynamicState::eDepthCompareOpEXT,
             vk::DynamicState::eDepthTestEnableEXT, vk::DynamicState::eDepthWriteEnableEXT,
@@ -235,12 +251,22 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         .compareOp = PicaToVK::CompareFunc(info.depth_stencil.stencil_compare_op),
     };
 
+    const vk::Bool32 depth_test_enable =
+        pi5_strict_compat ? VK_FALSE
+                          : static_cast<vk::Bool32>(info.depth_stencil.depth_test_enable.Value());
+    const vk::Bool32 depth_write_enable =
+        pi5_strict_compat ? VK_FALSE
+                          : static_cast<vk::Bool32>(info.depth_stencil.depth_write_enable.Value());
+    const vk::Bool32 stencil_test_enable =
+        pi5_strict_compat ? VK_FALSE
+                          : static_cast<vk::Bool32>(info.depth_stencil.stencil_test_enable.Value());
+
     const vk::PipelineDepthStencilStateCreateInfo depth_info = {
-        .depthTestEnable = static_cast<u32>(info.depth_stencil.depth_test_enable.Value()),
-        .depthWriteEnable = static_cast<u32>(info.depth_stencil.depth_write_enable.Value()),
+        .depthTestEnable = depth_test_enable,
+        .depthWriteEnable = depth_write_enable,
         .depthCompareOp = PicaToVK::CompareFunc(info.depth_stencil.depth_compare_op),
         .depthBoundsTestEnable = false,
-        .stencilTestEnable = static_cast<u32>(info.depth_stencil.stencil_test_enable.Value()),
+        .stencilTestEnable = stencil_test_enable,
         .front = stencil_op_state,
         .back = stencil_op_state,
     };
