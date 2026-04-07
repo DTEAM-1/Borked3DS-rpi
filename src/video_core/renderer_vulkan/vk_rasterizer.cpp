@@ -564,7 +564,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncTextureUnits(framebuffer);
     SyncUtilityTextures(framebuffer);
 
-    shader_dirty = false;
+    if (shader_dirty) {
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_DRAW use_fragment_shader shader_dirty=1");
+        }
+        pipeline_cache.UseFragmentShader(regs, user_config);
+        shader_dirty = false;
+    }
 
     // Sync the LUTs within the texture buffer
     SyncAndUploadLUTs();
