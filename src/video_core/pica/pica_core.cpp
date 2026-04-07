@@ -50,6 +50,22 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
 }
 
+void LogPicaTextureState(const RegsInternal& regs, const char* tag) {
+    if (!IsPicaDrawTraceEnabled()) {
+        return;
+    }
+
+    const auto& textures = regs.texturing.GetTextures();
+    for (u32 i = 0; i < 3; ++i) {
+        const auto& texture = textures[i];
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA {} tex{} enabled={} type={} format={} addr=0x{:08X} width={} height={} config=0x{:08X}",
+                 tag, i, texture.enabled, static_cast<u32>(texture.config.type.Value()),
+                 static_cast<u32>(texture.format), texture.config.GetPhysicalAddress(),
+                 texture.width, texture.height, texture.config.hex);
+    }
+}
+
 std::atomic<u64> g_pica_draw_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 
@@ -274,6 +290,17 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
                       regs.internal.pipeline.vertex_offset,
                       static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()),
                       static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
+        }
+        if (IsPicaDrawTraceEnabled()) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA trigger_draw id=0x{:03X} indexed={} num_vertices={} vertex_offset={} topology={} use_gs={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                     id, is_indexed, regs.internal.pipeline.num_vertices,
+                     regs.internal.pipeline.vertex_offset,
+                     static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()),
+                     static_cast<u32>(regs.internal.pipeline.use_gs.Value()),
+                     regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+            LogPicaTextureState(regs.internal, "pre_draw");
         }
         DrawArrays(is_indexed);
         break;
@@ -603,6 +630,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                  Settings::values.use_hw_shader.GetValue(), Settings::values.skip_slow_draw.GetValue(),
                  static_cast<u32>(primitive_assembler.GetTopology()),
                  static_cast<u32>(regs.internal.pipeline.use_gs.Value()), primitive_assembler.IsEmpty());
+        LogPicaTextureState(regs.internal, "drawarrays_begin");
     }
 
     if (IsEnvEnabled("BORKED3DS_V3DV_BYPASS_FIRST_DRAW") && draw_index == 1) {
@@ -673,6 +701,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
         if (trace_draw) {
             LOG_INFO(HW_GPU, "TRACE_DRAW_PICA skip_slow_draw prevented software fallback");
+            LogPicaTextureState(regs.internal, "skip_slow_draw");
         }
         return;
     }
@@ -692,6 +721,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
     }
     if (trace_draw) {
         LOG_INFO(HW_GPU, "TRACE_DRAW_PICA software path -> rasterizer->DrawTriangles()");
+        LogPicaTextureState(regs.internal, "before_draw_triangles");
     }
     rasterizer->DrawTriangles();
 }
