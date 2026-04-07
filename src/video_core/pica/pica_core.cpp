@@ -50,6 +50,11 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
 }
 
+[[nodiscard]] bool IsPicaTextureReg(u32 id) {
+    return id >= PICA_REG_INDEX(texturing.main_config) &&
+           id <= PICA_REG_INDEX(texturing.proctex_lut_data[7]);
+}
+
 void LogPicaTextureState(const RegsInternal& regs, const char* tag) {
     if (!IsPicaDrawTraceEnabled()) {
         return;
@@ -222,6 +227,13 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         LOG_DEBUG(HW_GPU,
                   "PicaCore::WriteInternalReg interesting_state_reg id=0x{:03X} value=0x{:08X} mask=0x{:X}",
                   id, regs.internal.reg_array[id], mask);
+    }
+
+    if (IsPicaDrawTraceEnabled() && IsPicaTextureReg(id)) {
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA texture_reg_write id=0x{:03X} value=0x{:08X} mask=0x{:X}",
+                 id, regs.internal.reg_array[id], mask);
+        LogPicaTextureState(regs.internal, "texture_reg_write");
     }
 
     switch (id) {
