@@ -479,10 +479,10 @@ void RasterizerVulkan::DrawTriangles() {
 
         pipeline_cache.UseTrivialVertexShader();
         pipeline_cache.UseTrivialGeometryShader();
-        // Pi 5 / V3DV stability fix:
-        // make sure a fragment shader is always bound for the software vertex path.
-    
         LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles pipeline_ready");
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_DRAW draw_triangles software_batch_size={}", vertex_batch.size());
+        }
         Draw(false, false);
         LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles draw_submitted");
     } catch (const vk::SystemError& e) {
@@ -564,8 +564,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncTextureUnits(framebuffer);
     SyncUtilityTextures(framebuffer);
 
-    // Pi 5 / V3DV stability fix:
-    // always bind the fragment shader here to avoid stale or incomplete pipeline state.
     shader_dirty = false;
 
     // Sync the LUTs within the texture buffer
@@ -645,16 +643,20 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
     for (u32 texture_index = 0; texture_index < pica_textures.size(); ++texture_index) {
         const auto& texture = pica_textures[texture_index];
 
-        auto bind_null = [&] {
+        auto bind_null = [&](const char* reason) {
+            if (IsDrawTraceEnabled() && texture_index < 3) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW tex{} -> null reason={} type={} format={}",
+                         texture_index, reason,
+                         static_cast<u32>(texture.config.type.Value()),
+                         static_cast<u32>(texture.format));
+            }
             update_queue.AddImageSampler(texture_set, texture_index, 0, null_view, null_handle);
         };
 
         // If the texture unit is disabled bind a null surface to it
         if (!texture.enabled) {
-            if (IsDrawTraceEnabled() && texture_index < 3) {
-                LOG_INFO(Render_Vulkan, "TRACE_DRAW tex{} disabled -> null", texture_index);
-            }
-            bind_null();
+            bind_null("disabled");
             continue;
         }
 
@@ -666,9 +668,17 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
                 Sampler& sampler = res_cache.GetSampler(texture.config);
                 surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
                 const vk::ImageView view = surface.ImageView();
-                update_queue.AddImageSampler(texture_set, texture_index, 0,
-                                             IsValidImageView(view) ? view : null_view,
-                                             IsValidImageView(view) ? sampler.Handle() : null_handle);
+                if (!IsValidImageView(view)) {
+                    bind_null("shadow2d_invalid_view");
+                } else {
+                    if (IsDrawTraceEnabled() && texture_index < 3) {
+                        LOG_INFO(Render_Vulkan,
+                                 "TRACE_DRAW tex{} shadow2d bound sampler_valid={}",
+                                 texture_index, static_cast<bool>(sampler.Handle()));
+                    }
+                    update_queue.AddImageSampler(texture_set, texture_index, 0, view,
+                                                 sampler.Handle());
+                }
                 continue;
             }
             case TextureType::ShadowCube: {
@@ -693,10 +703,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
 
         const vk::ImageView base_view = surface.ImageView();
         if (!IsValidImageView(base_view)) {
-            if (IsDrawTraceEnabled()) {
-                LOG_INFO(Render_Vulkan, "TRACE_DRAW tex{} invalid base view -> null", texture_index);
-            }
-            bind_null();
+            bind_null("invalid_base_view");
             continue;
         }
 
@@ -706,15 +713,17 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
             if (IsValidImageView(copy_view)) {
                 texture_view = copy_view;
             } else {
-                bind_null();
+                bind_null("feedback_copy_missing");
                 continue;
             }
         }
 
         if (IsDrawTraceEnabled() && texture_index < 3) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW tex{} bound feedback_copy={} sampler_valid={}",
-                     texture_index, texture_view != base_view, static_cast<bool>(sampler.Handle()));
+                     "TRACE_DRAW tex{} bound feedback_copy={} sampler_valid={} type={} format={}",
+                     texture_index, texture_view != base_view, static_cast<bool>(sampler.Handle()),
+                     static_cast<u32>(texture.config.type.Value()),
+                     static_cast<u32>(texture.format));
         }
         update_queue.AddImageSampler(texture_set, texture_index, 0, texture_view,
                                      sampler.Handle());
