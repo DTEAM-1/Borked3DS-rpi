@@ -59,10 +59,9 @@ void LogPicaTextureState(const RegsInternal& regs, const char* tag) {
     for (u32 i = 0; i < 3; ++i) {
         const auto& texture = textures[i];
         LOG_INFO(HW_GPU,
-                 "TRACE_DRAW_PICA {} tex{} enabled={} type={} format={} addr=0x{:08X} width={} height={} config=0x{:08X}",
+                 "TRACE_DRAW_PICA {} tex{} enabled={} type={} format={} addr=0x{:08X}",
                  tag, i, texture.enabled, static_cast<u32>(texture.config.type.Value()),
-                 static_cast<u32>(texture.format), texture.config.GetPhysicalAddress(),
-                 texture.width, texture.height, texture.config.hex);
+                 static_cast<u32>(texture.format), texture.config.GetPhysicalAddress());
     }
 }
 
