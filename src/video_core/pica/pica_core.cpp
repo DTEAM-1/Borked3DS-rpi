@@ -46,6 +46,10 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return IsEnvEnabled("BORKED3DS_V3DV_TRACE_PICA_STATE");
 }
 
+[[nodiscard]] bool IsPicaDrawTraceEnabled() {
+    return IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
+}
+
 std::atomic<u64> g_pica_draw_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 
@@ -533,6 +537,11 @@ void PicaCore::DrawImmediate() {
     if (IsPicaHotpathTraceEnabled()) {
         LOG_DEBUG(HW_GPU, "PicaCore::DrawImmediate invoked");
     }
+    if (IsPicaDrawTraceEnabled()) {
+        LOG_INFO(HW_GPU, "TRACE_DRAW_PICA immediate_draw topology={} current_attr={} max_attr={}",
+                 static_cast<u32>(primitive_assembler.GetTopology()), immediate.current_attribute,
+                 regs.internal.pipeline.max_input_attrib_index.Value());
+    }
 
     // Compile the vertex shader.
     shader_engine->SetupBatch(vs_setup, regs.internal.vs.main_offset);
@@ -565,6 +574,9 @@ void PicaCore::DrawImmediate() {
     geometry_pipeline.SubmitVertex(output);
 
     // Flush the immediate triangle.
+    if (IsPicaDrawTraceEnabled()) {
+        LOG_INFO(HW_GPU, "TRACE_DRAW_PICA immediate -> rasterizer->DrawTriangles()");
+    }
     rasterizer->DrawTriangles();
     immediate.current_attribute = 0;
 }
@@ -573,6 +585,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
     BORKED3DS_PROFILE("PicaCore", "Draw Arrays");
     const u64 draw_index = ++g_pica_draw_counter;
     const bool trace_hotpath = IsPicaHotpathTraceEnabled();
+    const bool trace_draw = IsPicaDrawTraceEnabled();
     if (trace_hotpath) {
         LOG_DEBUG(HW_GPU,
                   "PicaCore::DrawArrays begin draw_index={} indexed={} num_vertices={} vertex_offset={} use_hw_shader={} skip_slow_draw={} topology={} use_gs={}",
@@ -581,6 +594,15 @@ void PicaCore::DrawArrays(bool is_indexed) {
                   Settings::values.use_hw_shader.GetValue(), Settings::values.skip_slow_draw.GetValue(),
                   static_cast<u32>(primitive_assembler.GetTopology()),
                   static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
+    }
+    if (trace_draw) {
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA begin draw_index={} indexed={} num_vertices={} vertex_offset={} use_hw_shader={} skip_slow_draw={} topology={} use_gs={} primitive_empty={}",
+                 draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                 regs.internal.pipeline.vertex_offset,
+                 Settings::values.use_hw_shader.GetValue(), Settings::values.skip_slow_draw.GetValue(),
+                 static_cast<u32>(primitive_assembler.GetTopology()),
+                 static_cast<u32>(regs.internal.pipeline.use_gs.Value()), primitive_assembler.IsEmpty());
     }
 
     if (IsEnvEnabled("BORKED3DS_V3DV_BYPASS_FIRST_DRAW") && draw_index == 1) {
@@ -621,19 +643,36 @@ void PicaCore::DrawArrays(bool is_indexed) {
     if (trace_hotpath) {
         LOG_DEBUG(HW_GPU, "PicaCore::DrawArrays accelerate_draw={}", accelerate_draw);
     }
+    if (trace_draw) {
+        LOG_INFO(HW_GPU, "TRACE_DRAW_PICA accelerate_draw={} gs_mode={} topology={}",
+                 accelerate_draw, static_cast<u32>(regs.internal.pipeline.use_gs.Value()),
+                 static_cast<u32>(primitive_assembler.GetTopology()));
+    }
 
     // Attempt to use hardware vertex shaders if possible.
     if (accelerate_draw) {
+        if (trace_draw) {
+            LOG_INFO(HW_GPU, "TRACE_DRAW_PICA calling AccelerateDrawBatch indexed={}", is_indexed);
+        }
         const bool accelerated = rasterizer->AccelerateDrawBatch(is_indexed);
         if (trace_hotpath) {
             LOG_DEBUG(HW_GPU, "PicaCore::DrawArrays AccelerateDrawBatch returned {}", accelerated);
         }
+        if (trace_draw) {
+            LOG_INFO(HW_GPU, "TRACE_DRAW_PICA AccelerateDrawBatch returned {}", accelerated);
+        }
         if (accelerated) {
+            if (trace_draw) {
+                LOG_INFO(HW_GPU, "TRACE_DRAW_PICA returning early after accelerated draw");
+            }
             return;
         }
     } else if (Settings::values.skip_slow_draw) {
         if (trace_hotpath) {
             LOG_DEBUG(HW_GPU, "PicaCore::DrawArrays skipping slow draw");
+        }
+        if (trace_draw) {
+            LOG_INFO(HW_GPU, "TRACE_DRAW_PICA skip_slow_draw prevented software fallback");
         }
         return;
     }
@@ -642,11 +681,17 @@ void PicaCore::DrawArrays(bool is_indexed) {
     if (trace_hotpath) {
         LOG_DEBUG(HW_GPU, "PicaCore::DrawArrays falling back to software vertex path");
     }
+    if (trace_draw) {
+        LOG_INFO(HW_GPU, "TRACE_DRAW_PICA falling back to software vertex path");
+    }
     LoadVertices(is_indexed);
 
     // Draw emitted triangles.
     if (trace_hotpath) {
         LOG_DEBUG(HW_GPU, "PicaCore::DrawArrays calling rasterizer->DrawTriangles()");
+    }
+    if (trace_draw) {
+        LOG_INFO(HW_GPU, "TRACE_DRAW_PICA software path -> rasterizer->DrawTriangles()");
     }
     rasterizer->DrawTriangles();
 }
@@ -655,11 +700,18 @@ void PicaCore::LoadVertices(bool is_indexed) {
     // Read and validate vertex information from the loaders
     const auto& pipeline = regs.internal.pipeline;
     const bool trace_hotpath = IsPicaHotpathTraceEnabled();
+    const bool trace_draw = IsPicaDrawTraceEnabled();
     if (trace_hotpath) {
         LOG_DEBUG(HW_GPU,
                   "PicaCore::LoadVertices begin indexed={} num_vertices={} vertex_offset={} base_address={:#010X}",
                   is_indexed, pipeline.num_vertices, pipeline.vertex_offset,
                   pipeline.vertex_attributes.GetPhysicalBaseAddress());
+    }
+    if (trace_draw) {
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA load_vertices begin indexed={} num_vertices={} vertex_offset={} base_address={:#010X}",
+                 is_indexed, pipeline.num_vertices, pipeline.vertex_offset,
+                 pipeline.vertex_attributes.GetPhysicalBaseAddress());
     }
     const PAddr base_address = pipeline.vertex_attributes.GetPhysicalBaseAddress();
     const auto loader = VertexLoader(memory, pipeline);
@@ -748,6 +800,10 @@ void PicaCore::LoadVertices(bool is_indexed) {
     if (trace_hotpath) {
         LOG_DEBUG(HW_GPU, "PicaCore::LoadVertices end indexed={} num_vertices={}", is_indexed,
                   pipeline.num_vertices);
+    }
+    if (trace_draw) {
+        LOG_INFO(HW_GPU, "TRACE_DRAW_PICA load_vertices end indexed={} num_vertices={}",
+                 is_indexed, pipeline.num_vertices);
     }
 }
 
