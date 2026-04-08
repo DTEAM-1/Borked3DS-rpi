@@ -70,6 +70,22 @@ void LogPicaTextureState(const RegsInternal& regs, const char* tag) {
     }
 }
 
+void LogMainConfigTransition(const RegsInternal& regs, u32 id, u32 old_value, u32 new_value, u32 mask) {
+    if (!IsPicaDrawTraceEnabled() || id != PICA_REG_INDEX(texturing.main_config)) {
+        return;
+    }
+
+    const TexturingRegs::MainConfig old_config{old_value};
+    const TexturingRegs::MainConfig new_config{new_value};
+
+    LOG_INFO(HW_GPU,
+             "TRACE_DRAW_PICA main_config_transition old=0x{:08X} new=0x{:08X} mask=0x{:X} old_t0={} new_t0={} old_t1={} new_t1={} old_t2={} new_t2={}",
+             old_value, new_value, mask, old_config.texture0_enable.Value(),
+             new_config.texture0_enable.Value(), old_config.texture1_enable.Value(),
+             new_config.texture1_enable.Value(), old_config.texture2_enable.Value(),
+             new_config.texture2_enable.Value());
+}
+
 std::atomic<u64> g_pica_draw_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 
@@ -213,6 +229,8 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     const u32 old_value = regs.internal.reg_array[id];
     const u32 write_mask = ExpandBitsToBytes[mask];
     regs.internal.reg_array[id] = (old_value & ~write_mask) | (value & write_mask);
+
+    LogMainConfigTransition(regs.internal, id, old_value, regs.internal.reg_array[id], mask);
 
     // Track register write.
     DebugUtils::OnPicaRegWrite(id, mask, regs.internal.reg_array[id]);
