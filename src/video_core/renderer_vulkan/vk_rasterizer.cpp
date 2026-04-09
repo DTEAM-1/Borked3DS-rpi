@@ -577,15 +577,15 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncUtilityTextures(framebuffer);
 
     if (shader_dirty) {
+        Pica::Shader::UserConfig user_config{};
         const bool lighting_disabled = static_cast<bool>(regs.lighting.disable.Value());
-        const Pica::Shader::UserConfig user_config = {
-            .use_custom_normal =
-                (!lighting_disabled) && !instance.IsFragmentShaderBarycentricSupported(),
-        };
+        const bool use_custom_normal =
+            (!lighting_disabled) && !instance.IsFragmentShaderBarycentricSupported();
+        user_config.use_custom_normal.Assign(use_custom_normal);
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
                      "TRACE_DRAW use_fragment_shader shader_dirty=1 use_custom_normal={} lighting_disabled={} barycentric_supported={}",
-                     static_cast<u32>(user_config.use_custom_normal),
+                     static_cast<u32>(use_custom_normal),
                      static_cast<u32>(lighting_disabled),
                      static_cast<u32>(instance.IsFragmentShaderBarycentricSupported()));
         }
