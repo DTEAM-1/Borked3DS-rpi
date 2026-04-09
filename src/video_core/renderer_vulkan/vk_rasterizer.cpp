@@ -61,6 +61,11 @@ struct DrawParams {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+[[nodiscard]] bool IsStrictCompatEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 } // Anonymous namespace
 
 RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore& pica,
@@ -530,6 +535,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     const auto fb_helper = res_cache.GetFramebufferSurfaces(using_color_fb, using_depth_fb);
     const Framebuffer* framebuffer = fb_helper.Framebuffer();
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW framebuffer using_color={} using_depth={} fb_valid={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                 using_color_fb, using_depth_fb, static_cast<bool>(framebuffer->Handle()),
+                 regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                 regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+    }
     if (!framebuffer->Handle()) {
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan, "TRACE_DRAW skipped: framebuffer handle invalid");
@@ -702,28 +714,42 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         Sampler& sampler = res_cache.GetSampler(texture.config);
 
         const vk::ImageView base_view = surface.ImageView();
-        if (!IsValidImageView(base_view)) {
-            bind_null("invalid_base_view");
+        const vk::ImageView copy_view = surface.CopyImageView();
+
+        if (!IsValidImageView(base_view) && !IsValidImageView(copy_view)) {
+            bind_null("invalid_base_and_copy_view");
             continue;
         }
 
+        const bool strict_compat = IsStrictCompatEnabled();
+        const bool direct_feedback = IsValidImageView(color_view) && color_view == base_view;
+
         vk::ImageView texture_view = base_view;
-        if (IsValidImageView(color_view) && color_view == base_view) {
-            const vk::ImageView copy_view = surface.CopyImageView();
+        const char* bind_reason = "base_view";
+
+        if (strict_compat && IsValidImageView(copy_view)) {
+            texture_view = copy_view;
+            bind_reason = "strict_compat_copy";
+        } else if (direct_feedback) {
             if (IsValidImageView(copy_view)) {
                 texture_view = copy_view;
-            } else {
+                bind_reason = "feedback_copy";
+            } else if (!IsValidImageView(base_view)) {
                 bind_null("feedback_copy_missing");
                 continue;
             }
+        } else if (!IsValidImageView(base_view) && IsValidImageView(copy_view)) {
+            texture_view = copy_view;
+            bind_reason = "copy_fallback";
         }
 
         if (IsDrawTraceEnabled() && texture_index < 3) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW tex{} bound feedback_copy={} sampler_valid={} type={} format={}",
-                     texture_index, texture_view != base_view, static_cast<bool>(sampler.Handle()),
+                     "TRACE_DRAW tex{} bound reason={} sampler_valid={} type={} format={} strict_compat={} direct_feedback={}",
+                     texture_index, bind_reason, static_cast<bool>(sampler.Handle()),
                      static_cast<u32>(texture.config.type.Value()),
-                     static_cast<u32>(texture.format));
+                     static_cast<u32>(texture.format), static_cast<u32>(strict_compat),
+                     static_cast<u32>(direct_feedback));
         }
         update_queue.AddImageSampler(texture_set, texture_index, 0, texture_view,
                                      sampler.Handle());
@@ -910,6 +936,14 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         (float)src_rect.top / (float)scaled_height, (float)src_rect.right / (float)scaled_width);
 
     screen_info.image_view = src_surface.ImageView();
+
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) view_valid={}",
+                 framebuffer_addr, src_params.width, src_params.height, src_params.stride,
+                 static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
+                 src_rect.right, src_rect.top, static_cast<bool>(screen_info.image_view));
+    }
 
     return true;
 }
