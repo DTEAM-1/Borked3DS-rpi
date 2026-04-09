@@ -161,13 +161,19 @@ FragmentModule::FragmentModule(const FSConfig& config_, const Profile& profile_)
 FragmentModule::~FragmentModule() = default;
 
 std::string FragmentModule::Generate() {
+    const u32 trace_shadow_rendering = static_cast<u32>(config.framebuffer.shadow_rendering.Value());
+    const u32 trace_alpha_test_func =
+        static_cast<u32>(config.framebuffer.alpha_test_func.Value());
+    const u32 trace_fog_mode = static_cast<u32>(config.texture.fog_mode.Value());
+    const u32 trace_tex0_type = static_cast<u32>(config.texture.texture0_type.Value());
+    const u32 trace_tex2_use_coord1 = static_cast<u32>(config.texture.texture2_use_coord1.Value());
     LOG_INFO(
         Render,
         "TRACE_FS generate shadow_rendering={} alpha_test_func={} fog_mode={} lighting_enable={} tex0_type={} tex2_use_coord1={} blend_emulated={} is_vulkan={}",
-        config.framebuffer.shadow_rendering, static_cast<u32>(config.framebuffer.alpha_test_func.Value()),
-        static_cast<u32>(config.texture.fog_mode.Value()), config.lighting.enable,
-        static_cast<u32>(config.texture.texture0_type.Value()),
-        config.texture.texture2_use_coord1, config.EmulateBlend(), profile.is_vulkan);
+        trace_shadow_rendering, trace_alpha_test_func, trace_fog_mode,
+        static_cast<u32>(config.lighting.enable), trace_tex0_type, trace_tex2_use_coord1,
+        static_cast<u32>(config.EmulateBlend()), static_cast<u32>(profile.is_vulkan));
+
     // We round the interpolated primary color to the nearest 1/255th
     // This maintains the PICA's 8 bits of precision
     out += R"(
@@ -620,15 +626,23 @@ void FragmentModule::WriteAlphaTestCondition(FramebufferRegs::CompareFunc func) 
 
 void FragmentModule::WriteTevStage(u32 index) {
     const TexturingRegs::TevStageConfig stage = config.texture.tev_stages[index];
+    const u32 trace_passthrough = static_cast<u32>(IsPassThroughTevStage(stage));
+    const u32 trace_color_op = static_cast<u32>(stage.color_op.Value());
+    const u32 trace_alpha_op = static_cast<u32>(stage.alpha_op.Value());
+    const u32 trace_color_source1 = static_cast<u32>(stage.color_source1.Value());
+    const u32 trace_color_source2 = static_cast<u32>(stage.color_source2.Value());
+    const u32 trace_color_source3 = static_cast<u32>(stage.color_source3.Value());
+    const u32 trace_alpha_source1 = static_cast<u32>(stage.alpha_source1.Value());
+    const u32 trace_alpha_source2 = static_cast<u32>(stage.alpha_source2.Value());
+    const u32 trace_alpha_source3 = static_cast<u32>(stage.alpha_source3.Value());
+    const u32 trace_cmul = static_cast<u32>(stage.GetColorMultiplier());
+    const u32 trace_amul = static_cast<u32>(stage.GetAlphaMultiplier());
     LOG_INFO(
         Render,
         "TRACE_FS tev_stage index={} passthrough={} color_op={} alpha_op={} csrc=({},{},{}) asrc=({},{},{}) cmul={} amul={}",
-        index, IsPassThroughTevStage(stage), static_cast<u32>(stage.color_op.Value()),
-        static_cast<u32>(stage.alpha_op.Value()), static_cast<u32>(stage.color_source1.Value()),
-        static_cast<u32>(stage.color_source2.Value()), static_cast<u32>(stage.color_source3.Value()),
-        static_cast<u32>(stage.alpha_source1.Value()), static_cast<u32>(stage.alpha_source2.Value()),
-        static_cast<u32>(stage.alpha_source3.Value()), stage.GetColorMultiplier(),
-        stage.GetAlphaMultiplier());
+        index, trace_passthrough, trace_color_op, trace_alpha_op, trace_color_source1,
+        trace_color_source2, trace_color_source3, trace_alpha_source1, trace_alpha_source2,
+        trace_alpha_source3, trace_cmul, trace_amul);
     if (!IsPassThroughTevStage(stage)) {
         out += "color_results_1 = ";
         AppendColorModifier(stage.color_modifier1, stage.color_source1, index);
