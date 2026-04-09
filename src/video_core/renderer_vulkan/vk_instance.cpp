@@ -26,9 +26,7 @@ vk::Format MakeFormat(VideoCore::PixelFormat format) {
     case VideoCore::PixelFormat::RGBA8:
         return vk::Format::eR8G8B8A8Unorm;
     case VideoCore::PixelFormat::RGB8:
-        // Pi5/V3DV: B8G8R8Unorm is reported unsupported for surface_type=0 in practice.
-        // Use RGBA8 directly so RGB8 surfaces always take the same explicit conversion path.
-        return vk::Format::eR8G8B8A8Unorm;
+        return vk::Format::eB8G8R8Unorm;
     case VideoCore::PixelFormat::RGB5A1:
         return vk::Format::eR5G5B5A1UnormPack16;
     case VideoCore::PixelFormat::RGB565:
@@ -312,14 +310,20 @@ void Instance::CreateFormatTable() {
         const bool is_depth_format =
             static_cast<bool>(traits.aspect & vk::ImageAspectFlagBits::eDepth);
         const bool is_texture_only = surface_type == VideoCore::SurfaceType::Texture;
+        const bool is_color_like = !is_depth_format;
 
         // Pi5/V3DV-safe suitability rule:
         // - sampled textures only need transfer/sample support
-        // - render targets/depth still require attachment support
+        // - color-like surfaces may still be usable even when attachment support is missing
+        //   (display/import paths on V3DV were being rejected too aggressively)
+        // - depth/stencil keeps the strict rule
         const bool is_suitable = is_texture_only
                                      ? traits.transfer_support
-                                     : (traits.transfer_support && traits.attachment_support &&
-                                        (traits.blit_support || is_depth_format));
+                                     : (is_color_like
+                                            ? traits.transfer_support
+                                            : (traits.transfer_support &&
+                                               traits.attachment_support &&
+                                               (traits.blit_support || is_depth_format)));
 
         // Fall back if the native format is not suitable.
         if (!is_suitable) {
