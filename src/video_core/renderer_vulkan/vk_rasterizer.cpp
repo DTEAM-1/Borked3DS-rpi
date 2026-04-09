@@ -576,7 +576,23 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncTextureUnits(framebuffer);
     SyncUtilityTextures(framebuffer);
 
-    shader_dirty = false;
+    if (shader_dirty) {
+        const Pica::Shader::UserConfig user_config = {
+            .use_custom_normal = !regs.lighting.disable &&
+                                 !instance.IsFragmentShaderBarycentricSupported(),
+        };
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW use_fragment_shader shader_dirty=1 use_custom_normal={} lighting_disabled={} barycentric_supported={}",
+                     static_cast<u32>(user_config.use_custom_normal),
+                     static_cast<u32>(regs.lighting.disable.Value()),
+                     static_cast<u32>(instance.IsFragmentShaderBarycentricSupported()));
+        }
+        pipeline_cache.UseFragmentShader(regs, user_config);
+        shader_dirty = false;
+    } else if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan, "TRACE_DRAW use_fragment_shader shader_dirty=0");
+    }
 
     // Sync the LUTs within the texture buffer
     SyncAndUploadLUTs();
