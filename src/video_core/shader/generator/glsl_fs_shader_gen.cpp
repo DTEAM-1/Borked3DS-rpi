@@ -156,6 +156,14 @@ FragmentModule::FragmentModule(const FSConfig& config_, const Profile& profile_)
 FragmentModule::~FragmentModule() = default;
 
 std::string FragmentModule::Generate() {
+    LOG_INFO(Render,
+             "TRACE_FS generate shadow_rendering={} alpha_test_func={} fog_mode={} lighting_enable={} tex0_type={} tex1_enable={} tex2_enable={} blend_emulated={} is_vulkan={}",
+             config.framebuffer.shadow_rendering, static_cast<u32>(config.framebuffer.alpha_test_func),
+             static_cast<u32>(config.texture.fog_mode), config.lighting.enable,
+             static_cast<u32>(config.texture.texture0_type.Value()),
+             config.texture.texture1_enable, config.texture.texture2_enable, config.EmulateBlend(),
+             profile.is_vulkan);
+
     // We round the interpolated primary color to the nearest 1/255th
     // This maintains the PICA's 8 bits of precision
     out += R"(
@@ -596,6 +604,15 @@ void FragmentModule::WriteAlphaTestCondition(FramebufferRegs::CompareFunc func) 
 
 void FragmentModule::WriteTevStage(u32 index) {
     const TexturingRegs::TevStageConfig stage = config.texture.tev_stages[index];
+    LOG_INFO(
+        Render,
+        "TRACE_FS tev_stage index={} passthrough={} color_op={} alpha_op={} csrc=({},{},{}) asrc=({},{},{}) cmul={} amul={}",
+        index, IsPassThroughTevStage(stage), static_cast<u32>(stage.color_op),
+        static_cast<u32>(stage.alpha_op), static_cast<u32>(stage.color_source1),
+        static_cast<u32>(stage.color_source2), static_cast<u32>(stage.color_source3),
+        static_cast<u32>(stage.alpha_source1), static_cast<u32>(stage.alpha_source2),
+        static_cast<u32>(stage.alpha_source3), stage.GetColorMultiplier(),
+        stage.GetAlphaMultiplier());
     if (!IsPassThroughTevStage(stage)) {
         out += "color_results_1 = ";
         AppendColorModifier(stage.color_modifier1, stage.color_source1, index);
