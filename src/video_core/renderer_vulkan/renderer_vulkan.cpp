@@ -223,13 +223,6 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
 
 bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuffer,
                                         ScreenInfo& screen_info, bool right_eye) {
-    if (IsPresentTraceEnabled()) {
-        LOG_INFO(Render_Vulkan,
-                 "TRACE_PRESENT load_fb_to_screen right_eye={} active_fb={} width={} height={} stride={} format={}",
-                 right_eye, framebuffer.active_fb, framebuffer.width.Value(),
-                 framebuffer.height.Value(), framebuffer.stride,
-                 static_cast<u32>(framebuffer.color_format.Value()));
-    }
     if (framebuffer.address_right1 == 0 || framebuffer.address_right2 == 0) {
         right_eye = false;
     }
@@ -238,25 +231,60 @@ bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuff
         framebuffer.active_fb == 0 ? (right_eye ? framebuffer.address_right1 : framebuffer.address_left1)
                                    : (right_eye ? framebuffer.address_right2 : framebuffer.address_left2);
 
+    const u32 bpp = Pica::BytesPerPixel(framebuffer.color_format);
+    const std::size_t pixel_stride = bpp != 0 ? (framebuffer.stride / bpp) : 0;
+    const bool stride_divisible = bpp != 0 && (pixel_stride * bpp == framebuffer.stride);
+    const bool stride_aligned4 = stride_divisible && ((pixel_stride % 4) == 0);
+
+    if (IsPresentTraceEnabled()) {
+        LOG_INFO(
+            Render_Vulkan,
+            "TRACE_PRESENT load_fb_to_screen right_eye={} active_fb={} addr=0x{:08X} width={} height={} stride={} format={} bpp={} pixel_stride={} stride_divisible={} stride_aligned4={}",
+            right_eye, framebuffer.active_fb, framebuffer_addr, framebuffer.width.Value(),
+            framebuffer.height.Value(), framebuffer.stride,
+            static_cast<u32>(framebuffer.color_format.Value()), bpp, pixel_stride,
+            static_cast<u32>(stride_divisible), static_cast<u32>(stride_aligned4));
+    }
+
     LOG_TRACE(Render_Vulkan, "0x{:08x} bytes from 0x{:08x}({}x{}), fmt {:x}",
               framebuffer.stride * framebuffer.height, framebuffer_addr,
               framebuffer.width.Value(), framebuffer.height.Value(), framebuffer.format);
 
-    const u32 bpp = Pica::BytesPerPixel(framebuffer.color_format);
     if (bpp == 0) {
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT load_fb_to_screen abort reason=zero_bpp addr=0x{:08X} format={}",
+                     framebuffer_addr, static_cast<u32>(framebuffer.color_format.Value()));
+        }
         return false;
     }
 
-    const std::size_t pixel_stride = framebuffer.stride / bpp;
-    if (pixel_stride * bpp != framebuffer.stride) {
-        return false;
-    }
-    if (pixel_stride % 4 != 0) {
+    if (!stride_divisible) {
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT load_fb_to_screen abort reason=non_divisible_stride addr=0x{:08X} stride={} bpp={} pixel_stride={}",
+                     framebuffer_addr, framebuffer.stride, bpp, pixel_stride);
+        }
         return false;
     }
 
-    return rasterizer.AccelerateDisplay(framebuffer, framebuffer_addr, static_cast<u32>(pixel_stride),
-                                        screen_info);
+    if (!stride_aligned4 && IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT load_fb_to_screen permissive_unaligned_stride addr=0x{:08X} pixel_stride={}",
+                 framebuffer_addr, pixel_stride);
+    }
+
+    const bool accelerated =
+        rasterizer.AccelerateDisplay(framebuffer, framebuffer_addr, static_cast<u32>(pixel_stride),
+                                     screen_info);
+
+    if (IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT load_fb_to_screen result accelerated={} addr=0x{:08X} pixel_stride={}",
+                 static_cast<u32>(accelerated), framebuffer_addr, pixel_stride);
+    }
+
+    return accelerated;
 }
 
 
