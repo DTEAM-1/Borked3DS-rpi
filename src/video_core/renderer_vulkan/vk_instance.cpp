@@ -26,7 +26,9 @@ vk::Format MakeFormat(VideoCore::PixelFormat format) {
     case VideoCore::PixelFormat::RGBA8:
         return vk::Format::eR8G8B8A8Unorm;
     case VideoCore::PixelFormat::RGB8:
-        return vk::Format::eB8G8R8Unorm;
+        // Pi5/V3DV: B8G8R8Unorm is reported unsupported for surface_type=0 in practice.
+        // Use RGBA8 directly so RGB8 surfaces always take the same explicit conversion path.
+        return vk::Format::eR8G8B8A8Unorm;
     case VideoCore::PixelFormat::RGB5A1:
         return vk::Format::eR5G5B5A1UnormPack16;
     case VideoCore::PixelFormat::RGB565:
