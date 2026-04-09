@@ -50,11 +50,6 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
 }
 
-[[nodiscard]] bool IsPicaTextureReg(u32 id) {
-    return id >= PICA_REG_INDEX(texturing.main_config) &&
-           id <= PICA_REG_INDEX(texturing.proctex_lut_data[7]);
-}
-
 void LogPicaTextureState(const RegsInternal& regs, const char* tag) {
     if (!IsPicaDrawTraceEnabled()) {
         return;
@@ -75,15 +70,16 @@ void LogMainConfigTransition(const RegsInternal& regs, u32 id, u32 old_value, u3
         return;
     }
 
-    const TexturingRegs::MainConfig old_config{old_value};
-    const TexturingRegs::MainConfig new_config{new_value};
+    const u32 old_t0 = old_value & 1u;
+    const u32 new_t0 = new_value & 1u;
+    const u32 old_t1 = (old_value >> 1) & 1u;
+    const u32 new_t1 = (new_value >> 1) & 1u;
+    const u32 old_t2 = (old_value >> 2) & 1u;
+    const u32 new_t2 = (new_value >> 2) & 1u;
 
     LOG_INFO(HW_GPU,
              "TRACE_DRAW_PICA main_config_transition old=0x{:08X} new=0x{:08X} mask=0x{:X} old_t0={} new_t0={} old_t1={} new_t1={} old_t2={} new_t2={}",
-             old_value, new_value, mask, old_config.texture0_enable.Value(),
-             new_config.texture0_enable.Value(), old_config.texture1_enable.Value(),
-             new_config.texture1_enable.Value(), old_config.texture2_enable.Value(),
-             new_config.texture2_enable.Value());
+             old_value, new_value, mask, old_t0, new_t0, old_t1, new_t1, old_t2, new_t2);
 }
 
 std::atomic<u64> g_pica_draw_counter{0};
@@ -245,13 +241,6 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         LOG_DEBUG(HW_GPU,
                   "PicaCore::WriteInternalReg interesting_state_reg id=0x{:03X} value=0x{:08X} mask=0x{:X}",
                   id, regs.internal.reg_array[id], mask);
-    }
-
-    if (IsPicaDrawTraceEnabled() && IsPicaTextureReg(id)) {
-        LOG_INFO(HW_GPU,
-                 "TRACE_DRAW_PICA texture_reg_write id=0x{:03X} value=0x{:08X} mask=0x{:X}",
-                 id, regs.internal.reg_array[id], mask);
-        LogPicaTextureState(regs.internal, "texture_reg_write");
     }
 
     switch (id) {
