@@ -141,6 +141,33 @@ constexpr int default_mouse_timeout = 2500;
 
 const int GMainWindow::max_recent_files_item;
 
+static const char* ResultStatusToString(Core::System::ResultStatus result) {
+    switch (result) {
+    case Core::System::ResultStatus::Success:
+        return "Success";
+    case Core::System::ResultStatus::ErrorSystemFiles:
+        return "ErrorSystemFiles";
+    case Core::System::ResultStatus::ErrorSavestate:
+        return "ErrorSavestate";
+    case Core::System::ResultStatus::ErrorGetLoader:
+        return "ErrorGetLoader";
+    case Core::System::ResultStatus::ErrorSystemMode:
+        return "ErrorSystemMode";
+    case Core::System::ResultStatus::ErrorLoader_ErrorEncrypted:
+        return "ErrorLoader_ErrorEncrypted";
+    case Core::System::ResultStatus::ErrorLoader_ErrorInvalidFormat:
+        return "ErrorLoader_ErrorInvalidFormat";
+    case Core::System::ResultStatus::ErrorLoader_ErrorGbaTitle:
+        return "ErrorLoader_ErrorGbaTitle";
+    case Core::System::ResultStatus::ErrorArticDisconnected:
+        return "ErrorArticDisconnected";
+    case Core::System::ResultStatus::ShutdownRequested:
+        return "ShutdownRequested";
+    default:
+        return "Unknown";
+    }
+}
+
 static QString PrettyProductName() {
 #ifdef _WIN32
     // After Windows 10 Version 2004, Microsoft decided to switch to a different notation: 20H2
@@ -1578,6 +1605,7 @@ void GMainWindow::BootGame(const QString& filename) {
 
     show_artic_label = is_artic;
 
+    LOG_INFO(Frontend, "TRACE_FRONTEND BootGame begin path='{}'", filename.toStdString());
     LOG_INFO(Frontend, "Borked3DS starting...");
     if (!is_artic) {
         StoreRecentFile(filename); // Put the filename on top of the list
@@ -1711,7 +1739,12 @@ void GMainWindow::BootGame(const QString& filename) {
 }
 
 void GMainWindow::ShutdownGame() {
+    LOG_INFO(Frontend,
+             "TRACE_FRONTEND ShutdownGame begin emulation_running={} emu_thread_present={} game_path='{}' game_title_id=0x{:016X}",
+             static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr),
+             game_path.toStdString(), game_title_id);
     if (!emulation_running) {
+        LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame early_exit emulation_running=0");
         return;
     }
 
@@ -1810,6 +1843,7 @@ void GMainWindow::ShutdownGame() {
     // When closing the game, destroy the GLWindow to clear the context after the game is closed
     render_window->ReleaseRenderTarget();
     secondary_window->ReleaseRenderTarget();
+    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame end");
 }
 
 void GMainWindow::StoreRecentFile(const QString& filename) {
@@ -2628,6 +2662,8 @@ void GMainWindow::OnPauseContinueGame() {
 }
 
 void GMainWindow::OnStopGame() {
+    LOG_INFO(Frontend, "TRACE_FRONTEND OnStopGame begin emulation_running={} emu_thread_present={}",
+             static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr));
     if (turbo_mode_active) {
         turbo_mode_active = false;
         Settings::values.frame_limit.SetValue(initial_frame_limit);
@@ -3588,6 +3624,10 @@ void GMainWindow::mouseReleaseEvent([[maybe_unused]] QMouseEvent* event) {
 }
 
 void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string details) {
+    LOG_ERROR(Frontend,
+              "TRACE_FRONTEND OnCoreError result={}({}) details='{}' emu_thread_present={} emulation_running={}",
+              static_cast<u32>(result), ResultStatusToString(result), details,
+              static_cast<u32>(emu_thread != nullptr), static_cast<u32>(emulation_running));
     QString status_message;
 
     QString title, message;
@@ -3645,6 +3685,12 @@ void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string det
 
         if (!can_continue || result == Core::System::ResultStatus::ShutdownRequested ||
             message_box.clickedButton() == abort_button) {
+            LOG_INFO(Frontend,
+                     "TRACE_FRONTEND OnCoreError requesting ShutdownGame can_continue={} shutdown_requested={} abort_clicked={} emu_thread_present={}",
+                     static_cast<u32>(can_continue),
+                     static_cast<u32>(result == Core::System::ResultStatus::ShutdownRequested),
+                     static_cast<u32>(message_box.clickedButton() == abort_button),
+                     static_cast<u32>(emu_thread != nullptr));
             if (emu_thread) {
                 ShutdownGame();
                 return;
@@ -3659,9 +3705,13 @@ void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string det
 
     // Only show the message if the game is still running.
     if (emu_thread) {
+        LOG_INFO(Frontend, "TRACE_FRONTEND OnCoreError continue_emulation status_message='{}'",
+                 status_message.toStdString());
         emu_thread->SetRunning(true);
         message_label->setText(status_message);
         message_label_used_for_movie = false;
+    } else {
+        LOG_INFO(Frontend, "TRACE_FRONTEND OnCoreError no_emu_thread_after_handling");
     }
 }
 
