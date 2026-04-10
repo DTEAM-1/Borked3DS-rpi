@@ -636,6 +636,23 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncAndUploadLUTsLF();
     UploadUniforms(accelerate);
 
+    // Pi 5 / V3DV strict compatibility:
+    // - make descriptor writes visible before pipeline binding / render begin
+    // - serialize prior work before the first fragile software draw path
+    update_queue.Flush();
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan, "TRACE_DRAW descriptors_flushed accelerate={}",
+                 static_cast<u32>(accelerate));
+    }
+    if (IsStrictCompatEnabled() && !accelerate) {
+        scheduler.Finish();
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={}",
+                     vertex_batch.size());
+        }
+    }
+
     // Begin rendering
     const auto draw_rect = fb_helper.DrawRect();
     renderpass_cache.BeginRendering(framebuffer, draw_rect);
@@ -664,9 +681,25 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan, "TRACE_DRAW software_path vertex_batch_size={}", vertex_batch.size());
         }
-        pipeline_cache.BindPipeline(pipeline_info, true);
+
+        const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, true);
+        if (!pipeline_ready) {
+            if (IsDrawTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW software_path pipeline_not_ready vertex_batch_size={} strict_compat={}",
+                         vertex_batch.size(), static_cast<u32>(IsStrictCompatEnabled()));
+            }
+            return false;
+        }
 
         const u32 vertex_count = static_cast<u32>(vertex_batch.size());
+        if (vertex_count == 0) {
+            if (IsDrawTraceEnabled()) {
+                LOG_INFO(Render_Vulkan, "TRACE_DRAW software_path skipped empty vertex batch");
+            }
+            return true;
+        }
+
         const u32 vertex_size = vertex_count * sizeof(HardwareVertex);
         const auto [buffer, offset, _] = stream_buffer.Map(vertex_size, sizeof(HardwareVertex));
 
