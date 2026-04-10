@@ -50,6 +50,20 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
 }
 
+[[nodiscard]] bool IsStrictCompatEnabled() {
+    return IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+}
+
+[[nodiscard]] bool ArePrimaryTexturesDisabled(const RegsInternal& regs) {
+    const auto& textures = regs.texturing.GetTextures();
+    for (u32 i = 0; i < 3; ++i) {
+        if (textures[i].enabled) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void LogPicaTextureState(const RegsInternal& regs, const char* tag) {
     if (!IsPicaDrawTraceEnabled()) {
         return;
@@ -664,7 +678,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
             { debug_context->OnEvent(DebugContext::Event::FinishedPrimitiveBatch, nullptr); });
     }
 
-    const bool accelerate_draw = [this] {
+    bool accelerate_draw = [this] {
         // Geometry shaders cannot be accelerated due to register preservation.
         if (regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes) {
             return false;
@@ -685,6 +699,22 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
         return accelerate_draw;
     }();
+
+    // Pi 5 / V3DV strict-compat startup workaround:
+    // The first small indexed draws right after the boot/present phase are still the most
+    // crash-prone path. Force these through the software vertex path so the emulator can
+    // progress further, while keeping later Vulkan draws accelerated.
+    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 4 &&
+        regs.internal.pipeline.num_vertices <= 12 && primitive_assembler.IsEmpty() &&
+        ArePrimaryTexturesDisabled(regs.internal)) {
+        if (trace_draw) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA strict_compat forcing software fallback draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     primitive_assembler.IsEmpty());
+        }
+        accelerate_draw = false;
+    }
 
     if (trace_hotpath) {
         LOG_DEBUG(HW_GPU, "PicaCore::DrawArrays accelerate_draw={}", accelerate_draw);
@@ -767,9 +797,34 @@ void PicaCore::LoadVertices(bool is_indexed) {
 
     // Locate index buffer.
     const auto& index_info = pipeline.index_array;
-    const u8* index_address_8 = memory.GetPhysicalPointer(base_address + index_info.offset);
-    const u16* index_address_16 = reinterpret_cast<const u16*>(index_address_8);
     const bool index_u16 = index_info.format != 0;
+    const PAddr index_base = base_address + index_info.offset;
+    const u32 index_stride = index_u16 ? sizeof(u16) : sizeof(u8);
+    const u32 needed_index_bytes = pipeline.num_vertices * index_stride;
+    const MemoryRef index_ref = memory.GetPhysicalRef(index_base);
+    const u8* index_bytes = index_ref.GetPtr();
+    const u32 available_index_bytes =
+        static_cast<u32>(std::min<std::size_t>(index_ref.GetSize(), needed_index_bytes));
+    const u32 available_indices = index_stride != 0 ? (available_index_bytes / index_stride) : 0;
+
+    if (is_indexed && available_index_bytes < needed_index_bytes) {
+        LOG_ERROR(HW_GPU,
+                  "PicaCore::LoadVertices index buffer truncated addr={:#010X} need={} have={} format={}",
+                  index_base, needed_index_bytes, available_index_bytes,
+                  static_cast<u32>(index_info.format));
+    }
+
+    const auto read_index = [index_bytes, available_indices, index_u16](u32 index) -> u32 {
+        if (index >= available_indices || index_bytes == nullptr) {
+            return 0;
+        }
+        if (!index_u16) {
+            return index_bytes[index];
+        }
+        u16 value = 0;
+        std::memcpy(&value, index_bytes + index * sizeof(u16), sizeof(u16));
+        return value;
+    };
 
     // Simple circular-replacement vertex cache
     const std::size_t VERTEX_CACHE_SIZE = 64;
@@ -790,14 +845,17 @@ void PicaCore::LoadVertices(bool is_indexed) {
 
     for (u32 index = 0; index < pipeline.num_vertices; ++index) {
         // Indexed rendering doesn't use the start offset
-        const u32 vertex = is_indexed
-                               ? (index_u16 ? index_address_16[index] : index_address_8[index])
-                               : (index + pipeline.vertex_offset);
+        const u32 vertex = is_indexed ? read_index(index) : (index + pipeline.vertex_offset);
 
         if (trace_hotpath && index < 4) {
             LOG_DEBUG(HW_GPU,
                       "PicaCore::LoadVertices vertex_index={} source_vertex={} indexed={}",
                       index, vertex, is_indexed);
+        }
+        if (trace_draw && is_indexed && index >= available_indices && index < 4) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA load_vertices missing_index index={} available_indices={} substituting_vertex=0",
+                     index, available_indices);
         }
 
         bool vertex_cache_hit = false;
