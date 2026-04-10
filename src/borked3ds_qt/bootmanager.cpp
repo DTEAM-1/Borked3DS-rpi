@@ -4,6 +4,7 @@
 // Refer to the license.txt file included.
 
 #include <QApplication>
+#include <exception>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMessageBox>
@@ -61,75 +62,114 @@ static GMainWindow* GetMainWindow() {
 }
 
 void EmuThread::run() {
-    const auto scope = core_context.Acquire();
+    LOG_INFO(Frontend,
+             "TRACE_EMUTHREAD run begin stop_run={} running={} exec_step={}",
+             static_cast<u32>(stop_run), static_cast<u32>(running), static_cast<u32>(exec_step));
 
-    if (Settings::values.preload_textures) {
-        emit LoadProgress(VideoCore::LoadCallbackStage::Preload, 0, 0);
-        system.CustomTexManager().PreloadTextures(
-            stop_run, [this](VideoCore::LoadCallbackStage stage, std::size_t value,
-                             std::size_t total) { emit LoadProgress(stage, value, total); });
-    }
+    try {
+        const auto scope = core_context.Acquire();
 
-    emit LoadProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0);
-
-    system.GPU().Renderer().Rasterizer()->LoadDiskResources(
-        stop_run, [this](VideoCore::LoadCallbackStage stage, std::size_t value, std::size_t total) {
-            emit LoadProgress(stage, value, total);
-        });
-
-    emit LoadProgress(VideoCore::LoadCallbackStage::Complete, 0, 0);
-
-    core_context.MakeCurrent();
-
-    if (system.frame_limiter.IsFrameAdvancing()) {
-        // Usually the loading screen is hidden after the first frame is drawn. In this case
-        // we hide it immediately as we need to wait for user input to start the emulation.
-        emit HideLoadingScreen();
-        system.frame_limiter.WaitOnce();
-    }
-
-    // Holds whether the cpu was running during the last iteration,
-    // so that the DebugModeLeft signal can be emitted before the
-    // next execution step.
-    bool was_active = false;
-    while (!stop_run) {
-        if (running) {
-            if (!was_active)
-                emit DebugModeLeft();
-
-            const Core::System::ResultStatus result = system.RunLoop();
-            if (result == Core::System::ResultStatus::ShutdownRequested) {
-                // Notify frontend we shutdown
-                emit ErrorThrown(result, "");
-                // End emulation execution
-                break;
-            }
-            if (result != Core::System::ResultStatus::Success) {
-                this->SetRunning(false);
-                emit ErrorThrown(result, system.GetStatusDetails());
-            }
-
-            was_active = running || exec_step;
-            if (!was_active && !stop_run)
-                emit DebugModeEntered();
-        } else if (exec_step) {
-            if (!was_active)
-                emit DebugModeLeft();
-
-            exec_step = false;
-            [[maybe_unused]] const Core::System::ResultStatus result = system.SingleStep();
-            emit DebugModeEntered();
-            yieldCurrentThread();
-
-            was_active = false;
-        } else {
-            std::unique_lock lock{running_mutex};
-            running_cv.wait(lock, [this] { return IsRunning() || exec_step || stop_run; });
+        if (Settings::values.preload_textures) {
+            LOG_INFO(Frontend, "TRACE_EMUTHREAD preload_textures begin");
+            emit LoadProgress(VideoCore::LoadCallbackStage::Preload, 0, 0);
+            system.CustomTexManager().PreloadTextures(
+                stop_run, [this](VideoCore::LoadCallbackStage stage, std::size_t value,
+                                 std::size_t total) { emit LoadProgress(stage, value, total); });
+            LOG_INFO(Frontend, "TRACE_EMUTHREAD preload_textures end stop_run={}",
+                     static_cast<u32>(stop_run));
         }
+
+        emit LoadProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0);
+        LOG_INFO(Frontend, "TRACE_EMUTHREAD load_disk_resources begin");
+
+        system.GPU().Renderer().Rasterizer()->LoadDiskResources(
+            stop_run,
+            [this](VideoCore::LoadCallbackStage stage, std::size_t value, std::size_t total) {
+                emit LoadProgress(stage, value, total);
+            });
+
+        LOG_INFO(Frontend, "TRACE_EMUTHREAD load_disk_resources end stop_run={}",
+                 static_cast<u32>(stop_run));
+        emit LoadProgress(VideoCore::LoadCallbackStage::Complete, 0, 0);
+
+        core_context.MakeCurrent();
+        LOG_INFO(Frontend, "TRACE_EMUTHREAD context current");
+
+        if (system.frame_limiter.IsFrameAdvancing()) {
+            LOG_INFO(Frontend, "TRACE_EMUTHREAD frame_advancing wait_once");
+            // Usually the loading screen is hidden after the first frame is drawn. In this case
+            // we hide it immediately as we need to wait for user input to start the emulation.
+            emit HideLoadingScreen();
+            system.frame_limiter.WaitOnce();
+        }
+
+        bool was_active = false;
+        while (!stop_run) {
+            if (running) {
+                if (!was_active)
+                    emit DebugModeLeft();
+
+                const Core::System::ResultStatus result = system.RunLoop();
+                if (result != Core::System::ResultStatus::Success) {
+                    LOG_ERROR(Frontend,
+                              "TRACE_EMUTHREAD RunLoop result={} details='{}' running={} exec_step={} stop_run={}",
+                              static_cast<u32>(result), system.GetStatusDetails(),
+                              static_cast<u32>(running), static_cast<u32>(exec_step),
+                              static_cast<u32>(stop_run));
+                }
+                if (result == Core::System::ResultStatus::ShutdownRequested) {
+                    emit ErrorThrown(result, "");
+                    LOG_INFO(Frontend, "TRACE_EMUTHREAD RunLoop requested shutdown");
+                    break;
+                }
+                if (result != Core::System::ResultStatus::Success) {
+                    this->SetRunning(false);
+                    emit ErrorThrown(result, system.GetStatusDetails());
+                }
+
+                was_active = running || exec_step;
+                if (!was_active && !stop_run)
+                    emit DebugModeEntered();
+            } else if (exec_step) {
+                if (!was_active)
+                    emit DebugModeLeft();
+
+                exec_step = false;
+                const Core::System::ResultStatus result = system.SingleStep();
+                if (result != Core::System::ResultStatus::Success) {
+                    LOG_ERROR(Frontend,
+                              "TRACE_EMUTHREAD SingleStep result={} details='{}'",
+                              static_cast<u32>(result), system.GetStatusDetails());
+                }
+                emit DebugModeEntered();
+                yieldCurrentThread();
+
+                was_active = false;
+            } else {
+                std::unique_lock lock{running_mutex};
+                running_cv.wait(lock, [this] { return IsRunning() || exec_step || stop_run; });
+                LOG_INFO(Frontend,
+                         "TRACE_EMUTHREAD wake running={} exec_step={} stop_run={}",
+                         static_cast<u32>(IsRunning()), static_cast<u32>(exec_step),
+                         static_cast<u32>(stop_run));
+            }
+        }
+
+        LOG_INFO(Frontend, "TRACE_EMUTHREAD loop exit stop_run={} running={} exec_step={}",
+                 static_cast<u32>(stop_run), static_cast<u32>(running),
+                 static_cast<u32>(exec_step));
+
+        system.Shutdown();
+        LOG_INFO(Frontend, "TRACE_EMUTHREAD system.Shutdown complete");
+    } catch (const std::exception& e) {
+        LOG_CRITICAL(Frontend, "TRACE_EMUTHREAD exception: {}", e.what());
+        emit ErrorThrown(Core::System::ResultStatus::ShutdownRequested, e.what());
+    } catch (...) {
+        LOG_CRITICAL(Frontend, "TRACE_EMUTHREAD unknown exception");
+        emit ErrorThrown(Core::System::ResultStatus::ShutdownRequested, "unknown exception");
     }
 
-    // Shutdown the core emulation
-    system.Shutdown();
+    LOG_INFO(Frontend, "TRACE_EMUTHREAD run end");
 }
 
 #ifdef ENABLE_OPENGL
