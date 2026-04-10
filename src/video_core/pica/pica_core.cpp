@@ -701,15 +701,15 @@ void PicaCore::DrawArrays(bool is_indexed) {
     }();
 
     // Pi 5 / V3DV strict-compat startup workaround:
-    // The first small indexed draws right after the boot/present phase are still the most
-    // crash-prone path. Force these through the software vertex path so the emulator can
-    // progress further, while keeping later Vulkan draws accelerated.
-    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 4 &&
-        regs.internal.pipeline.num_vertices <= 12 && primitive_assembler.IsEmpty() &&
+    // The earliest tiny startup draws are still the most crash-prone path on Pi 5 / V3DV.
+    // Keep these on the software vertex path a little longer so neighboring startup draws do
+    // not bounce back into accelerated rendering too early.
+    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 8 &&
+        regs.internal.pipeline.num_vertices <= 24 && primitive_assembler.IsEmpty() &&
         ArePrimaryTexturesDisabled(regs.internal)) {
         if (trace_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat forcing software fallback draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1",
+                     "TRACE_DRAW_PICA strict_compat forcing software fallback draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 extended_startup_window=1",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty());
         }
