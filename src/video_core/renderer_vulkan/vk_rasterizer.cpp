@@ -406,28 +406,47 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                  "TRACE_DRAW accel_internal indexed={} vertex_count={} binding_count={}",
                  is_indexed, regs.pipeline.num_vertices, pipeline_info.vertex_layout.binding_count);
     }
+
+    if (regs.pipeline.num_vertices == 0) {
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_DRAW accel_internal skipped empty draw");
+        }
+        return true;
+    }
+
+    const u32 binding_count = pipeline_info.vertex_layout.binding_count;
+    if (binding_count == 0 || binding_count > vertex_buffers.size()) {
+        LOG_ERROR(Render_Vulkan,
+                  "Accelerated draw has invalid binding_count={} (max={})",
+                  binding_count, vertex_buffers.size());
+        return false;
+    }
+
     if (is_indexed) {
         SetupIndexArray();
     }
 
-    const bool wait_built = !async_shaders || regs.pipeline.num_vertices <= 6;
+    const bool wait_built = IsStrictCompatEnabled() ? true
+                                                    : (!async_shaders || regs.pipeline.num_vertices <= 6);
     if (!pipeline_cache.BindPipeline(pipeline_info, wait_built)) {
         if (IsDrawTraceEnabled()) {
-            LOG_INFO(Render_Vulkan, "TRACE_DRAW pipeline not ready wait_built={}", wait_built);
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW pipeline not ready wait_built={} strict_compat={}",
+                     wait_built, static_cast<u32>(IsStrictCompatEnabled()));
         }
-        return true;
+        return false;
     }
 
     const DrawParams params = {
         .vertex_count = regs.pipeline.num_vertices,
         .vertex_offset = -static_cast<s32>(vertex_info.vs_input_index_min),
-        .binding_count = pipeline_info.vertex_layout.binding_count,
+        .binding_count = binding_count,
         .bindings = binding_offsets,
         .is_indexed = is_indexed,
     };
 
     scheduler.Record([this, params](vk::CommandBuffer cmdbuf) {
-        std::array<vk::DeviceSize, 16> offsets;
+        std::array<vk::DeviceSize, 16> offsets{};
         std::transform(params.bindings.begin(), params.bindings.end(), offsets.begin(),
                        [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
         cmdbuf.bindVertexBuffers(0, params.binding_count, vertex_buffers.data(), offsets.data());
@@ -444,22 +463,39 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 void RasterizerVulkan::SetupIndexArray() {
     const bool index_u8 = regs.pipeline.index_array.format == 0;
     const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
-    const u32 index_buffer_size = regs.pipeline.num_vertices * (native_u8 ? 1 : 2);
+    const u32 source_index_size = regs.pipeline.num_vertices * (index_u8 ? 1u : 2u);
+    const u32 index_buffer_size = regs.pipeline.num_vertices * (native_u8 ? 1u : 2u);
     const vk::IndexType index_type = native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
+    const PAddr index_addr =
+        regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() + regs.pipeline.index_array.offset;
 
-    const u8* index_data =
-        memory.GetPhysicalPointer(regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
-                                  regs.pipeline.index_array.offset);
+    if (IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW setup_index_array addr=0x{:08x} num_vertices={} index_u8={} native_u8={} src_size={} dst_size={}",
+                 index_addr, regs.pipeline.num_vertices, static_cast<u32>(index_u8),
+                 static_cast<u32>(native_u8), source_index_size, index_buffer_size);
+    }
 
     auto [index_ptr, index_offset, _] = stream_buffer.Map(index_buffer_size, 2);
+    std::memset(index_ptr, 0, index_buffer_size);
 
-    if (index_u8 && !native_u8) {
-        u16* index_ptr_u16 = reinterpret_cast<u16*>(index_ptr);
-        for (u32 i = 0; i < regs.pipeline.num_vertices; i++) {
-            index_ptr_u16[i] = index_data[i];
+    if (source_index_size != 0) {
+        const MemoryRef index_ref = memory.GetPhysicalRef(index_addr);
+        if (index_ref.GetSize() < source_index_size) {
+            LOG_ERROR(Render_Vulkan,
+                      "Index buffer size {} exceeds available space {} at address {:#016X}",
+                      source_index_size, index_ref.GetSize(), index_addr);
+        } else {
+            const u8* index_data = index_ref.GetPtr();
+            if (index_u8 && !native_u8) {
+                u16* index_ptr_u16 = reinterpret_cast<u16*>(index_ptr);
+                for (u32 i = 0; i < regs.pipeline.num_vertices; i++) {
+                    index_ptr_u16[i] = index_data[i];
+                }
+            } else {
+                std::memcpy(index_ptr, index_data, source_index_size);
+            }
         }
-    } else {
-        std::memcpy(index_ptr, index_data, index_buffer_size);
     }
 
     stream_buffer.Commit(index_buffer_size);
