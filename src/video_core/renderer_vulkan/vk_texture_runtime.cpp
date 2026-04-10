@@ -669,8 +669,8 @@ bool TextureRuntime::CopyTextures(Surface& source, Surface& dest,
         };
         const std::array post_barriers = {
             vk::ImageMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eNone,
-                .dstAccessMask = vk::AccessFlagBits::eNone,
+                .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                .dstAccessMask = params.src_access,
                 .oldLayout = new_src_layout,
                 .newLayout = vk::ImageLayout::eGeneral,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1339,9 +1339,13 @@ vk::ImageView Surface::CopyImageView() noexcept {
 
     scheduler->Record([params, copy_layout, levels = this->levels, width = GetScaledWidth(),
                        height = GetScaledHeight()](vk::CommandBuffer cmdbuf) {
+        const vk::AccessFlags copy_src_access =
+            copy_layout == vk::ImageLayout::eUndefined ? vk::AccessFlagBits::eNone
+                                                       : vk::AccessFlagBits::eShaderRead;
+
         std::array pre_barriers = {
             vk::ImageMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                .srcAccessMask = params.src_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferRead,
                 .oldLayout = vk::ImageLayout::eGeneral,
                 .newLayout = vk::ImageLayout::eTransferSrcOptimal,
@@ -1351,7 +1355,7 @@ vk::ImageView Surface::CopyImageView() noexcept {
                 .subresourceRange = MakeSubresourceRange(params.aspect, 0, levels),
             },
             vk::ImageMemoryBarrier{
-                .srcAccessMask = vk::AccessFlagBits::eShaderRead,
+                .srcAccessMask = copy_src_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
                 .oldLayout = copy_layout,
                 .newLayout = vk::ImageLayout::eTransferDstOptimal,
@@ -1364,7 +1368,7 @@ vk::ImageView Surface::CopyImageView() noexcept {
         std::array post_barriers = {
             vk::ImageMemoryBarrier{
                 .srcAccessMask = vk::AccessFlagBits::eTransferRead,
-                .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                .dstAccessMask = params.src_access,
                 .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
                 .newLayout = vk::ImageLayout::eGeneral,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
