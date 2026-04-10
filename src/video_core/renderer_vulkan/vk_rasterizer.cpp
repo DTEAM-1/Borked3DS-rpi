@@ -66,6 +66,42 @@ struct DrawParams {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+std::atomic<u64> g_vk_software_bypass_counter{0};
+
+[[nodiscard]] bool ArePrimaryTexturesDisabled(const Pica::RegsInternal& regs) {
+    const auto& textures = regs.texturing.GetTextures();
+    for (u32 i = 0; i < 3; ++i) {
+        if (textures[i].enabled) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool ShouldBypassFragileSoftwareDraw(const Pica::RegsInternal& regs,
+                                                   std::size_t vertex_batch_size) {
+    if (!IsStrictCompatEnabled()) {
+        return false;
+    }
+    if (vertex_batch_size == 0 || vertex_batch_size > 12) {
+        return false;
+    }
+    if (regs.pipeline.num_vertices == 0 || regs.pipeline.num_vertices > 12) {
+        return false;
+    }
+    if (!ArePrimaryTexturesDisabled(regs)) {
+        return false;
+    }
+    if (regs.framebuffer.IsShadowRendering()) {
+        return false;
+    }
+    if (regs.framebuffer.output_merger.depth_test_enable != 0 ||
+        regs.framebuffer.output_merger.depth_write_enable != 0) {
+        return false;
+    }
+    return true;
+}
+
 } // Anonymous namespace
 
 RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore& pica,
@@ -653,6 +689,19 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
     }
 
+    if (!accelerate && ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
+        const u64 bypass_index = ++g_vk_software_bypass_counter;
+        if (bypass_index <= 4) {
+            if (IsDrawTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW strict_compat bypass_software_draw bypass_index={} vertex_batch_size={} num_vertices={} textures_disabled=1",
+                         bypass_index, vertex_batch.size(), regs.pipeline.num_vertices);
+            }
+            vertex_batch.clear();
+            return true;
+        }
+    }
+
     // Begin rendering
     const auto draw_rect = fb_helper.DrawRect();
     renderpass_cache.BeginRendering(framebuffer, draw_rect);
@@ -710,6 +759,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             cmdbuf.bindVertexBuffers(0, stream_buffer.Handle(), offset);
             cmdbuf.draw(vertex_count, 1, 0, 0);
         });
+
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW software_path submitted vertex_count={} buffer_offset={}",
+                     vertex_count, offset);
+        }
     }
 
     if (IsDrawTraceEnabled()) {
