@@ -34,6 +34,11 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+[[nodiscard]] bool IsStrictCompatEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 } // namespace
 
 
@@ -161,9 +166,18 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
     const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
     const auto present_set = present_heap.Commit();
     for (u32 index = 0; index < screen_infos.size(); index++) {
-        update_queue.AddImageSampler(present_set, 0, index, screen_infos[index].image_view,
-                                     sampler);
+        vk::ImageView image_view = screen_infos[index].image_view;
+        if (!image_view) {
+            image_view = screen_infos[index].texture.image_view;
+            if (IsPresentTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT prepare_draw fallback_owned_texture index={} view_valid={}",
+                         index, static_cast<bool>(image_view));
+            }
+        }
+        update_queue.AddImageSampler(present_set, 0, index, image_view, sampler);
     }
+    update_queue.Flush();
 
     renderpass_cache.EndRendering();
     scheduler.Record([this, layout, frame, present_set, renderpass = main_window.Renderpass(),
@@ -207,6 +221,11 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
 
 void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,
                                     bool flipped) {
+    if (IsStrictCompatEnabled()) {
+        window.WaitPresent();
+        scheduler.Finish();
+    }
+
     Frame* frame = window.GetRenderFrame();
 
     if (layout.width != frame->width || layout.height != frame->height) {
@@ -942,6 +961,21 @@ void RendererVulkan::SwapBuffers() {
         LOG_INFO(Render_Vulkan, "TRACE_PRESENT swap_buffers begin layout={}x{}", layout.width,
                  layout.height);
     }
+
+    if (IsStrictCompatEnabled()) {
+        renderpass_cache.EndRendering();
+        main_window.WaitPresent();
+        if (second_window) {
+            second_window->WaitPresent();
+        }
+        scheduler.Finish();
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT strict_compat serialized_before_prepare layout={}x{}",
+                     layout.width, layout.height);
+        }
+    }
+
     PrepareRendertarget();
     RenderScreenshot();
     RenderToWindow(main_window, layout, false);
