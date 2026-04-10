@@ -67,6 +67,8 @@ struct DrawParams {
 }
 
 std::atomic<u64> g_vk_software_bypass_counter{0};
+std::atomic<u64> g_vk_textured_software_bypass_counter{0};
+std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
 
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const Pica::RegsInternal& regs) {
     const auto& textures = regs.texturing.GetTextures();
@@ -76,6 +78,15 @@ std::atomic<u64> g_vk_software_bypass_counter{0};
         }
     }
     return true;
+}
+
+[[nodiscard]] bool HasPrimaryTexturesEnabled(const Pica::RegsInternal& regs) {
+    return !ArePrimaryTexturesDisabled(regs);
+}
+
+[[nodiscard]] bool HasActiveDepthState(const Pica::RegsInternal& regs) {
+    return regs.framebuffer.output_merger.depth_test_enable != 0 ||
+           regs.framebuffer.output_merger.depth_write_enable != 0;
 }
 
 [[nodiscard]] bool ShouldBypassFragileSoftwareDraw(const Pica::RegsInternal& regs,
@@ -93,6 +104,29 @@ std::atomic<u64> g_vk_software_bypass_counter{0};
         return false;
     }
     if (regs.framebuffer.IsShadowRendering()) {
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool ShouldBypassFragileTexturedSoftwareDraw(const Pica::RegsInternal& regs,
+                                                           std::size_t vertex_batch_size) {
+    if (!IsStrictCompatEnabled()) {
+        return false;
+    }
+    if (vertex_batch_size == 0 || vertex_batch_size > 12) {
+        return false;
+    }
+    if (regs.pipeline.num_vertices == 0 || regs.pipeline.num_vertices > 12) {
+        return false;
+    }
+    if (!HasPrimaryTexturesEnabled(regs)) {
+        return false;
+    }
+    if (regs.framebuffer.IsShadowRendering()) {
+        return false;
+    }
+    if (HasActiveDepthState(regs)) {
         return false;
     }
     return true;
@@ -617,18 +651,49 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         return true;
     }
 
-    if (!accelerate && ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
-        const u64 bypass_index = ++g_vk_software_bypass_counter;
-        if (bypass_index <= 8) {
-            if (IsDrawTraceEnabled()) {
+    if (!accelerate) {
+        if (ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
+            const u64 bypass_index = ++g_vk_software_bypass_counter;
+            if (bypass_index <= 8) {
+                if (IsDrawTraceEnabled()) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_DRAW strict_compat early_bypass_software_draw bypass_index={} vertex_batch_size={} num_vertices={} textures_disabled=1 color_addr=0x{:08x} depth_addr=0x{:08x}",
+                             bypass_index, vertex_batch.size(), regs.pipeline.num_vertices,
+                             regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                             regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+                }
+                vertex_batch.clear();
+                return true;
+            }
+        }
+
+        if (ShouldBypassFragileTexturedSoftwareDraw(regs, vertex_batch.size())) {
+            const u64 bypass_index = ++g_vk_textured_software_bypass_counter;
+            if (bypass_index <= 4) {
+                if (IsDrawTraceEnabled()) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_DRAW strict_compat early_bypass_textured_software_draw bypass_index={} vertex_batch_size={} num_vertices={} textures_disabled=0 depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                             bypass_index, vertex_batch.size(), regs.pipeline.num_vertices,
+                             static_cast<u32>(HasActiveDepthState(regs)),
+                             regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                             regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+                }
+                vertex_batch.clear();
+                return true;
+            }
+        }
+
+        if (IsDrawTraceEnabled()) {
+            const u64 trace_index = ++g_vk_non_bypassed_software_trace_counter;
+            if (trace_index <= 12) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat early_bypass_software_draw bypass_index={} vertex_batch_size={} num_vertices={} textures_disabled=1 color_addr=0x{:08x} depth_addr=0x{:08x}",
-                         bypass_index, vertex_batch.size(), regs.pipeline.num_vertices,
+                         "TRACE_DRAW software_draw_after_bypass trace_index={} vertex_batch_size={} num_vertices={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                         trace_index, vertex_batch.size(), regs.pipeline.num_vertices,
+                         static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
+                         static_cast<u32>(HasActiveDepthState(regs)),
                          regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                          regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
             }
-            vertex_batch.clear();
-            return true;
         }
     }
 
