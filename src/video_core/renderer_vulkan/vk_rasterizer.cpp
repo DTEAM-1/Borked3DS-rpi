@@ -654,7 +654,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (!accelerate) {
         if (ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
             const u64 bypass_index = ++g_vk_software_bypass_counter;
-            if (bypass_index <= 16) {
+            if (bypass_index <= 32) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
                              "TRACE_DRAW strict_compat early_bypass_software_draw bypass_index={} vertex_batch_size={} num_vertices={} textures_disabled=1 color_addr=0x{:08x} depth_addr=0x{:08x}",
