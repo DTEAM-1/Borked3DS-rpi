@@ -701,9 +701,24 @@ void PicaCore::DrawArrays(bool is_indexed) {
     }();
 
     // Pi 5 / V3DV strict-compat startup workaround:
-    // The earliest tiny startup draws are still the most crash-prone path on Pi 5 / V3DV.
-    // Keep these on the software vertex path a little longer so neighboring startup draws do
-    // not bounce back into accelerated rendering too early.
+    // The very earliest tiny indexed draws with primary textures disabled have remained the
+    // most fragile startup path. Skip a very small front window of these draws entirely so
+    // they never reach the software vertex path, then keep the broader fallback window behind
+    // them for the rest of startup.
+    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 16 &&
+        regs.internal.pipeline.num_vertices == 6 && primitive_assembler.IsEmpty() &&
+        ArePrimaryTexturesDisabled(regs.internal)) {
+        if (trace_draw) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA strict_compat skipping fragile startup draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 startup_skip_window=1",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     primitive_assembler.IsEmpty());
+        }
+        return;
+    }
+
+    // Keep a wider software-fallback window immediately after the direct-skip zone so nearby
+    // startup draws do not bounce back into accelerated rendering too early.
     if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 32 &&
         regs.internal.pipeline.num_vertices <= 24 && primitive_assembler.IsEmpty() &&
         ArePrimaryTexturesDisabled(regs.internal)) {
