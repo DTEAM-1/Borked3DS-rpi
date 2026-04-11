@@ -704,12 +704,12 @@ void PicaCore::DrawArrays(bool is_indexed) {
     // The earliest tiny startup draws are still the most crash-prone path on Pi 5 / V3DV.
     // Keep these on the software vertex path a little longer so neighboring startup draws do
     // not bounce back into accelerated rendering too early.
-    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 12 &&
-        regs.internal.pipeline.num_vertices <= 36 && primitive_assembler.IsEmpty() &&
+    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 16 &&
+        regs.internal.pipeline.num_vertices <= 24 && primitive_assembler.IsEmpty() &&
         ArePrimaryTexturesDisabled(regs.internal)) {
         if (trace_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat forcing software fallback draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 extended_startup_window=2",
+                     "TRACE_DRAW_PICA strict_compat forcing software fallback draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 extended_startup_window=3",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty());
         }
