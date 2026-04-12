@@ -98,6 +98,7 @@ void LogMainConfigTransition(const RegsInternal& regs, u32 id, u32 old_value, u3
 
 std::atomic<u64> g_pica_draw_counter{0};
 std::atomic<u64> g_fragile_startup_draw_counter{0};
+std::atomic<u64> g_textured_startup_draw_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 std::atomic<bool> g_logged_first_non_fragile_draw{false};
 std::atomic<bool> g_logged_first_non_fragile_textured_draw{false};
@@ -737,6 +738,26 @@ void PicaCore::DrawArrays(bool is_indexed) {
                          "TRACE_DRAW_PICA strict_compat forcing software fallback draw_index={} fragile_startup_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 extended_startup_window=8",
                          draw_index, fragile_startup_index, is_indexed,
                          regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty());
+            }
+            accelerate_draw = false;
+        }
+    }
+
+    const bool is_textured_startup_draw = IsStrictCompatEnabled() && accelerate_draw &&
+                                          !is_fragile_startup_draw && is_indexed &&
+                                          primitive_assembler.IsEmpty() &&
+                                          textures_disabled == 0;
+
+    if (is_textured_startup_draw) {
+        const u64 textured_startup_index = ++g_textured_startup_draw_counter;
+        if (textured_startup_index <= 2) {
+            if (trace_draw) {
+                LOG_INFO(HW_GPU,
+                         "TRACE_DRAW_PICA strict_compat forcing software fallback for textured startup draw draw_index={} textured_startup_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} textured_startup_window=1",
+                         draw_index, textured_startup_index, is_indexed,
+                         regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
+                         textures_disabled);
+                LogPicaTextureState(regs.internal, "textured_startup_fallback");
             }
             accelerate_draw = false;
         }
