@@ -84,6 +84,15 @@ std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
     return !ArePrimaryTexturesDisabled(regs);
 }
 
+[[nodiscard]] u32 CountEnabledPrimaryTextures(const Pica::RegsInternal& regs) {
+    const auto& textures = regs.texturing.GetTextures();
+    u32 enabled = 0;
+    for (u32 i = 0; i < 3; ++i) {
+        enabled += textures[i].enabled ? 1u : 0u;
+    }
+    return enabled;
+}
+
 [[nodiscard]] bool HasActiveDepthState(const Pica::RegsInternal& regs) {
     return regs.framebuffer.output_merger.depth_test_enable != 0 ||
            regs.framebuffer.output_merger.depth_write_enable != 0;
@@ -114,13 +123,19 @@ std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
     if (!IsStrictCompatEnabled()) {
         return false;
     }
-    if (vertex_batch_size == 0 || vertex_batch_size > 12) {
+    // Pi 5 / V3DV startup textured-software workaround:
+    // catch the first modest textured draws that were exposed only after the PICA-side
+    // startup fallback, while staying conservative enough to avoid broad regressions.
+    if (vertex_batch_size == 0 || vertex_batch_size > 48) {
         return false;
     }
-    if (regs.pipeline.num_vertices == 0 || regs.pipeline.num_vertices > 12) {
+    if (regs.pipeline.num_vertices == 0 || regs.pipeline.num_vertices > 48) {
         return false;
     }
     if (!HasPrimaryTexturesEnabled(regs)) {
+        return false;
+    }
+    if (CountEnabledPrimaryTextures(regs) > 1) {
         return false;
     }
     if (regs.framebuffer.IsShadowRendering()) {
@@ -672,8 +687,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             if (bypass_index <= 4) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_bypass_textured_software_draw bypass_index={} vertex_batch_size={} num_vertices={} textures_disabled=0 depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                             "TRACE_DRAW strict_compat early_bypass_textured_software_draw bypass_index={} vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled=0 depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                              bypass_index, vertex_batch.size(), regs.pipeline.num_vertices,
+                             CountEnabledPrimaryTextures(regs),
                              static_cast<u32>(HasActiveDepthState(regs)),
                              regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                              regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
@@ -687,8 +703,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             const u64 trace_index = ++g_vk_non_bypassed_software_trace_counter;
             if (trace_index <= 12) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW software_draw_after_bypass trace_index={} vertex_batch_size={} num_vertices={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                         "TRACE_DRAW software_draw_after_bypass trace_index={} vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                          trace_index, vertex_batch.size(), regs.pipeline.num_vertices,
+                         CountEnabledPrimaryTextures(regs),
                          static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                          static_cast<u32>(HasActiveDepthState(regs)),
                          regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
