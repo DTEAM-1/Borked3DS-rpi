@@ -716,6 +716,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                                          regs.internal.pipeline.num_vertices == 6 &&
                                          primitive_assembler.IsEmpty() &&
                                          ArePrimaryTexturesDisabled(regs.internal);
+    const u32 textures_disabled = ArePrimaryTexturesDisabled(regs.internal) ? 1u : 0u;
 
     if (is_fragile_startup_draw) {
         const u64 fragile_startup_index = ++g_fragile_startup_draw_counter;
@@ -833,7 +834,6 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
         if (!accelerated && !is_fragile_startup_draw &&
             !g_logged_first_non_fragile_accel_failed.exchange(true)) {
-            const u32 textures_disabled = ArePrimaryTexturesDisabled(regs.internal) ? 1u : 0u;
             LOG_INFO(HW_GPU,
                      "TRACE_DRAW_PICA first_non_fragile_accel_failed draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
