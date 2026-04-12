@@ -702,15 +702,15 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     // Pi 5 / V3DV strict-compat startup workaround:
     // The earliest tiny indexed draws with primary textures disabled still behave like fragile
-    // startup noise on Pi 5 / V3DV. Skip a slightly wider front window of these draws entirely
-    // so they never enter the software vertex path, then keep only a short software-fallback
-    // tail behind that window for nearby startup draws.
-    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 24 &&
+    // startup noise on Pi 5 / V3DV. Skip a wider front window of these draws entirely so they
+    // never enter the software vertex path, then keep only a short software-fallback tail behind
+    // that window for nearby startup draws.
+    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index <= 32 &&
         regs.internal.pipeline.num_vertices == 6 && primitive_assembler.IsEmpty() &&
         ArePrimaryTexturesDisabled(regs.internal)) {
         if (trace_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat skipping fragile startup draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 startup_skip_window=2",
+                     "TRACE_DRAW_PICA strict_compat skipping fragile startup draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 startup_skip_window=3",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty());
         }
@@ -720,12 +720,12 @@ void PicaCore::DrawArrays(bool is_indexed) {
     // Keep a short software-fallback tail immediately after the direct-skip zone so nearby
     // startup draws do not bounce back into accelerated rendering too early while still
     // letting us expose the first new failure beyond the fragile startup family.
-    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index >= 25 &&
-        draw_index <= 32 && regs.internal.pipeline.num_vertices <= 24 &&
+    if (accelerate_draw && IsStrictCompatEnabled() && is_indexed && draw_index >= 33 &&
+        draw_index <= 40 && regs.internal.pipeline.num_vertices <= 24 &&
         primitive_assembler.IsEmpty() && ArePrimaryTexturesDisabled(regs.internal)) {
         if (trace_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat forcing software fallback draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 extended_startup_window=6",
+                     "TRACE_DRAW_PICA strict_compat forcing software fallback draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled=1 extended_startup_window=7",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty());
         }
