@@ -99,6 +99,9 @@ void LogMainConfigTransition(const RegsInternal& regs, u32 id, u32 old_value, u3
 std::atomic<u64> g_pica_draw_counter{0};
 std::atomic<u64> g_fragile_startup_draw_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
+std::atomic<bool> g_logged_first_non_fragile_draw{false};
+std::atomic<bool> g_logged_first_non_fragile_textured_draw{false};
+std::atomic<bool> g_logged_first_non_fragile_software_draw{false};
 std::atomic<bool> g_logged_first_non_fragile_accel_candidate{false};
 std::atomic<bool> g_logged_first_non_fragile_accel_attempt{false};
 std::atomic<bool> g_logged_first_non_fragile_accel_failed{false};
@@ -747,10 +750,59 @@ void PicaCore::DrawArrays(bool is_indexed) {
                  static_cast<u32>(primitive_assembler.GetTopology()));
     }
 
+        const bool reason_use_gs = regs.internal.pipeline.use_gs == PipelineRegs::UseGS::Yes;
+    const bool reason_primitive_not_empty = !primitive_assembler.IsEmpty();
+    const auto topology = primitive_assembler.GetTopology();
+    const bool topology_requires_multiple_of_3 =
+        topology == PipelineRegs::TriangleTopology::Shader ||
+        topology == PipelineRegs::TriangleTopology::List;
+    const bool reason_topology_not_multiple_of_3 =
+        topology_requires_multiple_of_3 && (regs.internal.pipeline.num_vertices % 3) != 0;
+    const bool reason_hw_shader_disabled = !Settings::values.use_hw_shader.GetValue();
+
+    if (!is_fragile_startup_draw && !g_logged_first_non_fragile_draw.exchange(true)) {
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA first_non_fragile_draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} use_gs={} topology={} accelerate_draw={} reason_hw_shader_disabled={} reason_use_gs={} reason_primitive_not_empty={} reason_topology_not_multiple_of_3={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                 draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                 primitive_assembler.IsEmpty(), textures_disabled,
+                 static_cast<u32>(regs.internal.pipeline.use_gs.Value()),
+                 static_cast<u32>(topology), accelerate_draw, reason_hw_shader_disabled,
+                 reason_use_gs, reason_primitive_not_empty, reason_topology_not_multiple_of_3,
+                 regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                 regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        LogPicaTextureState(regs.internal, "first_non_fragile_draw");
+    }
+
+    if (!is_fragile_startup_draw && textures_disabled == 0 &&
+        !g_logged_first_non_fragile_textured_draw.exchange(true)) {
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA first_non_fragile_textured_draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} use_gs={} topology={} accelerate_draw={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                 draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                 primitive_assembler.IsEmpty(), textures_disabled,
+                 static_cast<u32>(regs.internal.pipeline.use_gs.Value()),
+                 static_cast<u32>(topology), accelerate_draw,
+                 regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                 regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        LogPicaTextureState(regs.internal, "first_non_fragile_textured_draw");
+    }
+
+    if (!is_fragile_startup_draw && !accelerate_draw &&
+        !g_logged_first_non_fragile_software_draw.exchange(true)) {
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA first_non_fragile_software_draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} use_gs={} topology={} reason_hw_shader_disabled={} reason_use_gs={} reason_primitive_not_empty={} reason_topology_not_multiple_of_3={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                 draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                 primitive_assembler.IsEmpty(), textures_disabled,
+                 static_cast<u32>(regs.internal.pipeline.use_gs.Value()),
+                 static_cast<u32>(topology), reason_hw_shader_disabled, reason_use_gs,
+                 reason_primitive_not_empty, reason_topology_not_multiple_of_3,
+                 regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                 regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        LogPicaTextureState(regs.internal, "first_non_fragile_software_draw");
+    }
+
     if (accelerate_draw && !is_fragile_startup_draw &&
         !g_logged_first_non_fragile_accel_candidate.exchange(true)) {
-        const u32 textures_disabled = ArePrimaryTexturesDisabled(regs.internal) ? 1u : 0u;
-        LOG_INFO(HW_GPU,
+                LOG_INFO(HW_GPU,
                  "TRACE_DRAW_PICA first_non_fragile_accelerated_draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
                  draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                  primitive_assembler.IsEmpty(), textures_disabled,
@@ -763,8 +815,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
     // Attempt to use hardware vertex shaders if possible.
     if (accelerate_draw) {
         if (!is_fragile_startup_draw && !g_logged_first_non_fragile_accel_attempt.exchange(true)) {
-            const u32 textures_disabled = ArePrimaryTexturesDisabled(regs.internal) ? 1u : 0u;
-            LOG_INFO(HW_GPU,
+                        LOG_INFO(HW_GPU,
                      "TRACE_DRAW_PICA first_non_fragile_accel_attempt draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty(), textures_disabled,
