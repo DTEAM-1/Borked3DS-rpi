@@ -765,20 +765,34 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
     }
 
-    const bool is_tiny_textured_startup_draw =
-        IsStrictCompatEnabled() && accelerate_draw && !is_fragile_startup_draw && is_indexed &&
+    const bool tiny_textured_startup_candidate =
+        IsStrictCompatEnabled() && !is_fragile_startup_draw && is_indexed &&
         primitive_assembler.IsEmpty() && textures_disabled == 0 &&
         regs.internal.pipeline.num_vertices == 6;
 
+    if (tiny_textured_startup_candidate && !accelerate_draw &&
+        Settings::values.use_hw_shader.GetValue()) {
+        if (trace_draw) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA strict_compat forcing tiny textured startup draw acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} tiny_textured_startup_force_v2=1",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     primitive_assembler.IsEmpty(), textures_disabled);
+            LogPicaTextureState(regs.internal, "tiny_textured_startup_force_v2");
+        }
+        accelerate_draw = true;
+    }
+
+    const bool is_tiny_textured_startup_draw = tiny_textured_startup_candidate && accelerate_draw;
+
     if (is_tiny_textured_startup_draw) {
         const u64 tiny_textured_startup_index = ++g_tiny_textured_startup_draw_counter;
-        if (trace_draw && tiny_textured_startup_index <= 12) {
+        if (trace_draw && tiny_textured_startup_index <= 16) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat allowing tiny textured startup draw draw_index={} tiny_textured_startup_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} tiny_textured_startup_window=1",
+                     "TRACE_DRAW_PICA strict_compat allowing_tiny_textured_startup_draw_v2 draw_index={} tiny_textured_startup_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} tiny_textured_startup_window_v2=1",
                      draw_index, tiny_textured_startup_index, is_indexed,
                      regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                      textures_disabled);
-            LogPicaTextureState(regs.internal, "tiny_textured_startup_accel");
+            LogPicaTextureState(regs.internal, "tiny_textured_startup_accel_v2");
         }
     }
 
