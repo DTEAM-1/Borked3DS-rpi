@@ -752,10 +752,10 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     if (is_large_textured_startup_draw) {
         const u64 large_textured_startup_index = ++g_large_textured_startup_draw_counter;
-        if (large_textured_startup_index <= 6) {
+        if (large_textured_startup_index <= 2) {
             if (trace_draw) {
                 LOG_INFO(HW_GPU,
-                         "TRACE_DRAW_PICA strict_compat forcing software fallback for large textured startup draw draw_index={} large_textured_startup_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} large_textured_startup_window=1",
+                         "TRACE_DRAW_PICA strict_compat forcing software fallback for large textured startup draw draw_index={} large_textured_startup_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} large_textured_startup_window=2",
                          draw_index, large_textured_startup_index, is_indexed,
                          regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                          textures_disabled);
@@ -768,7 +768,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
     const bool is_tiny_textured_startup_draw =
         IsStrictCompatEnabled() && accelerate_draw && !is_fragile_startup_draw && is_indexed &&
         primitive_assembler.IsEmpty() && textures_disabled == 0 &&
-        regs.internal.pipeline.num_vertices <= 12;
+        regs.internal.pipeline.num_vertices == 6;
 
     if (is_tiny_textured_startup_draw) {
         const u64 tiny_textured_startup_index = ++g_tiny_textured_startup_draw_counter;
