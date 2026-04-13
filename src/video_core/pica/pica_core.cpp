@@ -750,10 +750,10 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     if (is_textured_startup_draw) {
         const u64 textured_startup_index = ++g_textured_startup_draw_counter;
-        if (textured_startup_index <= 2) {
+        if (textured_startup_index <= 4) {
             if (trace_draw) {
                 LOG_INFO(HW_GPU,
-                         "TRACE_DRAW_PICA strict_compat forcing software fallback for textured startup draw draw_index={} textured_startup_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} textured_startup_window=1",
+                         "TRACE_DRAW_PICA strict_compat forcing software fallback for textured startup draw draw_index={} textured_startup_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} textured_startup_window=2",
                          draw_index, textured_startup_index, is_indexed,
                          regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                          textures_disabled);
