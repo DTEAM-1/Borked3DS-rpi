@@ -782,6 +782,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      static_cast<u32>(HasActiveDepthState(regs)),
                      regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW large_step_1_after_allow large_index={} vertex_batch_size={} num_vertices={}",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices);
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW large_step_2_before_software_trace large_index={} vertex_batch_size={} num_vertices={}",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices);
         }
 
         if (IsDrawTraceEnabled()) {
@@ -797,6 +805,17 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                          regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
             }
         }
+
+        if (large_textured_software_draw && IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW large_step_3_after_software_trace large_index={} vertex_batch_size={} num_vertices={}",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices);
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW large_step_4_before_attachments large_index={} vertex_batch_size={} num_vertices={}",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices);
+        }
     }
 
     pipeline_info.attachments.color = framebuffer->Format(SurfaceType::Color);
@@ -804,6 +823,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_DRAW attachments color_format={} depth_format={} using_color={} using_depth={}",
+                 static_cast<u32>(pipeline_info.attachments.color),
+                 static_cast<u32>(pipeline_info.attachments.depth), using_color_fb, using_depth_fb);
+    }
+    if (large_textured_software_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_5_after_attachments large_index={} color_format={} depth_format={} using_color={} using_depth={}",
+                 large_textured_software_draw_index,
                  static_cast<u32>(pipeline_info.attachments.color),
                  static_cast<u32>(pipeline_info.attachments.depth), using_color_fb, using_depth_fb);
     }
@@ -823,8 +849,22 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     }
 
     // Sync and bind the texture surfaces
+    if (large_textured_software_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_6_before_sync_textures large_index={} framebuffer_valid={} vertex_batch_size={}",
+                 large_textured_software_draw_index, framebuffer != nullptr, vertex_batch.size());
+    }
     SyncTextureUnits(framebuffer);
     SyncUtilityTextures(framebuffer);
+    if (large_textured_software_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_7_after_sync_textures large_index={} enabled_textures={} vertex_batch_size={}",
+                 large_textured_software_draw_index, CountEnabledPrimaryTextures(regs),
+                 vertex_batch.size());
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_8_before_fragment_shader large_index={} shader_dirty={}",
+                 large_textured_software_draw_index, static_cast<u32>(shader_dirty));
+    }
 
     if (shader_dirty) {
         Pica::Shader::UserConfig user_config{};
@@ -845,10 +885,31 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         LOG_INFO(Render_Vulkan, "TRACE_DRAW use_fragment_shader shader_dirty=0");
     }
 
+    if (large_textured_software_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_9_after_fragment_shader large_index={} shader_dirty={}",
+                 large_textured_software_draw_index, static_cast<u32>(shader_dirty));
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_10_before_upload_uniforms large_index={} fs_dirty={} vs_dirty={} accelerate={}",
+                 large_textured_software_draw_index,
+                 static_cast<u32>(fs_uniform_block_data.dirty),
+                 static_cast<u32>(vs_uniform_block_data.dirty), static_cast<u32>(accelerate));
+    }
+
     // Sync the LUTs within the texture buffer
     SyncAndUploadLUTs();
     SyncAndUploadLUTsLF();
     UploadUniforms(accelerate);
+    if (large_textured_software_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_11_after_upload_uniforms large_index={} fs_dirty={} vs_dirty={} accelerate={}",
+                 large_textured_software_draw_index,
+                 static_cast<u32>(fs_uniform_block_data.dirty),
+                 static_cast<u32>(vs_uniform_block_data.dirty), static_cast<u32>(accelerate));
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_12_before_flush large_index={} vertex_batch_size={}",
+                 large_textured_software_draw_index, vertex_batch.size());
+    }
 
     // Pi 5 / V3DV strict compatibility:
     // - make descriptor writes visible before pipeline binding / render begin
@@ -857,6 +918,11 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan, "TRACE_DRAW descriptors_flushed accelerate={}",
                  static_cast<u32>(accelerate));
+    }
+    if (large_textured_software_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_13_after_flush large_index={} accelerate={}",
+                 large_textured_software_draw_index, static_cast<u32>(accelerate));
     }
     if (IsStrictCompatEnabled() && !accelerate) {
         scheduler.Finish();
@@ -875,14 +941,29 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                          "TRACE_DRAW strict_compat serialized_before_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
                          large_textured_software_draw_index, vertex_batch.size(),
                          regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs));
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW large_step_14_after_finish large_index={} vertex_batch_size={} num_vertices={}",
+                         large_textured_software_draw_index, vertex_batch.size(),
+                         regs.pipeline.num_vertices);
             }
         }
     }
 
+    if (large_textured_software_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_15_before_begin_rendering large_index={} draw_rect_pending=1",
+                 large_textured_software_draw_index);
+    }
 
     // Begin rendering
     const auto draw_rect = fb_helper.DrawRect();
     renderpass_cache.BeginRendering(framebuffer, draw_rect);
+    if (large_textured_software_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW large_step_16_after_begin_rendering large_index={} draw_rect=({}, {}, {}, {})",
+                 large_textured_software_draw_index, draw_rect.left, draw_rect.bottom,
+                 draw_rect.right, draw_rect.top);
+    }
 
     // Configure viewport and scissor
     const auto viewport = fb_helper.Viewport();
@@ -908,6 +989,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan, "TRACE_DRAW software_path vertex_batch_size={}", vertex_batch.size());
         }
+        if (large_textured_software_draw && IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW large_step_17_before_bind_pipeline large_index={} vertex_batch_size={} num_vertices={}",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices);
+        }
 
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, true);
         if (!pipeline_ready) {
@@ -923,6 +1010,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 }
             }
             return false;
+        }
+        if (large_textured_software_draw && IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW large_step_18_after_bind_pipeline large_index={} vertex_batch_size={} num_vertices={}",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices);
         }
 
         const u32 vertex_count = static_cast<u32>(vertex_batch.size());
