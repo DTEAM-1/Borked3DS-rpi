@@ -925,26 +925,46 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                  large_textured_software_draw_index, static_cast<u32>(accelerate));
     }
     if (IsStrictCompatEnabled() && !accelerate) {
-        scheduler.Finish();
-        if (IsDrawTraceEnabled()) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={}",
-                     vertex_batch.size());
-            if (tiny_textured_software_draw) {
+        if (large_textured_software_draw) {
+            if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat serialized_before_tiny_textured_draw vertex_batch_size={} num_vertices={} enabled_textures={}",
-                         vertex_batch.size(), regs.pipeline.num_vertices,
-                         CountEnabledPrimaryTextures(regs));
-            }
-            if (large_textured_software_draw) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat serialized_before_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
+                         "TRACE_DRAW strict_compat skipping_finish_for_first_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
                          large_textured_software_draw_index, vertex_batch.size(),
                          regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs));
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW large_step_14_after_finish large_index={} vertex_batch_size={} num_vertices={}",
+                         "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={} finish_skipped={}",
+                         vertex_batch.size(), 1);
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW strict_compat serialized_before_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} finish_skipped={}",
                          large_textured_software_draw_index, vertex_batch.size(),
-                         regs.pipeline.num_vertices);
+                         regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs), 1);
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW large_step_14_after_finish large_index={} vertex_batch_size={} num_vertices={} finish_skipped={}",
+                         large_textured_software_draw_index, vertex_batch.size(),
+                         regs.pipeline.num_vertices, 1);
+            }
+        } else {
+            scheduler.Finish();
+            if (IsDrawTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={}",
+                         vertex_batch.size());
+                if (tiny_textured_software_draw) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_DRAW strict_compat serialized_before_tiny_textured_draw vertex_batch_size={} num_vertices={} enabled_textures={}",
+                             vertex_batch.size(), regs.pipeline.num_vertices,
+                             CountEnabledPrimaryTextures(regs));
+                }
+                if (large_textured_software_draw) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_DRAW strict_compat serialized_before_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
+                             large_textured_software_draw_index, vertex_batch.size(),
+                             regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs));
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_DRAW large_step_14_after_finish large_index={} vertex_batch_size={} num_vertices={}",
+                             large_textured_software_draw_index, vertex_batch.size(),
+                             regs.pipeline.num_vertices);
+                }
             }
         }
     }
