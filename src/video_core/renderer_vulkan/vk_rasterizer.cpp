@@ -147,6 +147,32 @@ std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
     return true;
 }
 
+[[nodiscard]] bool ShouldAttemptTinyTexturedSoftwareDraw(const Pica::RegsInternal& regs,
+                                                         std::size_t vertex_batch_size) {
+    if (!IsStrictCompatEnabled()) {
+        return false;
+    }
+    if (vertex_batch_size != 6) {
+        return false;
+    }
+    if (regs.pipeline.num_vertices != 6) {
+        return false;
+    }
+    if (!HasPrimaryTexturesEnabled(regs)) {
+        return false;
+    }
+    if (CountEnabledPrimaryTextures(regs) != 1) {
+        return false;
+    }
+    if (regs.framebuffer.IsShadowRendering()) {
+        return false;
+    }
+    if (HasActiveDepthState(regs)) {
+        return false;
+    }
+    return true;
+}
+
 } // Anonymous namespace
 
 RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore& pica,
@@ -666,6 +692,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         return true;
     }
 
+    const bool tiny_textured_software_draw =
+        !accelerate && ShouldAttemptTinyTexturedSoftwareDraw(regs, vertex_batch.size());
+
     if (!accelerate) {
         if (ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
             const u64 bypass_index = ++g_vk_software_bypass_counter;
@@ -682,7 +711,8 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        if (ShouldBypassFragileTexturedSoftwareDraw(regs, vertex_batch.size())) {
+        if (ShouldBypassFragileTexturedSoftwareDraw(regs, vertex_batch.size()) &&
+            !tiny_textured_software_draw) {
             const u64 bypass_index = ++g_vk_textured_software_bypass_counter;
             if (bypass_index <= 6) {
                 if (IsDrawTraceEnabled()) {
@@ -697,6 +727,16 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 vertex_batch.clear();
                 return true;
             }
+        }
+
+        if (tiny_textured_software_draw && IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW strict_compat allowing_tiny_textured_software_draw vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     vertex_batch.size(), regs.pipeline.num_vertices,
+                     CountEnabledPrimaryTextures(regs),
+                     static_cast<u32>(HasActiveDepthState(regs)),
+                     regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
         }
 
         if (IsDrawTraceEnabled()) {
@@ -779,6 +819,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             LOG_INFO(Render_Vulkan,
                      "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={}",
                      vertex_batch.size());
+            if (tiny_textured_software_draw) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW strict_compat serialized_before_tiny_textured_draw vertex_batch_size={} num_vertices={} enabled_textures={}",
+                         vertex_batch.size(), regs.pipeline.num_vertices,
+                         CountEnabledPrimaryTextures(regs));
+            }
         }
     }
 
@@ -845,6 +891,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             LOG_INFO(Render_Vulkan,
                      "TRACE_DRAW software_path submitted vertex_count={} buffer_offset={}",
                      vertex_count, offset);
+            if (tiny_textured_software_draw) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW tiny_textured_draw_submitted vertex_count={} buffer_offset={} enabled_textures={} depth_active={}",
+                         vertex_count, offset, CountEnabledPrimaryTextures(regs),
+                         static_cast<u32>(HasActiveDepthState(regs)));
+            }
         }
     }
 
