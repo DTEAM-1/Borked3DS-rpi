@@ -68,6 +68,7 @@ struct DrawParams {
 
 std::atomic<u64> g_vk_software_bypass_counter{0};
 std::atomic<u64> g_vk_textured_software_bypass_counter{0};
+std::atomic<u64> g_vk_large_textured_software_allow_counter{0};
 std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
 
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const Pica::RegsInternal& regs) {
@@ -156,6 +157,32 @@ std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
         return false;
     }
     if (regs.pipeline.num_vertices != 6) {
+        return false;
+    }
+    if (!HasPrimaryTexturesEnabled(regs)) {
+        return false;
+    }
+    if (CountEnabledPrimaryTextures(regs) != 1) {
+        return false;
+    }
+    if (regs.framebuffer.IsShadowRendering()) {
+        return false;
+    }
+    if (HasActiveDepthState(regs)) {
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool ShouldAttemptLargeTexturedSoftwareDraw(const Pica::RegsInternal& regs,
+                                                          std::size_t vertex_batch_size) {
+    if (!IsStrictCompatEnabled()) {
+        return false;
+    }
+    if (vertex_batch_size != 42) {
+        return false;
+    }
+    if (regs.pipeline.num_vertices != 42) {
         return false;
     }
     if (!HasPrimaryTexturesEnabled(regs)) {
@@ -694,6 +721,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     const bool tiny_textured_software_draw =
         !accelerate && ShouldAttemptTinyTexturedSoftwareDraw(regs, vertex_batch.size());
+    u64 large_textured_software_draw_index = 0;
+    const bool large_textured_software_draw = [&] {
+        if (accelerate || !ShouldAttemptLargeTexturedSoftwareDraw(regs, vertex_batch.size())) {
+            return false;
+        }
+        large_textured_software_draw_index = ++g_vk_large_textured_software_allow_counter;
+        return large_textured_software_draw_index <= 1;
+    }();
 
     if (!accelerate) {
         if (ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
@@ -712,7 +747,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
 
         if (ShouldBypassFragileTexturedSoftwareDraw(regs, vertex_batch.size()) &&
-            !tiny_textured_software_draw) {
+            !tiny_textured_software_draw && !large_textured_software_draw) {
             const u64 bypass_index = ++g_vk_textured_software_bypass_counter;
             if (bypass_index <= 6) {
                 if (IsDrawTraceEnabled()) {
@@ -734,6 +769,16 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      "TRACE_DRAW strict_compat allowing_tiny_textured_software_draw vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs),
+                     static_cast<u32>(HasActiveDepthState(regs)),
+                     regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        }
+
+        if (large_textured_software_draw && IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                      static_cast<u32>(HasActiveDepthState(regs)),
                      regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
@@ -825,6 +870,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                          vertex_batch.size(), regs.pipeline.num_vertices,
                          CountEnabledPrimaryTextures(regs));
             }
+            if (large_textured_software_draw) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW strict_compat serialized_before_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
+                         large_textured_software_draw_index, vertex_batch.size(),
+                         regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs));
+            }
         }
     }
 
@@ -864,6 +915,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 LOG_INFO(Render_Vulkan,
                          "TRACE_DRAW software_path pipeline_not_ready vertex_batch_size={} strict_compat={}",
                          vertex_batch.size(), static_cast<u32>(IsStrictCompatEnabled()));
+                if (large_textured_software_draw) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_DRAW large_textured_software_draw_failed large_index={} vertex_batch_size={} num_vertices={} reason=pipeline_not_ready",
+                             large_textured_software_draw_index, vertex_batch.size(),
+                             regs.pipeline.num_vertices);
+                }
             }
             return false;
         }
@@ -895,6 +952,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 LOG_INFO(Render_Vulkan,
                          "TRACE_DRAW tiny_textured_draw_submitted vertex_count={} buffer_offset={} enabled_textures={} depth_active={}",
                          vertex_count, offset, CountEnabledPrimaryTextures(regs),
+                         static_cast<u32>(HasActiveDepthState(regs)));
+            }
+            if (large_textured_software_draw) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW large_textured_software_draw_submitted large_index={} vertex_count={} buffer_offset={} enabled_textures={} depth_active={}",
+                         large_textured_software_draw_index, vertex_count, offset,
+                         CountEnabledPrimaryTextures(regs),
                          static_cast<u32>(HasActiveDepthState(regs)));
             }
         }
