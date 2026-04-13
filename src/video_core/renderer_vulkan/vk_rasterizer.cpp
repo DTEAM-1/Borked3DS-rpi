@@ -961,10 +961,15 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
     }
 
-    if (large_textured_software_draw && IsDrawTraceEnabled()) {
-        LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW large_step_15_before_begin_rendering large_index={} draw_rect_pending=1",
-                 large_textured_software_draw_index);
+    if (large_textured_software_draw) {
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW late_skip_first_large_textured_software_draw_v3 large_index={} vertex_batch_size={} num_vertices={} patch_v3=1",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices);
+        }
+        vertex_batch.clear();
+        return true;
     }
 
     // Begin rendering
