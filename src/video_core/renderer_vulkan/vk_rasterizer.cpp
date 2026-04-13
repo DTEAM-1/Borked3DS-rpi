@@ -776,23 +776,15 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (large_textured_software_draw && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw_v2 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      large_textured_software_draw_index, vertex_batch.size(),
                      regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                      static_cast<u32>(HasActiveDepthState(regs)),
                      regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW large_step_1_after_allow large_index={} vertex_batch_size={} num_vertices={}",
-                     large_textured_software_draw_index, vertex_batch.size(),
-                     regs.pipeline.num_vertices);
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW large_step_2_before_software_trace large_index={} vertex_batch_size={} num_vertices={}",
-                     large_textured_software_draw_index, vertex_batch.size(),
-                     regs.pipeline.num_vertices);
         }
 
-        if (IsDrawTraceEnabled()) {
+        if (IsDrawTraceEnabled() && !large_textured_software_draw) {
             const u64 trace_index = ++g_vk_non_bypassed_software_trace_counter;
             if (trace_index <= 12) {
                 LOG_INFO(Render_Vulkan,
@@ -928,20 +920,20 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (large_textured_software_draw) {
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat skipping_finish_for_first_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
+                         "TRACE_DRAW strict_compat skipping_finish_for_first_large_textured_software_draw_v2 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
                          large_textured_software_draw_index, vertex_batch.size(),
                          regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs));
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={} finish_skipped={}",
-                         vertex_batch.size(), 1);
+                         "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={} finish_skipped={} patch_v2={}",
+                         vertex_batch.size(), 1, 1);
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat serialized_before_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} finish_skipped={}",
+                         "TRACE_DRAW strict_compat serialized_before_large_textured_software_draw large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} finish_skipped={} patch_v2={}",
                          large_textured_software_draw_index, vertex_batch.size(),
-                         regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs), 1);
+                         regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs), 1, 1);
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW large_step_14_after_finish large_index={} vertex_batch_size={} num_vertices={} finish_skipped={}",
+                         "TRACE_DRAW large_step_14_after_finish large_index={} vertex_batch_size={} num_vertices={} finish_skipped={} patch_v2={}",
                          large_textured_software_draw_index, vertex_batch.size(),
-                         regs.pipeline.num_vertices, 1);
+                         regs.pipeline.num_vertices, 1, 1);
             }
         } else {
             scheduler.Finish();
