@@ -869,9 +869,17 @@ void PicaCore::DrawArrays(bool is_indexed) {
         LogPicaTextureState(regs.internal, "first_non_fragile_software_draw");
     }
 
+    if (trace_draw && is_tiny_textured_startup_draw) {
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA tiny_textured_pica_step_2b_before_first_accel_candidate_v4 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerate_draw={} topology={}",
+                 draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                 primitive_assembler.IsEmpty(), textures_disabled, accelerate_draw,
+                 static_cast<u32>(primitive_assembler.GetTopology()));
+    }
+
     if (accelerate_draw && !is_fragile_startup_draw &&
         !g_logged_first_non_fragile_accel_candidate.exchange(true)) {
-                LOG_INFO(HW_GPU,
+        LOG_INFO(HW_GPU,
                  "TRACE_DRAW_PICA first_non_fragile_accelerated_draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
                  draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                  primitive_assembler.IsEmpty(), textures_disabled,
@@ -881,9 +889,36 @@ void PicaCore::DrawArrays(bool is_indexed) {
         LogPicaTextureState(regs.internal, "first_non_fragile_accelerated_draw");
     }
 
+    if (trace_draw && is_tiny_textured_startup_draw) {
+        LOG_INFO(HW_GPU,
+                 "TRACE_DRAW_PICA tiny_textured_pica_step_2c_after_first_accel_candidate_v4 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerate_draw={} topology={}",
+                 draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                 primitive_assembler.IsEmpty(), textures_disabled, accelerate_draw,
+                 static_cast<u32>(primitive_assembler.GetTopology()));
+    }
+
     // Attempt to use hardware vertex shaders if possible.
     if (accelerate_draw) {
-        if (!is_fragile_startup_draw && !g_logged_first_non_fragile_accel_attempt.exchange(true)) {
+        if (trace_draw && is_tiny_textured_startup_draw) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA tiny_textured_pica_step_2d_before_first_accel_attempt_flag_v4 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={}",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     primitive_assembler.IsEmpty(), textures_disabled,
+                     static_cast<u32>(primitive_assembler.GetTopology()));
+        }
+
+        const bool first_non_fragile_accel_attempt_log =
+            !is_fragile_startup_draw && !g_logged_first_non_fragile_accel_attempt.exchange(true);
+
+        if (trace_draw && is_tiny_textured_startup_draw) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA tiny_textured_pica_step_2e_after_first_accel_attempt_flag_v4 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} first_attempt_log={}",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     primitive_assembler.IsEmpty(), textures_disabled,
+                     static_cast<u32>(first_non_fragile_accel_attempt_log));
+        }
+
+        if (first_non_fragile_accel_attempt_log) {
             LOG_INFO(HW_GPU,
                      "TRACE_DRAW_PICA first_non_fragile_accel_attempt draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
@@ -892,11 +927,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
         if (trace_draw && is_tiny_textured_startup_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA tiny_textured_pica_step_3_before_accel_call_v3 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={}",
+                     "TRACE_DRAW_PICA tiny_textured_pica_step_3_before_accel_call_v4 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty(), textures_disabled,
                      static_cast<u32>(primitive_assembler.GetTopology()));
-            LogPicaTextureState(regs.internal, "tiny_textured_before_accel_call_v3");
+            LogPicaTextureState(regs.internal, "tiny_textured_before_accel_call_v4");
         }
         if (trace_draw) {
             LOG_INFO(HW_GPU, "TRACE_DRAW_PICA calling AccelerateDrawBatch indexed={}", is_indexed);
@@ -909,7 +944,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
             LOG_INFO(HW_GPU, "TRACE_DRAW_PICA AccelerateDrawBatch returned {}", accelerated);
             if (is_tiny_textured_startup_draw) {
                 LOG_INFO(HW_GPU,
-                         "TRACE_DRAW_PICA tiny_textured_pica_step_4_after_accel_call_v3 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerated={}",
+                         "TRACE_DRAW_PICA tiny_textured_pica_step_4_after_accel_call_v4 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerated={}",
                          draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                          primitive_assembler.IsEmpty(), textures_disabled, accelerated);
             }
@@ -929,7 +964,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
             if (trace_draw) {
                 if (is_tiny_textured_startup_draw) {
                     LOG_INFO(HW_GPU,
-                             "TRACE_DRAW_PICA tiny_textured_pica_step_5_returning_early_v3 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={}",
+                             "TRACE_DRAW_PICA tiny_textured_pica_step_5_returning_early_v4 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={}",
                              draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                              primitive_assembler.IsEmpty(), textures_disabled);
                 }
