@@ -721,6 +721,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     const bool tiny_textured_software_draw =
         !accelerate && ShouldAttemptTinyTexturedSoftwareDraw(regs, vertex_batch.size());
+    const bool tiny_textured_accelerated_draw =
+        accelerate && is_indexed && regs.pipeline.num_vertices == 6 &&
+        HasPrimaryTexturesEnabled(regs) && CountEnabledPrimaryTextures(regs) == 1 &&
+        !regs.framebuffer.IsShadowRendering() && !HasActiveDepthState(regs);
     u64 large_textured_software_draw_index = 0;
     const bool large_textured_software_draw = [&] {
         if (accelerate || !ShouldAttemptLargeTexturedSoftwareDraw(regs, vertex_batch.size())) {
@@ -916,6 +920,15 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                  "TRACE_DRAW large_step_13_after_flush large_index={} accelerate={}",
                  large_textured_software_draw_index, static_cast<u32>(accelerate));
     }
+    if (IsStrictCompatEnabled() && tiny_textured_accelerated_draw) {
+        scheduler.Finish();
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW strict_compat serialized_before_tiny_textured_accel_draw_v4 vertex_count={} enabled_textures={} depth_active={} patch_v4=1",
+                     regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
+                     static_cast<u32>(HasActiveDepthState(regs)));
+        }
+    }
     if (IsStrictCompatEnabled() && !accelerate) {
         if (large_textured_software_draw) {
             if (IsDrawTraceEnabled()) {
@@ -975,6 +988,11 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     // Begin rendering
     const auto draw_rect = fb_helper.DrawRect();
     renderpass_cache.BeginRendering(framebuffer, draw_rect);
+    if (tiny_textured_accelerated_draw && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_DRAW tiny_textured_accel_begin_rendering_v4 draw_rect=({}, {}, {}, {}) patch_v4=1",
+                 draw_rect.left, draw_rect.bottom, draw_rect.right, draw_rect.top);
+    }
     if (large_textured_software_draw && IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_DRAW large_step_16_after_begin_rendering large_index={} draw_rect=({}, {}, {}, {})",
@@ -1001,7 +1019,17 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     // Draw the vertex batch
     bool succeeded = true;
     if (accelerate) {
+        if (tiny_textured_accelerated_draw && IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW tiny_textured_accel_before_submit_v4 vertex_count={} indexed={} patch_v4=1",
+                     regs.pipeline.num_vertices, static_cast<u32>(is_indexed));
+        }
         succeeded = AccelerateDrawBatchInternal(is_indexed);
+        if (tiny_textured_accelerated_draw && IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW tiny_textured_accel_after_submit_v4 succeeded={} vertex_count={} patch_v4=1",
+                     static_cast<u32>(succeeded), regs.pipeline.num_vertices);
+        }
     } else {
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan, "TRACE_DRAW software_path vertex_batch_size={}", vertex_batch.size());
