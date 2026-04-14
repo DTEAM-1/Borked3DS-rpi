@@ -879,38 +879,29 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     if (accelerate_draw && !is_fragile_startup_draw &&
         !g_logged_first_non_fragile_accel_candidate.exchange(true)) {
-        LOG_INFO(HW_GPU,
-                 "TRACE_DRAW_PICA first_non_fragile_accelerated_draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
-                 draw_index, is_indexed, regs.internal.pipeline.num_vertices,
-                 primitive_assembler.IsEmpty(), textures_disabled,
-                 static_cast<u32>(primitive_assembler.GetTopology()),
-                 regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
-                 regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
-
-        if (trace_draw && is_tiny_textured_startup_draw) {
-            LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA tiny_textured_pica_step_2b1_after_first_accel_candidate_log_v5 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerate_draw={} topology={}",
-                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
-                     primitive_assembler.IsEmpty(), textures_disabled, accelerate_draw,
-                     static_cast<u32>(primitive_assembler.GetTopology()));
-        }
-
         if (is_tiny_textured_startup_draw) {
             if (trace_draw) {
                 LOG_INFO(HW_GPU,
-                         "TRACE_DRAW_PICA tiny_textured_pica_step_2b2_skip_texlog_v6 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerate_draw={} topology={}",
+                         "TRACE_DRAW_PICA tiny_textured_pica_step_2b_skip_first_accel_candidate_block_v7 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerate_draw={} topology={}",
                          draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                          primitive_assembler.IsEmpty(), textures_disabled, accelerate_draw,
                          static_cast<u32>(primitive_assembler.GetTopology()));
             }
         } else {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA first_non_fragile_accelerated_draw draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     primitive_assembler.IsEmpty(), textures_disabled,
+                     static_cast<u32>(primitive_assembler.GetTopology()),
+                     regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
             LogPicaTextureState(regs.internal, "first_non_fragile_accelerated_draw");
         }
     }
 
     if (trace_draw && is_tiny_textured_startup_draw) {
         LOG_INFO(HW_GPU,
-                 "TRACE_DRAW_PICA tiny_textured_pica_step_2c_after_first_accel_candidate_v4 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerate_draw={} topology={}",
+                 "TRACE_DRAW_PICA tiny_textured_pica_step_2c_after_first_accel_candidate_v7 draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} accelerate_draw={} topology={}",
                  draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                  primitive_assembler.IsEmpty(), textures_disabled, accelerate_draw,
                  static_cast<u32>(primitive_assembler.GetTopology()));
