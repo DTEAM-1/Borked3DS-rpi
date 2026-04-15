@@ -29,6 +29,36 @@ constexpr auto RangeFromInterval(const auto& map, const auto& interval) {
     return boost::make_iterator_range(map.equal_range(interval));
 }
 
+[[nodiscard]] constexpr bool IsPi5SensitiveTextureFormat(
+    const Pica::TexturingRegs::TextureFormat format) {
+    using TextureFormat = Pica::TexturingRegs::TextureFormat;
+    switch (format) {
+    case TextureFormat::IA8:
+    case TextureFormat::I8:
+    case TextureFormat::A8:
+    case TextureFormat::IA4:
+    case TextureFormat::I4:
+    case TextureFormat::A4:
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] constexpr bool IsPi5SensitivePixelFormat(const PixelFormat format) {
+    switch (format) {
+    case PixelFormat::IA8:
+    case PixelFormat::I8:
+    case PixelFormat::A8:
+    case PixelFormat::IA4:
+    case PixelFormat::I4:
+    case PixelFormat::A4:
+        return true;
+    default:
+        return false;
+    }
+}
+
 template <class T>
 RasterizerCache<T>::RasterizerCache(Memory::MemorySystem& memory_,
                                     CustomTexManager& custom_tex_manager_, Runtime& runtime_,
@@ -647,8 +677,22 @@ SurfaceId RasterizerCache<T>::GetTextureSurface(const Pica::Texture::TextureInfo
     params.levels = max_level + 1;
     params.is_tiled = true;
     params.pixel_format = PixelFormatFromTextureFormat(info.format);
-    params.res_scale = filter != Settings::TextureFilter::NoFilter ? resolution_scale_factor : 1;
+    const bool pi5_sensitive_format = IsPi5SensitiveTextureFormat(info.format);
+    params.res_scale = (filter != Settings::TextureFilter::NoFilter && !pi5_sensitive_format)
+                           ? resolution_scale_factor
+                           : 1;
     params.UpdateParams();
+
+    if (pi5_sensitive_format) {
+        static int trace_budget = 64;
+        if (trace_budget-- > 0) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PI5_UI cache_get_texture addr={:#x} size={}x{} levels={} format={} pixel_format={} res_scale={}",
+                     info.physical_address, info.width, info.height, max_level + 1,
+                     static_cast<u32>(info.format), static_cast<u32>(params.pixel_format),
+                     params.res_scale);
+        }
+    }
 
     const u32 min_width = info.width >> max_level;
     const u32 min_height = info.height >> max_level;
@@ -1065,8 +1109,21 @@ void RasterizerCache<T>::ValidateSurface(SurfaceId surface_id, PAddr addr, u32 s
 
         // Look for a valid surface to copy from.
         const SurfaceParams params = surface.FromInterval(interval);
-        const SurfaceId copy_surface_id =
-            FindMatch<MatchFlags::Copy>(params, ScaleMatch::Ignore, interval);
+        const bool pi5_sensitive_surface = IsPi5SensitivePixelFormat(surface.pixel_format);
+
+        if (pi5_sensitive_surface) {
+            static int trace_budget = 128;
+            if (trace_budget-- > 0) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PI5_UI validate_force_decode addr={:#x} size={} pixel_format={} level={} interval=[{:#x},{:#x})",
+                         params.addr, params.size, static_cast<u32>(surface.pixel_format), level,
+                         boost::icl::first(interval), boost::icl::last_next(interval));
+            }
+        }
+
+        const SurfaceId copy_surface_id = pi5_sensitive_surface
+                                              ? SurfaceId{}
+                                              : FindMatch<MatchFlags::Copy>(params, ScaleMatch::Ignore, interval);
         if (copy_surface_id && copy_surface_id != surface_id) {
             Surface& copy_surface = slot_surfaces[copy_surface_id];
             const SurfaceInterval copy_interval = copy_surface.GetCopyableInterval(params);
@@ -1077,7 +1134,7 @@ void RasterizerCache<T>::ValidateSurface(SurfaceId surface_id, PAddr addr, u32 s
 
         // Try to find surface in cache with different format
         // that can can be reinterpreted to the requested format.
-        if (ValidateByReinterpretation(surface, params, interval)) {
+        if (!pi5_sensitive_surface && ValidateByReinterpretation(surface, params, interval)) {
             notify_validated(interval);
             continue;
         }
@@ -1112,6 +1169,18 @@ void RasterizerCache<T>::UploadSurface(Surface& surface, SurfaceInterval interva
     }
 
     const auto upload_data = source_ptr.GetWriteBytes(load_info.end - load_info.addr);
+
+    if (IsPi5SensitivePixelFormat(surface.pixel_format)) {
+        static int trace_budget = 128;
+        if (trace_budget-- > 0) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PI5_UI cache_upload addr={:#x} size={} pixel_format={} width={} height={} level={} needs_conversion={}",
+                     load_info.addr, load_info.end - load_info.addr,
+                     static_cast<u32>(surface.pixel_format), load_info.width, load_info.height,
+                     surface.LevelOf(load_info.addr), runtime.NeedsConversion(surface.pixel_format));
+        }
+    }
+
     DecodeTexture(load_info, load_info.addr, load_info.end, upload_data, staging.mapped,
                   runtime.NeedsConversion(surface.pixel_format));
 
