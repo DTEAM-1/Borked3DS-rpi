@@ -3,6 +3,9 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
+#include <string_view>
+
 #include "common/assert.h"
 #include "common/color.h"
 #include "common/logging/log.h"
@@ -22,12 +25,80 @@ constexpr std::size_t ETC1_SUBTILES = 2 * 2;
 
 namespace {
 
+std::atomic<u32> g_pi5_ui_decode_trace_budget{192};
+
+[[nodiscard]] bool ConsumeTraceBudget(std::atomic<u32>& budget) {
+    u32 remaining = budget.load(std::memory_order_relaxed);
+    while (remaining != 0) {
+        if (budget.compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 [[nodiscard]] constexpr Common::Vec4<u8> MakeBlackAlpha(const u8 alpha) {
     return {0, 0, 0, alpha};
 }
 
+[[nodiscard]] constexpr Common::Vec4<u8> MakeWhiteAlpha(const u8 alpha) {
+    return {255, 255, 255, alpha};
+}
+
 [[nodiscard]] constexpr Common::Vec4<u8> MakeIntensityAlpha(const u8 intensity, const u8 alpha) {
     return {intensity, intensity, intensity, alpha};
+}
+
+[[nodiscard]] constexpr Common::Vec4<u8> MakeOpaqueIntensity(const u8 intensity) {
+    return {intensity, intensity, intensity, 255};
+}
+
+[[nodiscard]] constexpr std::string_view TextureFormatName(TextureFormat format) {
+    switch (format) {
+    case TextureFormat::RGBA8:
+        return "RGBA8";
+    case TextureFormat::RGB8:
+        return "RGB8";
+    case TextureFormat::RGB5A1:
+        return "RGB5A1";
+    case TextureFormat::RGB565:
+        return "RGB565";
+    case TextureFormat::RGBA4:
+        return "RGBA4";
+    case TextureFormat::IA8:
+        return "IA8";
+    case TextureFormat::RG8:
+        return "RG8";
+    case TextureFormat::I8:
+        return "I8";
+    case TextureFormat::A8:
+        return "A8";
+    case TextureFormat::IA4:
+        return "IA4";
+    case TextureFormat::I4:
+        return "I4";
+    case TextureFormat::A4:
+        return "A4";
+    case TextureFormat::ETC1:
+        return "ETC1";
+    case TextureFormat::ETC1A4:
+        return "ETC1A4";
+    default:
+        return "Unknown";
+    }
+}
+
+void TraceDecodedTexel(TextureFormat format, bool disable_alpha, unsigned int x, unsigned int y,
+                      const Common::Vec4<u8>& rgba, u32 raw0, u32 raw1 = 0,
+                      std::string_view detail = {}) {
+    if (!ConsumeTraceBudget(g_pi5_ui_decode_trace_budget)) {
+        return;
+    }
+
+    LOG_INFO(HW_GPU,
+             "TRACE_PI5_UI decode format={} disable_alpha={} x={} y={} raw0=0x{:02X} raw1=0x{:02X} rgba=({}, {}, {}, {}) detail={}",
+             TextureFormatName(format), disable_alpha, x, y, raw0 & 0xFFu, raw1 & 0xFFu, rgba[0],
+             rgba[1], rgba[2], rgba[3], detail);
 }
 
 } // namespace
@@ -121,10 +192,12 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
         const u8 alpha = source_ptr[0];
         const u8 intensity = source_ptr[1];
 
-        if (disable_alpha) {
-            return {intensity, alpha, 0, 255};
-        }
-        return MakeIntensityAlpha(intensity, alpha);
+        const Common::Vec4<u8> rgba =
+            disable_alpha ? MakeOpaqueIntensity(intensity) : MakeIntensityAlpha(intensity, alpha);
+        TraceDecodedTexel(info.format, disable_alpha, x, y, rgba, source_ptr[0], source_ptr[1],
+                          disable_alpha ? "ia8_alpha_disabled_as_intensity"
+                                        : "ia8_intensity_alpha");
+        return rgba;
     }
 
     case TextureFormat::RG8: {
@@ -134,18 +207,22 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
 
     case TextureFormat::I8: {
         const u8* source_ptr = source + MortonInterleave(x, y);
-        return MakeIntensityAlpha(*source_ptr, 255);
+        const Common::Vec4<u8> rgba = MakeIntensityAlpha(*source_ptr, 255);
+        TraceDecodedTexel(info.format, disable_alpha, x, y, rgba, *source_ptr, 0,
+                          "i8_intensity_opaque");
+        return rgba;
     }
 
     case TextureFormat::A8: {
         const u8* source_ptr = source + MortonInterleave(x, y);
         const u8 alpha = *source_ptr;
 
-        if (disable_alpha) {
-            return {alpha, alpha, alpha, 255};
-        }
-
-        return MakeBlackAlpha(alpha);
+        const Common::Vec4<u8> rgba =
+            disable_alpha ? MakeOpaqueIntensity(alpha) : MakeWhiteAlpha(alpha);
+        TraceDecodedTexel(info.format, disable_alpha, x, y, rgba, alpha, 0,
+                          disable_alpha ? "a8_alpha_disabled_as_grayscale"
+                                        : "a8_white_alpha");
+        return rgba;
     }
 
     case TextureFormat::IA4: {
@@ -154,10 +231,12 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
         const u8 intensity = Common::Color::Convert4To8(((*source_ptr) & 0xF0) >> 4);
         const u8 alpha = Common::Color::Convert4To8((*source_ptr) & 0xF);
 
-        if (disable_alpha) {
-            return {intensity, alpha, 0, 255};
-        }
-        return MakeIntensityAlpha(intensity, alpha);
+        const Common::Vec4<u8> rgba =
+            disable_alpha ? MakeOpaqueIntensity(intensity) : MakeIntensityAlpha(intensity, alpha);
+        TraceDecodedTexel(info.format, disable_alpha, x, y, rgba, *source_ptr, 0,
+                          disable_alpha ? "ia4_alpha_disabled_as_intensity"
+                                        : "ia4_hi_intensity_lo_alpha");
+        return rgba;
     }
 
     case TextureFormat::I4: {
@@ -167,7 +246,10 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
         u8 intensity = (morton_offset % 2) ? ((*source_ptr & 0xF0) >> 4) : (*source_ptr & 0xF);
         intensity = Common::Color::Convert4To8(intensity);
 
-        return MakeIntensityAlpha(intensity, 255);
+        const Common::Vec4<u8> rgba = MakeIntensityAlpha(intensity, 255);
+        TraceDecodedTexel(info.format, disable_alpha, x, y, rgba, *source_ptr, 0,
+                          (morton_offset % 2) ? "i4_high_nibble" : "i4_low_nibble");
+        return rgba;
     }
 
     case TextureFormat::A4: {
@@ -177,11 +259,14 @@ Common::Vec4<u8> LookupTexelInTile(const u8* source, unsigned int x, unsigned in
         u8 alpha = (morton_offset % 2) ? ((*source_ptr & 0xF0) >> 4) : (*source_ptr & 0xF);
         alpha = Common::Color::Convert4To8(alpha);
 
-        if (disable_alpha) {
-            return {alpha, alpha, alpha, 255};
-        }
-
-        return MakeBlackAlpha(alpha);
+        const Common::Vec4<u8> rgba =
+            disable_alpha ? MakeOpaqueIntensity(alpha) : MakeWhiteAlpha(alpha);
+        TraceDecodedTexel(info.format, disable_alpha, x, y, rgba, *source_ptr, 0,
+                          disable_alpha ? ((morton_offset % 2) ? "a4_high_nibble_alpha_disabled"
+                                                               : "a4_low_nibble_alpha_disabled")
+                                        : ((morton_offset % 2) ? "a4_high_nibble_white_alpha"
+                                                               : "a4_low_nibble_white_alpha"));
+        return rgba;
     }
 
     case TextureFormat::ETC1:
