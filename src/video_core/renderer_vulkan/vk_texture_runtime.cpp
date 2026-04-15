@@ -6,6 +6,8 @@
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 
+#include <atomic>
+
 #include "common/literals.h"
 #include "common/profiling.h"
 #include "common/scope_exit.h"
@@ -88,29 +90,38 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
+std::atomic<u32> g_pi5_ui_handle_trace_budget{64};
+std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
+
+[[nodiscard]] bool ConsumeTraceBudget(std::atomic<u32>& budget) {
+    u32 remaining = budget.load(std::memory_order_relaxed);
+    while (remaining != 0) {
+        if (budget.compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] std::string_view BoolString(bool value) {
+    return value ? "true" : "false";
+}
+
 [[nodiscard]] constexpr bool NeedsPi5UIUploadExpansion(VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
     case VideoCore::PixelFormat::IA8:
-    case VideoCore::PixelFormat::IA4:
-    case VideoCore::PixelFormat::I4:
-    case VideoCore::PixelFormat::A4:
         return true;
     default:
         return false;
     }
 }
 
-[[nodiscard]] constexpr u8 Expand4To8(u8 value) {
-    return static_cast<u8>((value << 4) | value);
-}
-
 [[nodiscard]] constexpr u32 SourceBytesPerPixel(VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
-    case VideoCore::PixelFormat::IA4:
         return 1;
     case VideoCore::PixelFormat::IA8:
     case VideoCore::PixelFormat::RG8:
@@ -126,13 +137,9 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
-    case VideoCore::PixelFormat::IA4:
         return pixel_count;
     case VideoCore::PixelFormat::IA8:
         return pixel_count * 2;
-    case VideoCore::PixelFormat::I4:
-    case VideoCore::PixelFormat::A4:
-        return (pixel_count + 1) / 2;
     default:
         return 0;
     }
@@ -144,9 +151,6 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
     case VideoCore::PixelFormat::IA8:
-    case VideoCore::PixelFormat::IA4:
-    case VideoCore::PixelFormat::I4:
-    case VideoCore::PixelFormat::A4:
         return vk::Format::eR8G8B8A8Unorm;
     default:
         return native_format;
@@ -165,7 +169,6 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
 
     switch (pixel_format) {
     case VideoCore::PixelFormat::IA8:
-    case VideoCore::PixelFormat::IA4:
         return vk::ComponentMapping{
             .r = vk::ComponentSwizzle::eR,
             .g = vk::ComponentSwizzle::eR,
@@ -173,7 +176,6 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
             .a = vk::ComponentSwizzle::eG,
         };
     case VideoCore::PixelFormat::I8:
-    case VideoCore::PixelFormat::I4:
         return vk::ComponentMapping{
             .r = vk::ComponentSwizzle::eR,
             .g = vk::ComponentSwizzle::eR,
@@ -181,7 +183,6 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
             .a = vk::ComponentSwizzle::eOne,
         };
     case VideoCore::PixelFormat::A8:
-    case VideoCore::PixelFormat::A4:
         return vk::ComponentMapping{
             .r = vk::ComponentSwizzle::eOne,
             .g = vk::ComponentSwizzle::eOne,
@@ -194,7 +195,7 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
 }
 
 bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
-                       VideoCore::PixelFormat pixel_format) {
+                         VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8: {
         if (dst.size() != src.size() * 4) {
@@ -233,81 +234,6 @@ bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
             dst[o + 1] = intensity;
             dst[o + 2] = intensity;
             dst[o + 3] = alpha;
-        }
-        return true;
-    }
-    case VideoCore::PixelFormat::IA4: {
-        if (dst.size() != src.size() * 4) {
-            return false;
-        }
-        for (size_t i = 0, o = 0; i < src.size(); ++i, o += 4) {
-            const u8 packed = src[i];
-            const u8 intensity = Expand4To8(static_cast<u8>((packed >> 4) & 0xF));
-            const u8 alpha = Expand4To8(static_cast<u8>(packed & 0xF));
-            dst[o + 0] = intensity;
-            dst[o + 1] = intensity;
-            dst[o + 2] = intensity;
-            dst[o + 3] = alpha;
-        }
-        return true;
-    }
-    case VideoCore::PixelFormat::I4: {
-        if ((dst.size() % 4) != 0) {
-            return false;
-        }
-        const size_t pixel_count = dst.size() / 4;
-        if (src.size() != ((pixel_count + 1) / 2)) {
-            return false;
-        }
-        size_t o = 0;
-        size_t pixel_index = 0;
-        for (size_t i = 0; i < src.size() && pixel_index < pixel_count; ++i) {
-            const u8 packed = src[i];
-            const std::array<u8, 2> values = {
-                Expand4To8(static_cast<u8>(packed & 0xF)),
-                Expand4To8(static_cast<u8>((packed >> 4) & 0xF)),
-            };
-            for (const u8 intensity : values) {
-                if (pixel_index >= pixel_count) {
-                    break;
-                }
-                dst[o + 0] = intensity;
-                dst[o + 1] = intensity;
-                dst[o + 2] = intensity;
-                dst[o + 3] = 0xFF;
-                o += 4;
-                pixel_index++;
-            }
-        }
-        return true;
-    }
-    case VideoCore::PixelFormat::A4: {
-        if ((dst.size() % 4) != 0) {
-            return false;
-        }
-        const size_t pixel_count = dst.size() / 4;
-        if (src.size() != ((pixel_count + 1) / 2)) {
-            return false;
-        }
-        size_t o = 0;
-        size_t pixel_index = 0;
-        for (size_t i = 0; i < src.size() && pixel_index < pixel_count; ++i) {
-            const u8 packed = src[i];
-            const std::array<u8, 2> values = {
-                Expand4To8(static_cast<u8>(packed & 0xF)),
-                Expand4To8(static_cast<u8>((packed >> 4) & 0xF)),
-            };
-            for (const u8 alpha : values) {
-                if (pixel_index >= pixel_count) {
-                    break;
-                }
-                dst[o + 0] = 0xFF;
-                dst[o + 1] = 0xFF;
-                dst[o + 2] = 0xFF;
-                dst[o + 3] = alpha;
-                o += 4;
-                pixel_index++;
-            }
         }
         return true;
     }
@@ -384,6 +310,19 @@ Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, T
                   vk::ImageAspectFlags aspect, bool need_format_list,
                   std::string_view debug_name = {}) {
     const u32 layers = type == TextureType::CubeMap ? 6 : 1;
+    const bool trace_pi5_ui = NeedsPi5UIUploadExpansion(pixel_format) &&
+                              ConsumeTraceBudget(g_pi5_ui_handle_trace_budget);
+    if (trace_pi5_ui) {
+        const auto native_format = instance->GetTraits(pixel_format).native;
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PI5_UI handle_create pixel_format={} native_format={} effective_format={} "
+                 "size={}x{} levels={} layers={} aspect={} usage=0x{:X} flags=0x{:X} "
+                 "need_format_list={} debug_name='{}'",
+                 VideoCore::PixelFormatAsString(pixel_format), vk::to_string(native_format),
+                 vk::to_string(format), width, height, levels, layers, vk::to_string(aspect),
+                 static_cast<u32>(usage), static_cast<u32>(flags), BoolString(need_format_list),
+                 debug_name);
+    }
 
     const std::array format_list = {
         vk::Format::eR8G8B8A8Unorm,
@@ -431,12 +370,13 @@ Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, T
     }
 
     const vk::Image image{unsafe_image};
+    const vk::ComponentMapping component_mapping = MakeUIViewComponentMapping(pixel_format, aspect, format);
     const vk::ImageViewCreateInfo view_info = {
         .image = image,
         .viewType =
             type == TextureType::CubeMap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D,
         .format = format,
-        .components = MakeUIViewComponentMapping(pixel_format, aspect, format),
+        .components = component_mapping,
         .subresourceRange{
             .aspectMask = aspect,
             .baseMipLevel = 0,
@@ -447,6 +387,14 @@ Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, T
     };
 
     vk::UniqueImageView image_view = instance->GetDevice().createImageViewUnique(view_info);
+
+    if (trace_pi5_ui) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PI5_UI view_create pixel_format={} format={} swizzle=({}, {}, {}, {})",
+                 VideoCore::PixelFormatAsString(pixel_format), vk::to_string(format),
+                 vk::to_string(component_mapping.r), vk::to_string(component_mapping.g),
+                 vk::to_string(component_mapping.b), vk::to_string(component_mapping.a));
+    }
 
     if (!debug_name.empty() && instance->HasDebuggingToolAttached()) {
         SetObjectName(instance->GetDevice(), image, debug_name);
@@ -1064,21 +1012,64 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
     const vk::Format effective_format = GetEffectiveTextureFormat(pixel_format, traits.native);
 
     if (NeedsPi5UIUploadExpansion(pixel_format)) {
-        const u32 expected_source_size = ComputeExpectedPi5UploadSize(
-            pixel_format, upload.texture_rect.GetWidth(), upload.texture_rect.GetHeight());
+        const u32 upload_width = upload.texture_rect.GetWidth();
+        const u32 upload_height = upload.texture_rect.GetHeight();
+        const u32 expected_source_size =
+            ComputeExpectedPi5UploadSize(pixel_format, upload_width, upload_height);
+        const u32 expanded_size = upload_width * upload_height * 4;
+        const bool trace_pi5_ui = ConsumeTraceBudget(g_pi5_ui_upload_trace_budget);
+
+        if (trace_pi5_ui) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PI5_UI upload_begin pixel_format={} level={} rect=({}, {}, {}, {}) "
+                     "src_size={} expected_size={} expanded_size={} native_format={} "
+                     "effective_format={} current_offset={} aspect={} res_scale={}",
+                     VideoCore::PixelFormatAsString(pixel_format), upload.texture_level,
+                     upload.texture_rect.left, upload.texture_rect.bottom, upload.texture_rect.right,
+                     upload.texture_rect.top, staging.size, expected_source_size, expanded_size,
+                     vk::to_string(traits.native), vk::to_string(effective_format),
+                     upload.buffer_offset, vk::to_string(params.aspect), res_scale);
+        }
+
         if (expected_source_size != 0 && staging.size == expected_source_size) {
-            const u32 expanded_size =
-                upload.texture_rect.GetWidth() * upload.texture_rect.GetHeight() * 4;
             auto converted_staging = runtime->FindStaging(expanded_size, true);
             if (ExpandPi5UIUpload(converted_staging.mapped, staging.mapped, pixel_format)) {
                 effective_upload.buffer_offset = converted_staging.offset;
                 effective_staging = converted_staging;
+                if (trace_pi5_ui) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_PI5_UI upload_expanded pixel_format={} src_size={} dst_size={} "
+                             "old_offset={} new_offset={} width={} height={}",
+                             VideoCore::PixelFormatAsString(pixel_format), staging.size,
+                             effective_staging.size, upload.buffer_offset,
+                             effective_upload.buffer_offset, upload_width, upload_height);
+                }
             } else {
                 LOG_WARNING(Render_Vulkan,
-                            "Pi5 UI upload expansion failed for {} ({} bytes)",
-                            VideoCore::PixelFormatAsString(pixel_format), staging.size);
+                            "TRACE_PI5_UI upload_expand_failed pixel_format={} src_size={} "
+                            "expected_size={} expanded_size={} width={} height={}",
+                            VideoCore::PixelFormatAsString(pixel_format), staging.size,
+                            expected_source_size, expanded_size, upload_width, upload_height);
             }
+        } else if (trace_pi5_ui) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PI5_UI upload_skipped_size_mismatch pixel_format={} src_size={} "
+                     "expected_size={} width={} height={}",
+                     VideoCore::PixelFormatAsString(pixel_format), staging.size,
+                     expected_source_size, upload_width, upload_height);
         }
+    }
+
+    if (NeedsPi5UIUploadExpansion(pixel_format) &&
+        ConsumeTraceBudget(g_pi5_ui_upload_trace_budget)) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PI5_UI upload_copy pixel_format={} final_size={} final_offset={} "
+                 "effective_format={} level={} rect=({}, {}, {}, {})",
+                 VideoCore::PixelFormatAsString(pixel_format), effective_staging.size,
+                 effective_upload.buffer_offset, vk::to_string(effective_format),
+                 effective_upload.texture_level, effective_upload.texture_rect.left,
+                 effective_upload.texture_rect.bottom, effective_upload.texture_rect.right,
+                 effective_upload.texture_rect.top);
     }
 
     scheduler->Record([buffer = runtime->upload_buffer.Handle(), format = effective_format, params,
