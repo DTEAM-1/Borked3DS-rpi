@@ -70,9 +70,6 @@ std::atomic<u64> g_vk_software_bypass_counter{0};
 std::atomic<u64> g_vk_textured_software_bypass_counter{0};
 std::atomic<u64> g_vk_large_textured_software_allow_counter{0};
 std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
-std::atomic<u64> g_vk_sensitive_textured_accel_counter{0};
-
-constexpr u64 LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW = 4;
 
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const Pica::RegsInternal& regs) {
     const auto& textures = regs.texturing.GetTextures();
@@ -100,76 +97,6 @@ constexpr u64 LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW = 4;
 [[nodiscard]] bool HasActiveDepthState(const Pica::RegsInternal& regs) {
     return regs.framebuffer.output_merger.depth_test_enable != 0 ||
            regs.framebuffer.output_merger.depth_write_enable != 0;
-}
-
-[[nodiscard]] u32 GetTextureFormatRaw(const Pica::TexturingRegs::FullTextureConfig& texture) {
-    return static_cast<u32>(texture.format);
-}
-
-[[nodiscard]] const char* Pi5SensitiveTextureFormatName(const u32 format_raw) {
-    switch (format_raw) {
-    case 5:
-        return "IA8";
-    case 6:
-        return "RG8";
-    case 7:
-        return "I8";
-    case 8:
-        return "A8";
-    case 9:
-        return "IA4";
-    case 10:
-        return "I4";
-    case 11:
-        return "A4";
-    case 12:
-        return "ETC1";
-    case 13:
-        return "ETC1A4";
-    default:
-        return "other";
-    }
-}
-
-[[nodiscard]] bool IsPi5SensitiveTextureFormatRaw(const u32 format_raw) {
-    switch (format_raw) {
-    case 5:  // IA8
-    case 6:  // RG8
-    case 7:  // I8
-    case 8:  // A8
-    case 9:  // IA4
-    case 10: // I4
-    case 11: // A4
-    case 12: // ETC1
-    case 13: // ETC1A4
-        return true;
-    default:
-        return false;
-    }
-}
-
-[[nodiscard]] bool HasPi5SensitivePrimaryTextures(const Pica::RegsInternal& regs) {
-    const auto& textures = regs.texturing.GetTextures();
-    for (u32 i = 0; i < 3; ++i) {
-        if (!textures[i].enabled) {
-            continue;
-        }
-        if (IsPi5SensitiveTextureFormatRaw(static_cast<u32>(textures[i].format))) {
-            return true;
-        }
-    }
-    return false;
-}
-
-[[nodiscard]] bool ShouldSerializeSensitiveAcceleratedDraw(const Pica::RegsInternal& regs,
-                                                          const bool accelerate) {
-    if (!IsStrictCompatEnabled() || !accelerate) {
-        return false;
-    }
-    if (regs.framebuffer.IsShadowRendering()) {
-        return false;
-    }
-    return HasPi5SensitivePrimaryTextures(regs);
 }
 
 [[nodiscard]] bool ShouldBypassFragileSoftwareDraw(const Pica::RegsInternal& regs,
@@ -833,19 +760,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         accelerate && is_indexed && regs.pipeline.num_vertices == 6 &&
         HasPrimaryTexturesEnabled(regs) && CountEnabledPrimaryTextures(regs) == 1 &&
         !regs.framebuffer.IsShadowRendering() && !HasActiveDepthState(regs);
-    const bool sensitive_textured_accelerated_draw =
-        ShouldSerializeSensitiveAcceleratedDraw(regs, accelerate);
     u64 large_textured_software_draw_index = 0;
     const bool large_textured_software_draw = [&] {
         if (accelerate || !ShouldAttemptLargeTexturedSoftwareDraw(regs, vertex_batch.size())) {
             return false;
         }
-        // Pi 5 / V3DV strict-compat:
-        // the problematic 42-vertex textured software draws can arrive as a short burst rather
-        // than as a single isolated draw, so keep a small skip window instead of only skipping
-        // the very first occurrence.
         large_textured_software_draw_index = ++g_vk_large_textured_software_allow_counter;
-        return large_textured_software_draw_index <= LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW;
+        return large_textured_software_draw_index <= 4;
     }();
 
     if (!accelerate) {
@@ -894,10 +815,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (large_textured_software_draw && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_large_textured_software_skip_window_v4 large_index={} skip_window={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
-                     large_textured_software_draw_index, LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW,
-                     vertex_batch.size(), regs.pipeline.num_vertices,
-                     CountEnabledPrimaryTextures(regs),
+                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw_v2 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                      static_cast<u32>(HasActiveDepthState(regs)),
                      regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
@@ -960,14 +880,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     }
 
     // Sync and bind the texture surfaces
-    if (sensitive_textured_accelerated_draw && IsDrawTraceEnabled()) {
-        const auto& textures = regs.texturing.GetTextures();
-        LOG_INFO(Render_Vulkan,
-                 "TRACE_PI5_UI sensitive_accel_draw_begin tex0_enabled={} tex0_format={} tex1_enabled={} tex1_format={} tex2_enabled={} tex2_format={}",
-                 static_cast<u32>(textures[0].enabled), GetTextureFormatRaw(textures[0]),
-                 static_cast<u32>(textures[1].enabled), GetTextureFormatRaw(textures[1]),
-                 static_cast<u32>(textures[2].enabled), GetTextureFormatRaw(textures[2]));
-    }
     if (large_textured_software_draw && IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_DRAW large_step_6_before_sync_textures large_index={} framebuffer_valid={} vertex_batch_size={}",
@@ -1043,18 +955,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                  "TRACE_DRAW large_step_13_after_flush large_index={} accelerate={}",
                  large_textured_software_draw_index, static_cast<u32>(accelerate));
     }
-    if (sensitive_textured_accelerated_draw) {
-        scheduler.Finish();
-        if (IsDrawTraceEnabled()) {
-            const u64 sensitive_index = ++g_vk_sensitive_textured_accel_counter;
-            const auto& textures = regs.texturing.GetTextures();
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PI5_UI sensitive_accel_draw_serialized index={} tex0_format={} tex1_format={} tex2_format={} enabled_textures={}",
-                     sensitive_index, GetTextureFormatRaw(textures[0]),
-                     GetTextureFormatRaw(textures[1]), GetTextureFormatRaw(textures[2]),
-                     CountEnabledPrimaryTextures(regs));
-        }
-    }
     if (IsStrictCompatEnabled() && tiny_textured_accelerated_draw) {
         scheduler.Finish();
         if (IsDrawTraceEnabled()) {
@@ -1068,10 +968,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (large_textured_software_draw) {
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat skipping_finish_for_large_textured_software_skip_window_v4 large_index={} skip_window={} vertex_batch_size={} num_vertices={} enabled_textures={}",
-                         large_textured_software_draw_index, LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW,
-                         vertex_batch.size(), regs.pipeline.num_vertices,
-                         CountEnabledPrimaryTextures(regs));
+                         "TRACE_DRAW strict_compat skipping_finish_for_first_large_textured_software_draw_v2 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
+                         large_textured_software_draw_index, vertex_batch.size(),
+                         regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs));
                 LOG_INFO(Render_Vulkan,
                          "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={} finish_skipped={} patch_v2={}",
                          vertex_batch.size(), 1, 1);
@@ -1113,9 +1012,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (large_textured_software_draw) {
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW late_skip_large_textured_software_draw_v4 large_index={} skip_window={} vertex_batch_size={} num_vertices={} patch_v4=1",
-                     large_textured_software_draw_index, LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW,
-                     vertex_batch.size(), regs.pipeline.num_vertices);
+                     "TRACE_DRAW late_skip_first_large_textured_software_draw_v3 large_index={} vertex_batch_size={} num_vertices={} patch_v3=1",
+                     large_textured_software_draw_index, vertex_batch.size(),
+                     regs.pipeline.num_vertices);
         }
         vertex_batch.clear();
         return true;
@@ -1336,20 +1235,6 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         // Pi 5 / V3DV stability fix:
         // - never submit a null ImageView
         // - avoid direct feedback loops by preferring CopyImageView()
-        // - for sensitive UI / compressed formats, prefer the copied view and serialize the draw
-        const u32 format_raw = GetTextureFormatRaw(texture);
-        const bool sensitive_format = IsPi5SensitiveTextureFormatRaw(format_raw);
-        const PAddr texture_addr = texture.config.GetPhysicalAddress();
-
-        if (IsDrawTraceEnabled() && texture_index < 3) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PI5_UI tex{} bind_begin addr=0x{:08x} type={} format={} format_name={} sensitive={} enabled={}",
-                     texture_index, texture_addr,
-                     static_cast<u32>(texture.config.type.Value()), format_raw,
-                     Pi5SensitiveTextureFormatName(format_raw), static_cast<u32>(sensitive_format),
-                     static_cast<u32>(texture.enabled));
-        }
-
         Surface& surface = res_cache.GetTextureSurface(texture);
         Sampler& sampler = res_cache.GetSampler(texture.config);
 
@@ -1367,10 +1252,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         vk::ImageView texture_view = base_view;
         const char* bind_reason = "base_view";
 
-        if (sensitive_format && IsValidImageView(copy_view)) {
-            texture_view = copy_view;
-            bind_reason = strict_compat ? "sensitive_strict_copy" : "sensitive_copy";
-        } else if (strict_compat && IsValidImageView(copy_view)) {
+        if (strict_compat && IsValidImageView(copy_view)) {
             texture_view = copy_view;
             bind_reason = "strict_compat_copy";
         } else if (direct_feedback) {
@@ -1388,12 +1270,11 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
 
         if (IsDrawTraceEnabled() && texture_index < 3) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW tex{} bound reason={} sampler_valid={} type={} format={} strict_compat={} direct_feedback={} sensitive={} base_valid={} copy_valid={} addr=0x{:08x}",
+                     "TRACE_DRAW tex{} bound reason={} sampler_valid={} type={} format={} strict_compat={} direct_feedback={}",
                      texture_index, bind_reason, static_cast<bool>(sampler.Handle()),
-                     static_cast<u32>(texture.config.type.Value()), format_raw,
-                     static_cast<u32>(strict_compat), static_cast<u32>(direct_feedback),
-                     static_cast<u32>(sensitive_format), static_cast<u32>(IsValidImageView(base_view)),
-                     static_cast<u32>(IsValidImageView(copy_view)), texture_addr);
+                     static_cast<u32>(texture.config.type.Value()),
+                     static_cast<u32>(texture.format), static_cast<u32>(strict_compat),
+                     static_cast<u32>(direct_feedback));
         }
         update_queue.AddImageSampler(texture_set, texture_index, 0, texture_view,
                                      sampler.Handle());
