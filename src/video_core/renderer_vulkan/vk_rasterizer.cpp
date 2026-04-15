@@ -72,6 +72,8 @@ std::atomic<u64> g_vk_large_textured_software_allow_counter{0};
 std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
 std::atomic<u64> g_vk_sensitive_textured_accel_counter{0};
 
+constexpr u64 LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW = 4;
+
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const Pica::RegsInternal& regs) {
     const auto& textures = regs.texturing.GetTextures();
     for (u32 i = 0; i < 3; ++i) {
@@ -838,8 +840,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (accelerate || !ShouldAttemptLargeTexturedSoftwareDraw(regs, vertex_batch.size())) {
             return false;
         }
+        // Pi 5 / V3DV strict-compat:
+        // the problematic 42-vertex textured software draws can arrive as a short burst rather
+        // than as a single isolated draw, so keep a small skip window instead of only skipping
+        // the very first occurrence.
         large_textured_software_draw_index = ++g_vk_large_textured_software_allow_counter;
-        return large_textured_software_draw_index <= 1;
+        return large_textured_software_draw_index <= LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW;
     }();
 
     if (!accelerate) {
@@ -888,9 +894,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (large_textured_software_draw && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw_v2 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
-                     large_textured_software_draw_index, vertex_batch.size(),
-                     regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
+                     "TRACE_DRAW strict_compat allowing_large_textured_software_skip_window_v4 large_index={} skip_window={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     large_textured_software_draw_index, LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW,
+                     vertex_batch.size(), regs.pipeline.num_vertices,
+                     CountEnabledPrimaryTextures(regs),
                      static_cast<u32>(HasActiveDepthState(regs)),
                      regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
@@ -1061,9 +1068,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (large_textured_software_draw) {
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat skipping_finish_for_first_large_textured_software_draw_v2 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={}",
-                         large_textured_software_draw_index, vertex_batch.size(),
-                         regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs));
+                         "TRACE_DRAW strict_compat skipping_finish_for_large_textured_software_skip_window_v4 large_index={} skip_window={} vertex_batch_size={} num_vertices={} enabled_textures={}",
+                         large_textured_software_draw_index, LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW,
+                         vertex_batch.size(), regs.pipeline.num_vertices,
+                         CountEnabledPrimaryTextures(regs));
                 LOG_INFO(Render_Vulkan,
                          "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={} finish_skipped={} patch_v2={}",
                          vertex_batch.size(), 1, 1);
@@ -1105,9 +1113,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (large_textured_software_draw) {
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW late_skip_first_large_textured_software_draw_v3 large_index={} vertex_batch_size={} num_vertices={} patch_v3=1",
-                     large_textured_software_draw_index, vertex_batch.size(),
-                     regs.pipeline.num_vertices);
+                     "TRACE_DRAW late_skip_large_textured_software_draw_v4 large_index={} skip_window={} vertex_batch_size={} num_vertices={} patch_v4=1",
+                     large_textured_software_draw_index, LARGE_TEXTURED_SOFTWARE_SKIP_WINDOW,
+                     vertex_batch.size(), regs.pipeline.num_vertices);
         }
         vertex_batch.clear();
         return true;
