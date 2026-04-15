@@ -39,6 +39,23 @@ using VideoCore::SurfaceType;
 using VideoCore::TextureType;
 using namespace Common::Literals;
 
+std::atomic<u32> g_pi5_ui_handle_trace_budget{64};
+std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
+
+[[nodiscard]] bool ConsumeTraceBudget(std::atomic<u32>& budget) {
+    u32 remaining = budget.load(std::memory_order_relaxed);
+    while (remaining != 0) {
+        if (budget.compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] std::string_view BoolString(bool value) {
+    return value ? "true" : "false";
+}
+
 struct RecordParams {
     vk::ImageAspectFlags aspect;
     vk::Filter filter;
@@ -90,38 +107,29 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
     };
 }
 
-std::atomic<u32> g_pi5_ui_handle_trace_budget{64};
-std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
-
-[[nodiscard]] bool ConsumeTraceBudget(std::atomic<u32>& budget) {
-    u32 remaining = budget.load(std::memory_order_relaxed);
-    while (remaining != 0) {
-        if (budget.compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-[[nodiscard]] std::string_view BoolString(bool value) {
-    return value ? "true" : "false";
-}
-
 [[nodiscard]] constexpr bool NeedsPi5UIUploadExpansion(VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
     case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::IA4:
+    case VideoCore::PixelFormat::I4:
+    case VideoCore::PixelFormat::A4:
         return true;
     default:
         return false;
     }
 }
 
+[[nodiscard]] constexpr u8 Expand4To8(u8 value) {
+    return static_cast<u8>((value << 4) | value);
+}
+
 [[nodiscard]] constexpr u32 SourceBytesPerPixel(VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
+    case VideoCore::PixelFormat::IA4:
         return 1;
     case VideoCore::PixelFormat::IA8:
     case VideoCore::PixelFormat::RG8:
@@ -137,9 +145,13 @@ std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
+    case VideoCore::PixelFormat::IA4:
         return pixel_count;
     case VideoCore::PixelFormat::IA8:
         return pixel_count * 2;
+    case VideoCore::PixelFormat::I4:
+    case VideoCore::PixelFormat::A4:
+        return (pixel_count + 1) / 2;
     default:
         return 0;
     }
@@ -151,6 +163,9 @@ std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
     case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::IA4:
+    case VideoCore::PixelFormat::I4:
+    case VideoCore::PixelFormat::A4:
         return vk::Format::eR8G8B8A8Unorm;
     default:
         return native_format;
@@ -169,6 +184,7 @@ std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
 
     switch (pixel_format) {
     case VideoCore::PixelFormat::IA8:
+    case VideoCore::PixelFormat::IA4:
         return vk::ComponentMapping{
             .r = vk::ComponentSwizzle::eR,
             .g = vk::ComponentSwizzle::eR,
@@ -176,6 +192,7 @@ std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
             .a = vk::ComponentSwizzle::eG,
         };
     case VideoCore::PixelFormat::I8:
+    case VideoCore::PixelFormat::I4:
         return vk::ComponentMapping{
             .r = vk::ComponentSwizzle::eR,
             .g = vk::ComponentSwizzle::eR,
@@ -183,6 +200,7 @@ std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
             .a = vk::ComponentSwizzle::eOne,
         };
     case VideoCore::PixelFormat::A8:
+    case VideoCore::PixelFormat::A4:
         return vk::ComponentMapping{
             .r = vk::ComponentSwizzle::eOne,
             .g = vk::ComponentSwizzle::eOne,
@@ -195,7 +213,7 @@ std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
 }
 
 bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
-                         VideoCore::PixelFormat pixel_format) {
+                       VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8: {
         if (dst.size() != src.size() * 4) {
@@ -234,6 +252,81 @@ bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
             dst[o + 1] = intensity;
             dst[o + 2] = intensity;
             dst[o + 3] = alpha;
+        }
+        return true;
+    }
+    case VideoCore::PixelFormat::IA4: {
+        if (dst.size() != src.size() * 4) {
+            return false;
+        }
+        for (size_t i = 0, o = 0; i < src.size(); ++i, o += 4) {
+            const u8 packed = src[i];
+            const u8 intensity = Expand4To8(static_cast<u8>((packed >> 4) & 0xF));
+            const u8 alpha = Expand4To8(static_cast<u8>(packed & 0xF));
+            dst[o + 0] = intensity;
+            dst[o + 1] = intensity;
+            dst[o + 2] = intensity;
+            dst[o + 3] = alpha;
+        }
+        return true;
+    }
+    case VideoCore::PixelFormat::I4: {
+        if ((dst.size() % 4) != 0) {
+            return false;
+        }
+        const size_t pixel_count = dst.size() / 4;
+        if (src.size() != ((pixel_count + 1) / 2)) {
+            return false;
+        }
+        size_t o = 0;
+        size_t pixel_index = 0;
+        for (size_t i = 0; i < src.size() && pixel_index < pixel_count; ++i) {
+            const u8 packed = src[i];
+            const std::array<u8, 2> values = {
+                Expand4To8(static_cast<u8>(packed & 0xF)),
+                Expand4To8(static_cast<u8>((packed >> 4) & 0xF)),
+            };
+            for (const u8 intensity : values) {
+                if (pixel_index >= pixel_count) {
+                    break;
+                }
+                dst[o + 0] = intensity;
+                dst[o + 1] = intensity;
+                dst[o + 2] = intensity;
+                dst[o + 3] = 0xFF;
+                o += 4;
+                pixel_index++;
+            }
+        }
+        return true;
+    }
+    case VideoCore::PixelFormat::A4: {
+        if ((dst.size() % 4) != 0) {
+            return false;
+        }
+        const size_t pixel_count = dst.size() / 4;
+        if (src.size() != ((pixel_count + 1) / 2)) {
+            return false;
+        }
+        size_t o = 0;
+        size_t pixel_index = 0;
+        for (size_t i = 0; i < src.size() && pixel_index < pixel_count; ++i) {
+            const u8 packed = src[i];
+            const std::array<u8, 2> values = {
+                Expand4To8(static_cast<u8>(packed & 0xF)),
+                Expand4To8(static_cast<u8>((packed >> 4) & 0xF)),
+            };
+            for (const u8 alpha : values) {
+                if (pixel_index >= pixel_count) {
+                    break;
+                }
+                dst[o + 0] = 0xFF;
+                dst[o + 1] = 0xFF;
+                dst[o + 2] = 0xFF;
+                dst[o + 3] = alpha;
+                o += 4;
+                pixel_index++;
+            }
         }
         return true;
     }
