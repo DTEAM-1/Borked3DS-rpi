@@ -24,6 +24,11 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+[[nodiscard]] bool IsDrawTraceEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_DRAW");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 } // namespace
 
 vk::ShaderStageFlagBits MakeShaderStage(std::size_t index) {
@@ -155,12 +160,22 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         .primitiveRestartEnable = false,
     };
 
+    vk::CullModeFlags raster_cull_mode = PicaToVK::CullMode(info.rasterization.cull_mode);
+    vk::FrontFace raster_front_face = PicaToVK::FrontFace(info.rasterization.cull_mode);
+    if (pi5_strict_compat) {
+        // Pi 5 / V3DV conservative fallback:
+        // prefer showing too much geometry over accidentally culling everything
+        // when Vulkan pipeline state diverges from GLES behavior.
+        raster_cull_mode = vk::CullModeFlagBits::eNone;
+        raster_front_face = vk::FrontFace::eCounterClockwise;
+    }
+
     const vk::PipelineRasterizationStateCreateInfo raster_state = {
         .depthClampEnable = false,
         .rasterizerDiscardEnable = false,
         .polygonMode = vk::PolygonMode::eFill,
-        .cullMode = PicaToVK::CullMode(info.rasterization.cull_mode),
-        .frontFace = PicaToVK::FrontFace(info.rasterization.cull_mode),
+        .cullMode = raster_cull_mode,
+        .frontFace = raster_front_face,
         .depthBiasEnable = false,
         .lineWidth = 1.0f,
     };
@@ -168,6 +183,10 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     const vk::PipelineMultisampleStateCreateInfo multisampling = {
         .rasterizationSamples = vk::SampleCountFlagBits::e1,
         .sampleShadingEnable = false,
+        .minSampleShading = 0.0f,
+        .pSampleMask = nullptr,
+        .alphaToCoverageEnable = false,
+        .alphaToOneEnable = false,
     };
 
     const vk::PipelineColorBlendAttachmentState colorblend_attachment = {
@@ -282,6 +301,20 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         .renderPass =
             renderpass_cache.GetRenderpass(info.attachments.color, info.attachments.depth, false),
     };
+
+    if (pi5_strict_compat && IsDrawTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PIPELINE strict_compat build shader_count={} color_attachment={} depth_attachment={} cull_mode={} front_face={} depth_test={} depth_write={} stencil_test={} blend_enable={} logic_op_enable={} sample_count=1 sample_shading=0 use_extended_dynamic_state={}",
+                 shader_count, static_cast<u32>(info.attachments.color),
+                 static_cast<u32>(info.attachments.depth), static_cast<u32>(static_cast<VkCullModeFlags>(raster_cull_mode)),
+                 static_cast<u32>(static_cast<VkFrontFace>(raster_front_face)),
+                 static_cast<u32>(info.depth_stencil.depth_test_enable.Value()),
+                 static_cast<u32>(info.depth_stencil.depth_write_enable.Value()),
+                 static_cast<u32>(info.depth_stencil.stencil_test_enable.Value()),
+                 static_cast<u32>(info.blending.blend_enable),
+                 static_cast<u32>(logic_op_enable),
+                 static_cast<u32>(use_extended_dynamic_state));
+    }
 
     if (fail_on_compile_required) {
         pipeline_info.flags |= vk::PipelineCreateFlagBits::eFailOnPipelineCompileRequiredEXT;
