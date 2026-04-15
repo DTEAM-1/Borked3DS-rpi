@@ -39,23 +39,6 @@ using VideoCore::SurfaceType;
 using VideoCore::TextureType;
 using namespace Common::Literals;
 
-std::atomic<u32> g_pi5_ui_handle_trace_budget{64};
-std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
-
-[[nodiscard]] bool ConsumeTraceBudget(std::atomic<u32>& budget) {
-    u32 remaining = budget.load(std::memory_order_relaxed);
-    while (remaining != 0) {
-        if (budget.compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-[[nodiscard]] std::string_view BoolString(bool value) {
-    return value ? "true" : "false";
-}
-
 struct RecordParams {
     vk::ImageAspectFlags aspect;
     vk::Filter filter;
@@ -105,6 +88,24 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
         .b = vk::ComponentSwizzle::eB,
         .a = vk::ComponentSwizzle::eA,
     };
+}
+
+[[nodiscard]] std::string_view BoolString(bool value) {
+    return value ? "true" : "false";
+}
+
+std::atomic<u32> g_pi5_ui_handle_trace_budget{64};
+std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
+std::atomic<u32> g_pi5_ui_surface_trace_budget{128};
+
+[[nodiscard]] bool ConsumeTraceBudget(std::atomic<u32>& budget) {
+    u32 remaining = budget.load(std::memory_order_relaxed);
+    while (remaining != 0) {
+        if (budget.compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 [[nodiscard]] constexpr bool NeedsPi5UIUploadExpansion(VideoCore::PixelFormat pixel_format) {
@@ -463,7 +464,8 @@ Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, T
     }
 
     const vk::Image image{unsafe_image};
-    const vk::ComponentMapping component_mapping = MakeUIViewComponentMapping(pixel_format, aspect, format);
+    const vk::ComponentMapping component_mapping =
+        MakeUIViewComponentMapping(pixel_format, aspect, format);
     const vk::ImageViewCreateInfo view_info = {
         .image = image,
         .viewType =
@@ -992,6 +994,16 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
 
     const vk::Format format = GetEffectiveTextureFormat(pixel_format, traits.native);
     const bool is_mutable = pixel_format == VideoCore::PixelFormat::RGBA8;
+    const bool trace_pi5_ui_surface = NeedsPi5UIUploadExpansion(pixel_format) &&
+                                      ConsumeTraceBudget(g_pi5_ui_surface_trace_budget);
+    if (trace_pi5_ui_surface) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PI5_UI surface_create pixel_format={} native_format={} effective_format={} "
+                 "size={}x{} scaled={}x{} levels={} texture_type={} aspect={} res_scale={}",
+                 VideoCore::PixelFormatAsString(pixel_format), vk::to_string(traits.native),
+                 vk::to_string(format), width, height, GetScaledWidth(), GetScaledHeight(), levels,
+                 static_cast<u32>(texture_type), vk::to_string(traits.aspect), res_scale);
+    }
 
     ASSERT_MSG(format != vk::Format::eUndefined && levels >= 1,
                "Image allocation parameters are invalid");
@@ -1007,14 +1019,15 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
     }
 
     const bool need_format_list = is_mutable && instance->IsImageFormatListSupported();
-    handles[0] = MakeHandle(instance, width, height, levels, texture_type, format, pixel_format, traits.usage,
-                            flags, traits.aspect, need_format_list, DebugName(false));
+    handles[0] = MakeHandle(instance, width, height, levels, texture_type, format, pixel_format,
+                            traits.usage, flags, traits.aspect, need_format_list,
+                            DebugName(false));
     raw_images.emplace_back(handles[0].image);
 
     if (res_scale != 1) {
-        handles[1] =
-            MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels, texture_type, format,
-                       pixel_format, traits.usage, flags, traits.aspect, need_format_list, DebugName(true));
+        handles[1] = MakeHandle(instance, GetScaledWidth(), GetScaledHeight(), levels,
+                                texture_type, format, pixel_format, traits.usage, flags,
+                                traits.aspect, need_format_list, DebugName(true));
         raw_images.emplace_back(handles[1].image);
     }
 
@@ -1104,6 +1117,17 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
     VideoCore::StagingData effective_staging = staging;
     const vk::Format effective_format = GetEffectiveTextureFormat(pixel_format, traits.native);
 
+    if (NeedsPi5UIUploadExpansion(pixel_format) &&
+        ConsumeTraceBudget(g_pi5_ui_surface_trace_budget)) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PI5_UI upload_entry pixel_format={} native_format={} effective_format={} "
+                 "level={} rect=({}, {}, {}, {}) staging_size={} buffer_offset={} aspect={}",
+                 VideoCore::PixelFormatAsString(pixel_format), vk::to_string(traits.native),
+                 vk::to_string(effective_format), upload.texture_level, upload.texture_rect.left,
+                 upload.texture_rect.bottom, upload.texture_rect.right, upload.texture_rect.top,
+                 staging.size, upload.buffer_offset, vk::to_string(params.aspect));
+    }
+
     if (NeedsPi5UIUploadExpansion(pixel_format)) {
         const u32 upload_width = upload.texture_rect.GetWidth();
         const u32 upload_height = upload.texture_rect.GetHeight();
@@ -1118,10 +1142,11 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
                      "src_size={} expected_size={} expanded_size={} native_format={} "
                      "effective_format={} current_offset={} aspect={} res_scale={}",
                      VideoCore::PixelFormatAsString(pixel_format), upload.texture_level,
-                     upload.texture_rect.left, upload.texture_rect.bottom, upload.texture_rect.right,
-                     upload.texture_rect.top, staging.size, expected_source_size, expanded_size,
-                     vk::to_string(traits.native), vk::to_string(effective_format),
-                     upload.buffer_offset, vk::to_string(params.aspect), res_scale);
+                     upload.texture_rect.left, upload.texture_rect.bottom,
+                     upload.texture_rect.right, upload.texture_rect.top, staging.size,
+                     expected_source_size, expanded_size, vk::to_string(traits.native),
+                     vk::to_string(effective_format), upload.buffer_offset,
+                     vk::to_string(params.aspect), res_scale);
         }
 
         if (expected_source_size != 0 && staging.size == expected_source_size) {
@@ -1145,11 +1170,12 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
                             expected_source_size, expanded_size, upload_width, upload_height);
             }
         } else if (trace_pi5_ui) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PI5_UI upload_skipped_size_mismatch pixel_format={} src_size={} "
-                     "expected_size={} width={} height={}",
-                     VideoCore::PixelFormatAsString(pixel_format), staging.size,
-                     expected_source_size, upload_width, upload_height);
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_PI5_UI upload_skipped_size_mismatch pixel_format={} src_size={} "
+                        "expected_size={} width={} height={} native_format={} effective_format={}",
+                        VideoCore::PixelFormatAsString(pixel_format), staging.size,
+                        expected_source_size, upload_width, upload_height,
+                        vk::to_string(traits.native), vk::to_string(effective_format));
         }
     }
 
@@ -1166,7 +1192,8 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
     }
 
     scheduler->Record([buffer = runtime->upload_buffer.Handle(), format = effective_format, params,
-                       staging = effective_staging, upload = effective_upload](vk::CommandBuffer cmdbuf) {
+                       staging = effective_staging,
+                       upload = effective_upload](vk::CommandBuffer cmdbuf) {
         boost::container::static_vector<vk::BufferImageCopy, 2> buffer_image_copies;
 
         const auto rect = upload.texture_rect;
