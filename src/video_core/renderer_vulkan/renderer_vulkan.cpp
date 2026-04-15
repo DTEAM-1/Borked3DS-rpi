@@ -4,7 +4,10 @@
 // Refer to the license.txt file included.
 
 #include "common/assert.h"
+#include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include "common/logging/log.h"
 #include "common/memory_detect.h"
 #include "common/profiling.h"
@@ -37,6 +40,95 @@ namespace {
 [[nodiscard]] bool IsStrictCompatEnabled() {
     const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+[[nodiscard]] bool IsRenderTargetTraceEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_RT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+[[nodiscard]] u32 GetRenderTargetTraceFrameBudget() {
+    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_RT_FRAMES");
+    if (value == nullptr || value[0] == '\0') {
+        return 3;
+    }
+    const long parsed = std::strtol(value, nullptr, 10);
+    return parsed > 0 ? static_cast<u32>(parsed) : 3u;
+}
+
+struct RenderTargetTraceStats {
+    u64 nonzero_pixels = 0;
+    u64 alpha_nonzero_pixels = 0;
+    u64 opaque_pixels = 0;
+    u64 sum_r = 0;
+    u64 sum_g = 0;
+    u64 sum_b = 0;
+    u64 sum_a = 0;
+    u32 sample_count = 0;
+    u32 width = 0;
+    u32 height = 0;
+};
+
+[[nodiscard]] RenderTargetTraceStats AnalyzeRenderTargetRGBA8(const u8* rgba, u32 width, u32 height) {
+    RenderTargetTraceStats stats{};
+    stats.width = width;
+    stats.height = height;
+    if (rgba == nullptr || width == 0 || height == 0) {
+        return stats;
+    }
+
+    const std::size_t pixel_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    const std::size_t max_samples = std::min<std::size_t>(pixel_count, 4096);
+    for (std::size_t i = 0; i < max_samples; ++i) {
+        const std::size_t base = i * 4;
+        const u8 r = rgba[base + 0];
+        const u8 g = rgba[base + 1];
+        const u8 b = rgba[base + 2];
+        const u8 a = rgba[base + 3];
+        stats.sample_count++;
+        stats.sum_r += r;
+        stats.sum_g += g;
+        stats.sum_b += b;
+        stats.sum_a += a;
+        if (r != 0 || g != 0 || b != 0 || a != 0) {
+            stats.nonzero_pixels++;
+        }
+        if (a != 0) {
+            stats.alpha_nonzero_pixels++;
+        }
+        if (a == 255) {
+            stats.opaque_pixels++;
+        }
+    }
+    return stats;
+}
+
+void MaybeWriteRenderTargetPPM(const u8* rgba, u32 width, u32 height, u64 trace_index) {
+    if (rgba == nullptr || width == 0 || height == 0) {
+        return;
+    }
+    const char* dump_env = std::getenv("BORKED3DS_V3DV_TRACE_RT_WRITE");
+    if (dump_env == nullptr || dump_env[0] == '\0' || dump_env[0] == '0') {
+        return;
+    }
+
+    char path[256];
+    std::snprintf(path, sizeof(path), "/tmp/borked3ds_rt_main_%04llu.ppm",
+                  static_cast<unsigned long long>(trace_index));
+    std::FILE* file = std::fopen(path, "wb");
+    if (file == nullptr) {
+        LOG_INFO(Render_Vulkan, "TRACE_RT dump_open_failed path='{}'", path);
+        return;
+    }
+
+    std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+    for (std::size_t i = 0, pixels = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+         i < pixels; ++i) {
+        const u8 rgb[3] = {rgba[i * 4 + 0], rgba[i * 4 + 1], rgba[i * 4 + 2]};
+        std::fwrite(rgb, 1, sizeof(rgb), file);
+    }
+    std::fclose(file);
+    LOG_INFO(Render_Vulkan, "TRACE_RT dump_written path='{}' width={} height={}", path, width, height);
 }
 
 } // namespace
@@ -978,6 +1070,125 @@ void RendererVulkan::SwapBuffers() {
 
     PrepareRendertarget();
     RenderScreenshot();
+
+    if (IsRenderTargetTraceEnabled()) {
+        static u64 trace_index = 0;
+        const u64 current_trace_index = ++trace_index;
+        if (current_trace_index <= GetRenderTargetTraceFrameBudget()) {
+            const vk::Device device = instance.GetDevice();
+            const u32 width = layout.width;
+            const u32 height = layout.height;
+            const vk::BufferCreateInfo staging_buffer_info = {
+                .size = static_cast<vk::DeviceSize>(width) * static_cast<vk::DeviceSize>(height) * 4,
+                .usage = vk::BufferUsageFlagBits::eTransferDst,
+            };
+            const VmaAllocationCreateInfo alloc_create_info = {
+                .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                .requiredFlags = 0,
+                .preferredFlags = 0,
+                .pool = VK_NULL_HANDLE,
+                .pUserData = nullptr,
+            };
+
+            VkBuffer unsafe_buffer{};
+            VmaAllocation allocation{};
+            VmaAllocationInfo alloc_info{};
+            VkBufferCreateInfo unsafe_buffer_info = static_cast<VkBufferCreateInfo>(staging_buffer_info);
+            const VkResult result = vmaCreateBuffer(instance.GetAllocator(), &unsafe_buffer_info,
+                                                    &alloc_create_info, &unsafe_buffer,
+                                                    &allocation, &alloc_info);
+            if (result != VK_SUCCESS) {
+                LOG_INFO(Render_Vulkan, "TRACE_RT staging_alloc_failed result={}", result);
+            } else {
+                vk::Buffer staging_buffer{unsafe_buffer};
+                Frame trace_frame{};
+                main_window.RecreateFrame(&trace_frame, width, height);
+                DrawScreens(&trace_frame, layout, false);
+                scheduler.Record([width, height, source_image = trace_frame.image,
+                                  staging_buffer](vk::CommandBuffer cmdbuf) {
+                    const vk::ImageMemoryBarrier read_barrier = {
+                        .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                        .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+                        .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = source_image,
+                        .subresourceRange{
+                            .aspectMask = vk::ImageAspectFlagBits::eColor,
+                            .baseMipLevel = 0,
+                            .levelCount = VK_REMAINING_MIP_LEVELS,
+                            .baseArrayLayer = 0,
+                            .layerCount = VK_REMAINING_ARRAY_LAYERS,
+                        },
+                    };
+                    const vk::ImageMemoryBarrier write_barrier = {
+                        .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                        .dstAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                        .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+                        .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = source_image,
+                        .subresourceRange{
+                            .aspectMask = vk::ImageAspectFlagBits::eColor,
+                            .baseMipLevel = 0,
+                            .levelCount = VK_REMAINING_MIP_LEVELS,
+                            .baseArrayLayer = 0,
+                            .layerCount = VK_REMAINING_ARRAY_LAYERS,
+                        },
+                    };
+                    static constexpr vk::MemoryBarrier memory_write_barrier = {
+                        .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    };
+                    const vk::BufferImageCopy image_copy = {
+                        .bufferOffset = 0,
+                        .bufferRowLength = 0,
+                        .bufferImageHeight = 0,
+                        .imageSubresource = {
+                            .aspectMask = vk::ImageAspectFlagBits::eColor,
+                            .mipLevel = 0,
+                            .baseArrayLayer = 0,
+                            .layerCount = 1,
+                        },
+                        .imageOffset = {0, 0, 0},
+                        .imageExtent = {width, height, 1},
+                    };
+                    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                           vk::PipelineStageFlagBits::eTransfer,
+                                           vk::DependencyFlagBits::eByRegion, {}, {}, read_barrier);
+                    cmdbuf.copyImageToBuffer(source_image, vk::ImageLayout::eTransferSrcOptimal,
+                                             staging_buffer, image_copy);
+                    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                           vk::PipelineStageFlagBits::eAllCommands,
+                                           vk::DependencyFlagBits::eByRegion, memory_write_barrier,
+                                           {}, write_barrier);
+                });
+                scheduler.Finish();
+                const auto* rgba = static_cast<const u8*>(alloc_info.pMappedData);
+                const auto stats = AnalyzeRenderTargetRGBA8(rgba, width, height);
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_RT main frame={} width={} height={} samples={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
+                         current_trace_index, stats.width, stats.height, stats.sample_count,
+                         static_cast<unsigned long long>(stats.nonzero_pixels),
+                         static_cast<unsigned long long>(stats.alpha_nonzero_pixels),
+                         static_cast<unsigned long long>(stats.opaque_pixels),
+                         static_cast<unsigned long long>(stats.sum_r),
+                         static_cast<unsigned long long>(stats.sum_g),
+                         static_cast<unsigned long long>(stats.sum_b),
+                         static_cast<unsigned long long>(stats.sum_a));
+                MaybeWriteRenderTargetPPM(rgba, width, height, current_trace_index);
+                vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
+                vmaDestroyImage(instance.GetAllocator(), trace_frame.image, trace_frame.allocation);
+                device.destroyFramebuffer(trace_frame.framebuffer);
+                device.destroyImageView(trace_frame.image_view);
+            }
+        }
+    }
+
     RenderToWindow(main_window, layout, false);
 #ifndef ANDROID
     if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows) {
