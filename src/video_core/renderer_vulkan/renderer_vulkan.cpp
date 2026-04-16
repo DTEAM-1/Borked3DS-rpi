@@ -37,11 +37,6 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
-[[nodiscard]] bool IsDrawTraceEnabled() {
-    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_DRAW");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
-}
-
 [[nodiscard]] bool IsStrictCompatEnabled() {
     const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
@@ -50,6 +45,14 @@ namespace {
 [[nodiscard]] bool IsRenderTargetTraceEnabled() {
     const char* value = std::getenv("BORKED3DS_V3DV_TRACE_RT");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+[[nodiscard]] bool PreferOwnedPresentView() {
+    const char* value = std::getenv("BORKED3DS_V3DV_PREFER_OWNED_PRESENT");
+    if (value != nullptr && value[0] != '\0') {
+        return value[0] != '0';
+    }
+    return IsStrictCompatEnabled();
 }
 
 [[nodiscard]] u32 GetRenderTargetTraceFrameBudget() {
@@ -262,16 +265,30 @@ void RendererVulkan::PrepareRendertarget() {
 void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& layout) {
     const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
     const auto present_set = present_heap.Commit();
+    const bool prefer_owned_present = PreferOwnedPresentView();
     for (u32 index = 0; index < screen_infos.size(); index++) {
-        vk::ImageView image_view = screen_infos[index].image_view;
+        const vk::ImageView external_view = screen_infos[index].image_view;
+        const vk::ImageView owned_view = screen_infos[index].texture.image_view;
+        vk::ImageView image_view = external_view;
+
+        if (prefer_owned_present && external_view && owned_view && external_view != owned_view) {
+            image_view = owned_view;
+            if (IsPresentTraceEnabled() || IsRenderTargetTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT prepare_draw force_owned_present_view index={} external_valid={} owned_valid={}",
+                         index, static_cast<bool>(external_view), static_cast<bool>(owned_view));
+            }
+        }
+
         if (!image_view) {
-            image_view = screen_infos[index].texture.image_view;
+            image_view = owned_view;
             if (IsPresentTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
                          "TRACE_PRESENT prepare_draw fallback_owned_texture index={} view_valid={}",
                          index, static_cast<bool>(image_view));
             }
         }
+
         update_queue.AddImageSampler(present_set, 0, index, image_view, sampler);
     }
     update_queue.Flush();
@@ -1076,23 +1093,13 @@ void RendererVulkan::SwapBuffers() {
     PrepareRendertarget();
     RenderScreenshot();
 
-    const bool trace_rt_enabled = IsRenderTargetTraceEnabled();
-    const bool trace_draw_enabled = IsDrawTraceEnabled();
-    const bool rt_trace_enabled = trace_rt_enabled || trace_draw_enabled;
-    if (rt_trace_enabled) {
+    if (IsRenderTargetTraceEnabled()) {
         static u64 trace_index = 0;
         const u64 current_trace_index = ++trace_index;
-        const u32 trace_budget = GetRenderTargetTraceFrameBudget();
-        LOG_INFO(Render_Vulkan,
-                 "TRACE_RT_GATE swapbuffers_entered frame={} layout={}x{} trace_rt={} trace_draw={} budget={}",
-                 current_trace_index, layout.width, layout.height,
-                 static_cast<u32>(trace_rt_enabled), static_cast<u32>(trace_draw_enabled),
-                 trace_budget);
-        if (current_trace_index <= trace_budget) {
+        if (current_trace_index <= GetRenderTargetTraceFrameBudget()) {
             const vk::Device device = instance.GetDevice();
             const u32 width = layout.width;
             const u32 height = layout.height;
-
             const vk::BufferCreateInfo staging_buffer_info = {
                 .size = static_cast<vk::DeviceSize>(width) * static_cast<vk::DeviceSize>(height) * 4,
                 .usage = vk::BufferUsageFlagBits::eTransferDst,
@@ -1107,38 +1114,21 @@ void RendererVulkan::SwapBuffers() {
                 .pUserData = nullptr,
             };
 
-            auto destroy_trace_frame = [this, device](Frame& frame) {
-                if (frame.framebuffer) {
-                    device.destroyFramebuffer(frame.framebuffer);
-                }
-                if (frame.image_view) {
-                    device.destroyImageView(frame.image_view);
-                }
-                if (frame.image) {
-                    vmaDestroyImage(instance.GetAllocator(), frame.image, frame.allocation);
-                }
-                frame = {};
-            };
-
-            auto trace_frame_image = [this, &staging_buffer_info, &alloc_create_info, width, height,
-                                      current_trace_index](Frame& source_frame, const char* label,
-                                                           int source_index, bool write_dump) {
-                VkBuffer unsafe_buffer{};
-                VmaAllocation allocation{};
-                VmaAllocationInfo alloc_info{};
-                VkBufferCreateInfo unsafe_buffer_info =
-                    static_cast<VkBufferCreateInfo>(staging_buffer_info);
-                const VkResult result =
-                    vmaCreateBuffer(instance.GetAllocator(), &unsafe_buffer_info, &alloc_create_info,
-                                    &unsafe_buffer, &allocation, &alloc_info);
-                if (result != VK_SUCCESS) {
-                    LOG_INFO(Render_Vulkan, "TRACE_RT staging_alloc_failed label={} result={}",
-                             label, result);
-                    return;
-                }
-
-                const vk::Buffer staging_buffer{unsafe_buffer};
-                scheduler.Record([width, height, source_image = source_frame.image,
+            VkBuffer unsafe_buffer{};
+            VmaAllocation allocation{};
+            VmaAllocationInfo alloc_info{};
+            VkBufferCreateInfo unsafe_buffer_info = static_cast<VkBufferCreateInfo>(staging_buffer_info);
+            const VkResult result = vmaCreateBuffer(instance.GetAllocator(), &unsafe_buffer_info,
+                                                    &alloc_create_info, &unsafe_buffer,
+                                                    &allocation, &alloc_info);
+            if (result != VK_SUCCESS) {
+                LOG_INFO(Render_Vulkan, "TRACE_RT staging_alloc_failed result={}", result);
+            } else {
+                vk::Buffer staging_buffer{unsafe_buffer};
+                Frame trace_frame{};
+                main_window.RecreateFrame(&trace_frame, width, height);
+                DrawScreens(&trace_frame, layout, false);
+                scheduler.Record([width, height, source_image = trace_frame.image,
                                   staging_buffer](vk::CommandBuffer cmdbuf) {
                     const vk::ImageMemoryBarrier read_barrier = {
                         .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
@@ -1174,20 +1164,18 @@ void RendererVulkan::SwapBuffers() {
                     };
                     static constexpr vk::MemoryBarrier memory_write_barrier = {
                         .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
-                        .dstAccessMask =
-                            vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
                     };
                     const vk::BufferImageCopy image_copy = {
                         .bufferOffset = 0,
                         .bufferRowLength = 0,
                         .bufferImageHeight = 0,
-                        .imageSubresource =
-                            {
-                                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                                .mipLevel = 0,
-                                .baseArrayLayer = 0,
-                                .layerCount = 1,
-                            },
+                        .imageSubresource = {
+                            .aspectMask = vk::ImageAspectFlagBits::eColor,
+                            .mipLevel = 0,
+                            .baseArrayLayer = 0,
+                            .layerCount = 1,
+                        },
                         .imageOffset = {0, 0, 0},
                         .imageExtent = {width, height, 1},
                     };
@@ -1202,84 +1190,24 @@ void RendererVulkan::SwapBuffers() {
                                            {}, write_barrier);
                 });
                 scheduler.Finish();
-
                 const auto* rgba = static_cast<const u8*>(alloc_info.pMappedData);
                 const auto stats = AnalyzeRenderTargetRGBA8(rgba, width, height);
-                if (source_index >= 0) {
-                    LOG_INFO(Render_Vulkan,
-                             "TRACE_RT source frame={} index={} label={} width={} height={} samples={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
-                             current_trace_index, source_index, label, stats.width, stats.height,
-                             stats.sample_count,
-                             static_cast<unsigned long long>(stats.nonzero_pixels),
-                             static_cast<unsigned long long>(stats.alpha_nonzero_pixels),
-                             static_cast<unsigned long long>(stats.opaque_pixels),
-                             static_cast<unsigned long long>(stats.sum_r),
-                             static_cast<unsigned long long>(stats.sum_g),
-                             static_cast<unsigned long long>(stats.sum_b),
-                             static_cast<unsigned long long>(stats.sum_a));
-                } else {
-                    LOG_INFO(Render_Vulkan,
-                             "TRACE_RT main frame={} width={} height={} samples={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
-                             current_trace_index, stats.width, stats.height, stats.sample_count,
-                             static_cast<unsigned long long>(stats.nonzero_pixels),
-                             static_cast<unsigned long long>(stats.alpha_nonzero_pixels),
-                             static_cast<unsigned long long>(stats.opaque_pixels),
-                             static_cast<unsigned long long>(stats.sum_r),
-                             static_cast<unsigned long long>(stats.sum_g),
-                             static_cast<unsigned long long>(stats.sum_b),
-                             static_cast<unsigned long long>(stats.sum_a));
-                    if (write_dump) {
-                        MaybeWriteRenderTargetPPM(rgba, width, height, current_trace_index);
-                    }
-                }
-
-                vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
-            };
-
-            auto trace_screen_source = [this, width, height, &layout, current_trace_index,
-                                        &destroy_trace_frame,
-                                        &trace_frame_image](u32 source_index, const char* label) {
-                const ScreenInfo& screen_info = screen_infos[source_index];
-                const bool owned_view_valid = static_cast<bool>(screen_info.texture.image_view);
-                const bool current_view_valid = static_cast<bool>(screen_info.image_view);
-                const bool uses_external_view =
-                    current_view_valid && screen_info.image_view != screen_info.texture.image_view;
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_RT source_meta frame={} index={} label={} view_valid={} owned_view_valid={} uses_external_view={} texcoords=({}, {}, {}, {}) source_size={}x{}",
-                         current_trace_index, source_index, label,
-                         static_cast<u32>(current_view_valid),
-                         static_cast<u32>(owned_view_valid),
-                         static_cast<u32>(uses_external_view), screen_info.texcoords.left,
-                         screen_info.texcoords.top, screen_info.texcoords.right,
-                         screen_info.texcoords.bottom, screen_info.texture.width,
-                         screen_info.texture.height);
-
-                Frame trace_frame{};
-                main_window.RecreateFrame(&trace_frame, width, height);
-                PrepareDraw(&trace_frame, layout);
-                draw_info.modelview = MakeOrthographicMatrix(layout.width, layout.height);
-                draw_info.layer = 0;
-                DrawSingleScreen(source_index, 0.0f, 0.0f, static_cast<float>(layout.width),
-                                 static_cast<float>(layout.height),
-                                 Layout::DisplayOrientation::Landscape);
-                scheduler.Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRenderPass(); });
-                trace_frame_image(trace_frame, label, static_cast<int>(source_index), false);
-                destroy_trace_frame(trace_frame);
-            };
-
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_RT entered frame={} source=trace_frame_drawscreens layout={}x{}",
-                     current_trace_index, width, height);
-
-            trace_screen_source(0, "top_left");
-            trace_screen_source(1, "top_right");
-            trace_screen_source(2, "bottom");
-
-            Frame trace_frame{};
-            main_window.RecreateFrame(&trace_frame, width, height);
-            DrawScreens(&trace_frame, layout, false);
-            trace_frame_image(trace_frame, "main", -1, true);
-            destroy_trace_frame(trace_frame);
+                         "TRACE_RT main frame={} width={} height={} samples={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
+                         current_trace_index, stats.width, stats.height, stats.sample_count,
+                         static_cast<unsigned long long>(stats.nonzero_pixels),
+                         static_cast<unsigned long long>(stats.alpha_nonzero_pixels),
+                         static_cast<unsigned long long>(stats.opaque_pixels),
+                         static_cast<unsigned long long>(stats.sum_r),
+                         static_cast<unsigned long long>(stats.sum_g),
+                         static_cast<unsigned long long>(stats.sum_b),
+                         static_cast<unsigned long long>(stats.sum_a));
+                MaybeWriteRenderTargetPPM(rgba, width, height, current_trace_index);
+                vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
+                vmaDestroyImage(instance.GetAllocator(), trace_frame.image, trace_frame.allocation);
+                device.destroyFramebuffer(trace_frame.framebuffer);
+                device.destroyImageView(trace_frame.image_view);
+            }
         }
     }
 
