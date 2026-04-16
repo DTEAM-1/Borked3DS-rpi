@@ -282,6 +282,19 @@ GMainWindow::GMainWindow(Core::System& system_)
 
     show();
 
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this] {
+        LOG_INFO(Frontend,
+                 "TRACE_FRONTEND aboutToQuit emulation_running={} emu_thread_present={} game_path='{}'",
+                 static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr),
+                 game_path.toStdString());
+    });
+    connect(qApp, &QGuiApplication::lastWindowClosed, this, [this] {
+        LOG_INFO(Frontend,
+                 "TRACE_FRONTEND lastWindowClosed emulation_running={} emu_thread_present={} game_path='{}'",
+                 static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr),
+                 game_path.toStdString());
+    });
+
     game_list->LoadCompatibilityList();
     game_list->PopulateAsync(UISettings::values.game_dirs);
 
@@ -1690,6 +1703,11 @@ void GMainWindow::BootGame(const QString& filename) {
 
     // Create and start the emulation thread
     emu_thread = std::make_unique<EmuThread>(system, *render_window);
+    connect(emu_thread.get(), &QThread::finished, this, [this] {
+        LOG_INFO(Frontend,
+                 "TRACE_FRONTEND EmuThread finished signal emulation_running={} game_path='{}'",
+                 static_cast<u32>(emulation_running), game_path.toStdString());
+    });
     emit EmulationStarting(emu_thread.get());
     emu_thread->start();
 
@@ -1762,7 +1780,11 @@ void GMainWindow::ShutdownGame() {
     AllowOSSleep();
 
     discord_rpc->Pause();
+    LOG_INFO(Frontend,
+             "TRACE_FRONTEND ShutdownGame before RequestStop running={}",
+             static_cast<u32>(emu_thread != nullptr ? emu_thread->IsRunning() : false));
     emu_thread->RequestStop();
+    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame after RequestStop");
 
     // Release emu threads from any breakpoints
     // This belongs after RequestStop() and before wait() because if emulation stops on a GPU
@@ -1780,10 +1802,14 @@ void GMainWindow::ShutdownGame() {
     system.frame_limiter.SetFrameAdvancing(false);
 
     emit EmulationStopping();
+    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame emitted EmulationStopping");
 
     // Wait for emulation thread to complete and delete it
+    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame waiting for emu_thread");
     emu_thread->wait();
+    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame emu_thread wait complete");
     emu_thread = nullptr;
+    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame emu_thread reset");
 
     OnCloseMovie();
 
@@ -2662,8 +2688,11 @@ void GMainWindow::OnPauseContinueGame() {
 }
 
 void GMainWindow::OnStopGame() {
-    LOG_INFO(Frontend, "TRACE_FRONTEND OnStopGame begin emulation_running={} emu_thread_present={}",
-             static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr));
+    const QObject* signal_sender = sender();
+    LOG_INFO(Frontend,
+             "TRACE_FRONTEND OnStopGame begin emulation_running={} emu_thread_present={} sender='{}'",
+             static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr),
+             signal_sender != nullptr ? signal_sender->metaObject()->className() : "null");
     if (turbo_mode_active) {
         turbo_mode_active = false;
         Settings::values.frame_limit.SetValue(initial_frame_limit);
@@ -2684,6 +2713,7 @@ void GMainWindow::OnStopGame() {
     gamepad_hotkey_pressed.clear();
     // Don't need to manage pollers anymore
     hotkey_button_devices.clear(); // Clear cached devices - gvx64
+    LOG_INFO(Frontend, "TRACE_FRONTEND OnStopGame end");
 }
 
 void GMainWindow::OnLoadComplete() {
@@ -3732,7 +3762,11 @@ bool GMainWindow::ConfirmClose() {
 }
 
 void GMainWindow::closeEvent(QCloseEvent* event) {
+    LOG_INFO(Frontend,
+             "TRACE_FRONTEND GMainWindow::closeEvent begin emulation_running={} emu_thread_present={}",
+             static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr));
     if (!ConfirmClose()) {
+        LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent ignored_by_confirm");
         event->ignore();
         return;
     }
@@ -3743,14 +3777,19 @@ void GMainWindow::closeEvent(QCloseEvent* event) {
 
     // Shutdown session if the emu thread is active...
     if (emu_thread) {
+        LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent calling ShutdownGame");
         ShutdownGame();
     }
 
+    LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent closing child windows");
     render_window->close();
     secondary_window->close();
     multiplayer_state->Close();
     InputCommon::Shutdown();
+    LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent delegating to QWidget");
     QWidget::closeEvent(event);
+    LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent end accepted={}",
+             static_cast<u32>(event->isAccepted()));
 }
 
 static bool IsSingleFileDropEvent(const QMimeData* mime) {
