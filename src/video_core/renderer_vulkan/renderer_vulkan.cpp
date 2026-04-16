@@ -1071,13 +1071,25 @@ void RendererVulkan::SwapBuffers() {
     PrepareRendertarget();
     RenderScreenshot();
 
+    bool traced_main_window = false;
     if (IsRenderTargetTraceEnabled()) {
         static u64 trace_index = 0;
         const u64 current_trace_index = ++trace_index;
         if (current_trace_index <= GetRenderTargetTraceFrameBudget()) {
-            const vk::Device device = instance.GetDevice();
+            traced_main_window = true;
             const u32 width = layout.width;
             const u32 height = layout.height;
+            Frame* trace_frame = main_window.GetRenderFrame();
+            if (layout.width != trace_frame->width || layout.height != trace_frame->height) {
+                main_window.WaitPresent();
+                scheduler.Finish();
+                main_window.RecreateFrame(trace_frame, layout.width, layout.height);
+            }
+
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_RT entered frame={} width={} height={} source=main_window_present_frame",
+                     current_trace_index, width, height);
+
             const vk::BufferCreateInfo staging_buffer_info = {
                 .size = static_cast<vk::DeviceSize>(width) * static_cast<vk::DeviceSize>(height) * 4,
                 .usage = vk::BufferUsageFlagBits::eTransferDst,
@@ -1101,12 +1113,11 @@ void RendererVulkan::SwapBuffers() {
                                                     &allocation, &alloc_info);
             if (result != VK_SUCCESS) {
                 LOG_INFO(Render_Vulkan, "TRACE_RT staging_alloc_failed result={}", result);
+                traced_main_window = false;
             } else {
                 vk::Buffer staging_buffer{unsafe_buffer};
-                Frame trace_frame{};
-                main_window.RecreateFrame(&trace_frame, width, height);
-                DrawScreens(&trace_frame, layout, false);
-                scheduler.Record([width, height, source_image = trace_frame.image,
+                DrawScreens(trace_frame, layout, false);
+                scheduler.Record([width, height, source_image = trace_frame->image,
                                   staging_buffer](vk::CommandBuffer cmdbuf) {
                     const vk::ImageMemoryBarrier read_barrier = {
                         .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
@@ -1167,6 +1178,7 @@ void RendererVulkan::SwapBuffers() {
                                            vk::DependencyFlagBits::eByRegion, memory_write_barrier,
                                            {}, write_barrier);
                 });
+                scheduler.Flush(trace_frame->render_ready);
                 scheduler.Finish();
                 const auto* rgba = static_cast<const u8*>(alloc_info.pMappedData);
                 const auto stats = AnalyzeRenderTargetRGBA8(rgba, width, height);
@@ -1182,14 +1194,14 @@ void RendererVulkan::SwapBuffers() {
                          static_cast<unsigned long long>(stats.sum_a));
                 MaybeWriteRenderTargetPPM(rgba, width, height, current_trace_index);
                 vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
-                vmaDestroyImage(instance.GetAllocator(), trace_frame.image, trace_frame.allocation);
-                device.destroyFramebuffer(trace_frame.framebuffer);
-                device.destroyImageView(trace_frame.image_view);
+                main_window.Present(trace_frame);
             }
         }
     }
 
-    RenderToWindow(main_window, layout, false);
+    if (!traced_main_window) {
+        RenderToWindow(main_window, layout, false);
+    }
 #ifndef ANDROID
     if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows) {
         ASSERT(secondary_window);
