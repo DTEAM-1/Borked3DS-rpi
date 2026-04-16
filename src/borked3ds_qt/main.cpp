@@ -4,6 +4,9 @@
 // Refer to the license.txt file included.
 
 #include <clocale>
+#include <csignal>
+#include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -29,6 +32,7 @@
 #include "common/win_console.h"
 #endif
 #ifdef __unix__
+#include <unistd.h>
 #include <QVariant>
 #include <QtDBus/QDBusInterface>
 #include <QtDBus/QtDBus>
@@ -140,6 +144,90 @@ constexpr int default_mouse_timeout = 2500;
  */
 
 const int GMainWindow::max_recent_files_item;
+
+namespace {
+#ifdef __unix__
+void WriteCrashStderr(const char* data, std::size_t size) {
+    while (size > 0) {
+        const auto written = ::write(STDERR_FILENO, data, size);
+        if (written <= 0) {
+            break;
+        }
+        data += written;
+        size -= static_cast<std::size_t>(written);
+    }
+}
+#else
+void WriteCrashStderr(const char* data, std::size_t size) {
+    std::cerr.write(data, static_cast<std::streamsize>(size));
+    std::cerr.flush();
+}
+#endif
+
+void EmitFatalSignalBanner(int sig) {
+    static constexpr char prefix[] = "TRACE_FRONTEND_FATAL signal=";
+    static constexpr char suffix[] = "\n";
+    WriteCrashStderr(prefix, sizeof(prefix) - 1);
+    switch (sig) {
+    case SIGSEGV:
+        WriteCrashStderr("SIGSEGV", sizeof("SIGSEGV") - 1);
+        break;
+    case SIGABRT:
+        WriteCrashStderr("SIGABRT", sizeof("SIGABRT") - 1);
+        break;
+#ifdef SIGBUS
+    case SIGBUS:
+        WriteCrashStderr("SIGBUS", sizeof("SIGBUS") - 1);
+        break;
+#endif
+#ifdef SIGILL
+    case SIGILL:
+        WriteCrashStderr("SIGILL", sizeof("SIGILL") - 1);
+        break;
+#endif
+#ifdef SIGFPE
+    case SIGFPE:
+        WriteCrashStderr("SIGFPE", sizeof("SIGFPE") - 1);
+        break;
+#endif
+#ifdef SIGTRAP
+    case SIGTRAP:
+        WriteCrashStderr("SIGTRAP", sizeof("SIGTRAP") - 1);
+        break;
+#endif
+    default:
+        WriteCrashStderr("UNKNOWN", sizeof("UNKNOWN") - 1);
+        break;
+    }
+    WriteCrashStderr(suffix, sizeof(suffix) - 1);
+}
+
+void FatalSignalHandler(int sig) {
+    EmitFatalSignalBanner(sig);
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+}
+
+void InstallFatalSignalHandlers() {
+    std::signal(SIGSEGV, FatalSignalHandler);
+    std::signal(SIGABRT, FatalSignalHandler);
+#ifdef SIGBUS
+    std::signal(SIGBUS, FatalSignalHandler);
+#endif
+#ifdef SIGILL
+    std::signal(SIGILL, FatalSignalHandler);
+#endif
+#ifdef SIGFPE
+    std::signal(SIGFPE, FatalSignalHandler);
+#endif
+}
+
+void TerminateHandler() {
+    static constexpr char msg[] = "TRACE_FRONTEND_FATAL terminate_handler\n";
+    WriteCrashStderr(msg, sizeof(msg) - 1);
+    std::abort();
+}
+} // namespace
 
 static const char* ResultStatusToString(Core::System::ResultStatus result) {
     switch (result) {
@@ -281,19 +369,6 @@ GMainWindow::GMainWindow(Core::System& system_)
     UpdateWindowTitle();
 
     show();
-
-    connect(qApp, &QCoreApplication::aboutToQuit, this, [this] {
-        LOG_INFO(Frontend,
-                 "TRACE_FRONTEND aboutToQuit emulation_running={} emu_thread_present={} game_path='{}'",
-                 static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr),
-                 game_path.toStdString());
-    });
-    connect(qApp, &QGuiApplication::lastWindowClosed, this, [this] {
-        LOG_INFO(Frontend,
-                 "TRACE_FRONTEND lastWindowClosed emulation_running={} emu_thread_present={} game_path='{}'",
-                 static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr),
-                 game_path.toStdString());
-    });
 
     game_list->LoadCompatibilityList();
     game_list->PopulateAsync(UISettings::values.game_dirs);
@@ -1703,11 +1778,6 @@ void GMainWindow::BootGame(const QString& filename) {
 
     // Create and start the emulation thread
     emu_thread = std::make_unique<EmuThread>(system, *render_window);
-    connect(emu_thread.get(), &QThread::finished, this, [this] {
-        LOG_INFO(Frontend,
-                 "TRACE_FRONTEND EmuThread finished signal emulation_running={} game_path='{}'",
-                 static_cast<u32>(emulation_running), game_path.toStdString());
-    });
     emit EmulationStarting(emu_thread.get());
     emu_thread->start();
 
@@ -1780,11 +1850,7 @@ void GMainWindow::ShutdownGame() {
     AllowOSSleep();
 
     discord_rpc->Pause();
-    LOG_INFO(Frontend,
-             "TRACE_FRONTEND ShutdownGame before RequestStop running={}",
-             static_cast<u32>(emu_thread != nullptr ? emu_thread->IsRunning() : false));
     emu_thread->RequestStop();
-    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame after RequestStop");
 
     // Release emu threads from any breakpoints
     // This belongs after RequestStop() and before wait() because if emulation stops on a GPU
@@ -1802,14 +1868,10 @@ void GMainWindow::ShutdownGame() {
     system.frame_limiter.SetFrameAdvancing(false);
 
     emit EmulationStopping();
-    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame emitted EmulationStopping");
 
     // Wait for emulation thread to complete and delete it
-    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame waiting for emu_thread");
     emu_thread->wait();
-    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame emu_thread wait complete");
     emu_thread = nullptr;
-    LOG_INFO(Frontend, "TRACE_FRONTEND ShutdownGame emu_thread reset");
 
     OnCloseMovie();
 
@@ -2688,11 +2750,8 @@ void GMainWindow::OnPauseContinueGame() {
 }
 
 void GMainWindow::OnStopGame() {
-    const QObject* signal_sender = sender();
-    LOG_INFO(Frontend,
-             "TRACE_FRONTEND OnStopGame begin emulation_running={} emu_thread_present={} sender='{}'",
-             static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr),
-             signal_sender != nullptr ? signal_sender->metaObject()->className() : "null");
+    LOG_INFO(Frontend, "TRACE_FRONTEND OnStopGame begin emulation_running={} emu_thread_present={}",
+             static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr));
     if (turbo_mode_active) {
         turbo_mode_active = false;
         Settings::values.frame_limit.SetValue(initial_frame_limit);
@@ -2713,7 +2772,6 @@ void GMainWindow::OnStopGame() {
     gamepad_hotkey_pressed.clear();
     // Don't need to manage pollers anymore
     hotkey_button_devices.clear(); // Clear cached devices - gvx64
-    LOG_INFO(Frontend, "TRACE_FRONTEND OnStopGame end");
 }
 
 void GMainWindow::OnLoadComplete() {
@@ -3762,11 +3820,7 @@ bool GMainWindow::ConfirmClose() {
 }
 
 void GMainWindow::closeEvent(QCloseEvent* event) {
-    LOG_INFO(Frontend,
-             "TRACE_FRONTEND GMainWindow::closeEvent begin emulation_running={} emu_thread_present={}",
-             static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr));
     if (!ConfirmClose()) {
-        LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent ignored_by_confirm");
         event->ignore();
         return;
     }
@@ -3777,19 +3831,14 @@ void GMainWindow::closeEvent(QCloseEvent* event) {
 
     // Shutdown session if the emu thread is active...
     if (emu_thread) {
-        LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent calling ShutdownGame");
         ShutdownGame();
     }
 
-    LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent closing child windows");
     render_window->close();
     secondary_window->close();
     multiplayer_state->Close();
     InputCommon::Shutdown();
-    LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent delegating to QWidget");
     QWidget::closeEvent(event);
-    LOG_INFO(Frontend, "TRACE_FRONTEND GMainWindow::closeEvent end accepted={}",
-             static_cast<u32>(event->isAccepted()));
 }
 
 static bool IsSingleFileDropEvent(const QMimeData* mime) {
@@ -4267,6 +4316,9 @@ int main(int argc, char* argv[]) {
 
     Common::DetachedTasks detached_tasks;
 
+    InstallFatalSignalHandlers();
+    std::set_terminate(TerminateHandler);
+
     // Init settings params
     QCoreApplication::setOrganizationName(QStringLiteral("Borked3DS team"));
     QCoreApplication::setApplicationName(QStringLiteral("Borked3DS"));
@@ -4314,8 +4366,16 @@ int main(int argc, char* argv[]) {
 
     QObject::connect(&app, &QGuiApplication::applicationStateChanged, &main_window,
                      &GMainWindow::OnAppFocusStateChanged);
+    QObject::connect(&app, &QGuiApplication::lastWindowClosed, [] {
+        LOG_INFO(Frontend, "TRACE_FRONTEND lastWindowClosed");
+    });
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
+        LOG_INFO(Frontend, "TRACE_FRONTEND aboutToQuit");
+    });
 
+    LOG_INFO(Frontend, "TRACE_FRONTEND app_exec begin");
     int result = app.exec();
+    LOG_INFO(Frontend, "TRACE_FRONTEND app_exec end result={}", result);
     detached_tasks.WaitForAllTasks();
 
 #ifdef _WIN32

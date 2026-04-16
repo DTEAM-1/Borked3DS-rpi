@@ -5,11 +5,17 @@
 
 #include <QApplication>
 #include <exception>
+#include <atomic>
+#include <csignal>
+#include <cstdlib>
+#include <cstring>
+#include <unistd.h>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMessageBox>
 #include <QPainter>
 #include <QWindow>
+#include <string_view>
 #include "borked3ds_qt/bootmanager.h"
 #include "borked3ds_qt/main.h"
 #include "common/color.h"
@@ -50,6 +56,47 @@ EmuThread::EmuThread(Core::System& system_, Frontend::GraphicsContext& core_cont
 
 EmuThread::~EmuThread() = default;
 
+namespace {
+
+std::atomic<bool> g_emuthread_terminate_handler_installed{false};
+
+void WriteEmuThreadFatalLine(const char* line) noexcept {
+    if (!line)
+        return;
+    const size_t len = std::strlen(line);
+    if (len > 0) {
+        (void)!::write(STDERR_FILENO, line, len);
+    }
+}
+
+void EmuThreadTerminateHandler() noexcept {
+    WriteEmuThreadFatalLine("TRACE_EMUTHREAD_FATAL terminate_handler\n");
+    std::_Exit(128 + SIGABRT);
+}
+
+class ScopedEmuThreadTerminateHandler {
+public:
+    ScopedEmuThreadTerminateHandler() {
+        if (!g_emuthread_terminate_handler_installed.exchange(true)) {
+            previous = std::set_terminate(EmuThreadTerminateHandler);
+            installed = true;
+        }
+    }
+
+    ~ScopedEmuThreadTerminateHandler() {
+        if (installed) {
+            std::set_terminate(previous);
+            g_emuthread_terminate_handler_installed.store(false);
+        }
+    }
+
+private:
+    std::terminate_handler previous{};
+    bool installed{};
+};
+
+} // namespace
+
 static GMainWindow* GetMainWindow() {
     const auto widgets = qApp->topLevelWidgets();
     for (QWidget* w : widgets) {
@@ -65,6 +112,11 @@ void EmuThread::run() {
     LOG_INFO(Frontend,
              "TRACE_EMUTHREAD run begin stop_run={} running={} exec_step={}",
              static_cast<u32>(stop_run), static_cast<u32>(running), static_cast<u32>(exec_step));
+
+    ScopedEmuThreadTerminateHandler scoped_terminate_handler{};
+    LOG_INFO(Frontend, "TRACE_EMUTHREAD terminate_handler_installed={}", 1);
+
+    const char* exit_reason = "loop_completed";
 
     try {
         const auto scope = core_context.Acquire();
@@ -118,11 +170,16 @@ void EmuThread::run() {
                               static_cast<u32>(stop_run));
                 }
                 if (result == Core::System::ResultStatus::ShutdownRequested) {
+                    exit_reason = "runloop_shutdown_requested";
                     emit ErrorThrown(result, "");
                     LOG_INFO(Frontend, "TRACE_EMUTHREAD RunLoop requested shutdown");
                     break;
                 }
                 if (result != Core::System::ResultStatus::Success) {
+                    exit_reason = "runloop_error";
+                    LOG_INFO(Frontend,
+                             "TRACE_EMUTHREAD SetRunning(false) after RunLoop error details='{}'",
+                             system.GetStatusDetails());
                     this->SetRunning(false);
                     emit ErrorThrown(result, system.GetStatusDetails());
                 }
@@ -137,6 +194,7 @@ void EmuThread::run() {
                 exec_step = false;
                 const Core::System::ResultStatus result = system.SingleStep();
                 if (result != Core::System::ResultStatus::Success) {
+                    exit_reason = "single_step_error";
                     LOG_ERROR(Frontend,
                               "TRACE_EMUTHREAD SingleStep result={} details='{}'",
                               static_cast<u32>(result), system.GetStatusDetails());
@@ -155,21 +213,27 @@ void EmuThread::run() {
             }
         }
 
-        LOG_INFO(Frontend, "TRACE_EMUTHREAD loop exit stop_run={} running={} exec_step={}",
-                 static_cast<u32>(stop_run), static_cast<u32>(running),
+        if (stop_run && std::string_view{exit_reason} == "loop_completed") {
+            exit_reason = "stop_run_requested";
+        }
+        LOG_INFO(Frontend,
+                 "TRACE_EMUTHREAD loop exit reason='{}' stop_run={} running={} exec_step={}",
+                 exit_reason, static_cast<u32>(stop_run), static_cast<u32>(running),
                  static_cast<u32>(exec_step));
 
         system.Shutdown();
         LOG_INFO(Frontend, "TRACE_EMUTHREAD system.Shutdown complete");
     } catch (const std::exception& e) {
+        exit_reason = "std_exception";
         LOG_CRITICAL(Frontend, "TRACE_EMUTHREAD exception: {}", e.what());
         emit ErrorThrown(Core::System::ResultStatus::ShutdownRequested, e.what());
     } catch (...) {
+        exit_reason = "unknown_exception";
         LOG_CRITICAL(Frontend, "TRACE_EMUTHREAD unknown exception");
         emit ErrorThrown(Core::System::ResultStatus::ShutdownRequested, "unknown exception");
     }
 
-    LOG_INFO(Frontend, "TRACE_EMUTHREAD run end");
+    LOG_INFO(Frontend, "TRACE_EMUTHREAD run end reason='{}'", exit_reason);
 }
 
 #ifdef ENABLE_OPENGL
@@ -549,6 +613,10 @@ std::pair<u32, u32> GRenderWindow::ScaleTouch(const QPointF pos) const {
 }
 
 void GRenderWindow::closeEvent(QCloseEvent* event) {
+    LOG_INFO(Frontend,
+             "TRACE_FRONTEND GRenderWindow::closeEvent visible={} is_fullscreen={} emu_thread_present={}",
+             static_cast<u32>(isVisible()), static_cast<u32>(isFullScreen()),
+             static_cast<u32>(emu_thread != nullptr));
     emit Closed();
     QWidget::closeEvent(event);
 }
