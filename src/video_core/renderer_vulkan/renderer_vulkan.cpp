@@ -48,7 +48,7 @@ namespace {
 }
 
 [[nodiscard]] bool IsDrawTraceEnabled() {
-    const char* value = std::getenv(\"BORKED3DS_V3DV_TRACE_DRAW\");
+    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_DRAW");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
@@ -1076,21 +1076,23 @@ void RendererVulkan::SwapBuffers() {
     PrepareRendertarget();
     RenderScreenshot();
 
-    const bool trace_rt_enabled = IsRenderTargetTraceEnabled();
-    const bool trace_draw_enabled = IsDrawTraceEnabled();
-    const bool trace_rt_gate_enabled = trace_rt_enabled || trace_draw_enabled;
-    if (trace_rt_gate_enabled) {
+    const bool rt_trace_enabled = IsRenderTargetTraceEnabled() || IsDrawTraceEnabled();
+    if (rt_trace_enabled) {
         static u64 trace_index = 0;
         const u64 current_trace_index = ++trace_index;
-        const u32 trace_budget = GetRenderTargetTraceFrameBudget();
         LOG_INFO(Render_Vulkan,
-                 "TRACE_RT_GATE swapbuffers_entered frame={} layout={}x{} rt_env={} draw_env={} budget={}",
-                 current_trace_index, layout.width, layout.height, trace_rt_enabled ? 1 : 0,
-                 trace_draw_enabled ? 1 : 0, trace_budget);
-        if (current_trace_index <= trace_budget) {
+                 "TRACE_RT_GATE swapbuffers_entered frame={} layout={}x{} trace_rt={} trace_draw={} budget={}",
+                 current_trace_index, layout.width, layout.height,
+                 static_cast<u32>(IsRenderTargetTraceEnabled()),
+                 static_cast<u32>(IsDrawTraceEnabled()),
+                 GetRenderTargetTraceFrameBudget());
+        if (current_trace_index <= GetRenderTargetTraceFrameBudget()) {
             const vk::Device device = instance.GetDevice();
             const u32 width = layout.width;
             const u32 height = layout.height;
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_RT entered frame={} source=trace_frame_drawscreens layout={}x{}",
+                     current_trace_index, width, height);
             const vk::BufferCreateInfo staging_buffer_info = {
                 .size = static_cast<vk::DeviceSize>(width) * static_cast<vk::DeviceSize>(height) * 4,
                 .usage = vk::BufferUsageFlagBits::eTransferDst,
@@ -1113,21 +1115,11 @@ void RendererVulkan::SwapBuffers() {
                                                     &alloc_create_info, &unsafe_buffer,
                                                     &allocation, &alloc_info);
             if (result != VK_SUCCESS) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_RT_GATE staging_alloc_failed frame={} result={} rt_env={} draw_env={}",
-                         current_trace_index, result, trace_rt_enabled ? 1 : 0,
-                         trace_draw_enabled ? 1 : 0);
+                LOG_INFO(Render_Vulkan, "TRACE_RT staging_alloc_failed result={}", result);
             } else {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_RT_GATE staging_alloc_ok frame={} width={} height={} rt_env={} draw_env={}",
-                         current_trace_index, width, height, trace_rt_enabled ? 1 : 0,
-                         trace_draw_enabled ? 1 : 0);
                 vk::Buffer staging_buffer{unsafe_buffer};
                 Frame trace_frame{};
                 main_window.RecreateFrame(&trace_frame, width, height);
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_RT entered frame={} width={} height={} source=debug_trace_frame",
-                         current_trace_index, width, height);
                 DrawScreens(&trace_frame, layout, false);
                 scheduler.Record([width, height, source_image = trace_frame.image,
                                   staging_buffer](vk::CommandBuffer cmdbuf) {
@@ -1209,11 +1201,6 @@ void RendererVulkan::SwapBuffers() {
                 device.destroyFramebuffer(trace_frame.framebuffer);
                 device.destroyImageView(trace_frame.image_view);
             }
-        } else {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_RT_GATE budget_exhausted frame={} budget={} rt_env={} draw_env={}",
-                     current_trace_index, trace_budget, trace_rt_enabled ? 1 : 0,
-                     trace_draw_enabled ? 1 : 0);
         }
     }
 
