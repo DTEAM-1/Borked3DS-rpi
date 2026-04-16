@@ -211,30 +211,30 @@ void EmitFatalSignalBanner(int sig) {
 
 void FatalSignalHandler(int sig) {
     EmitFatalSignalBanner(sig);
-    std::signal(sig, SIG_DFL);
-    std::raise(sig);
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
 }
 
 void InstallFatalSignalHandlers() {
-    std::signal(SIGSEGV, FatalSignalHandler);
-    std::signal(SIGABRT, FatalSignalHandler);
+    ::signal(SIGSEGV, FatalSignalHandler);
+    ::signal(SIGABRT, FatalSignalHandler);
 #ifdef SIGBUS
-    std::signal(SIGBUS, FatalSignalHandler);
+    ::signal(SIGBUS, FatalSignalHandler);
 #endif
 #ifdef SIGILL
-    std::signal(SIGILL, FatalSignalHandler);
+    ::signal(SIGILL, FatalSignalHandler);
 #endif
 #ifdef SIGFPE
-    std::signal(SIGFPE, FatalSignalHandler);
+    ::signal(SIGFPE, FatalSignalHandler);
 #endif
 #ifdef SIGTERM
-    std::signal(SIGTERM, FatalSignalHandler);
+    ::signal(SIGTERM, FatalSignalHandler);
 #endif
 #ifdef SIGHUP
-    std::signal(SIGHUP, FatalSignalHandler);
+    ::signal(SIGHUP, FatalSignalHandler);
 #endif
 #ifdef SIGINT
-    std::signal(SIGINT, FatalSignalHandler);
+    ::signal(SIGINT, FatalSignalHandler);
 #endif
 }
 
