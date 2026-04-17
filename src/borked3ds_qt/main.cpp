@@ -3870,8 +3870,6 @@ void GMainWindow::closeEvent(QCloseEvent* event) {
              static_cast<u32>(event->isAccepted()));
 }
 
-}
-
 static bool IsSingleFileDropEvent(const QMimeData* mime) {
     return mime->hasUrls() && mime->urls().length() == 1;
 }
