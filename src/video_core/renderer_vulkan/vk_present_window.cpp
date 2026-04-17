@@ -238,6 +238,29 @@ void PresentWindow::RecreateFrame(Frame* frame, u32 width, u32 height) {
 
     frame->width = width;
     frame->height = height;
+
+    scheduler.Record([image = frame->image](vk::CommandBuffer cmdbuf) {
+        const vk::ImageMemoryBarrier init_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eNone,
+            .dstAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eMemoryRead,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = VK_REMAINING_ARRAY_LAYERS,
+            },
+        };
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+                               vk::PipelineStageFlagBits::eAllCommands,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, init_barrier);
+    });
+    scheduler.Finish();
 }
 
 Frame* PresentWindow::GetRenderFrame() {

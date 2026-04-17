@@ -444,6 +444,106 @@ void BlitCpuScreenToCanvas(const CpuScreenDump& screen, std::vector<u8>& canvas,
     return true;
 }
 
+[[nodiscard]] bool UploadRGBA8DirectlyToFrameImage(const Instance& instance, Scheduler& scheduler,
+                                                   vk::Image dst_image, u32 width, u32 height,
+                                                   const std::vector<u8>& rgba) {
+    if (!dst_image || width == 0 || height == 0 ||
+        rgba.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4) {
+        return false;
+    }
+
+    const vk::DeviceSize buffer_size = static_cast<vk::DeviceSize>(rgba.size());
+    const vk::BufferCreateInfo staging_buffer_info = {
+        .size = buffer_size,
+        .usage = vk::BufferUsageFlagBits::eTransferSrc,
+        .sharingMode = vk::SharingMode::eExclusive,
+    };
+
+    const VmaAllocationCreateInfo alloc_create_info = {
+        .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                 VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        .requiredFlags = 0,
+        .preferredFlags = 0,
+        .pool = VK_NULL_HANDLE,
+        .pUserData = nullptr,
+    };
+
+    VkBuffer unsafe_buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo alloc_info{};
+    VkBufferCreateInfo unsafe_buffer_info = static_cast<VkBufferCreateInfo>(staging_buffer_info);
+
+    const VkResult result = vmaCreateBuffer(instance.GetAllocator(), &unsafe_buffer_info,
+                                            &alloc_create_info, &unsafe_buffer, &allocation,
+                                            &alloc_info);
+    if (result != VK_SUCCESS) {
+        return false;
+    }
+
+    std::memcpy(alloc_info.pMappedData, rgba.data(), rgba.size());
+    const vk::Buffer staging_buffer{unsafe_buffer};
+
+    scheduler.Record([dst_image, staging_buffer, width, height](vk::CommandBuffer cmdbuf) {
+        const vk::ImageSubresourceRange range = {
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+
+        const vk::ImageMemoryBarrier pre_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eMemoryRead,
+            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .newLayout = vk::ImageLayout::eTransferDstOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst_image,
+            .subresourceRange = range,
+        };
+
+        const vk::BufferImageCopy image_copy = {
+            .bufferOffset = 0,
+            .bufferRowLength = width,
+            .bufferImageHeight = height,
+            .imageSubresource = {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {width, height, 1},
+        };
+
+        const vk::ImageMemoryBarrier post_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .dstAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eMemoryRead,
+            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst_image,
+            .subresourceRange = range,
+        };
+
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                               vk::PipelineStageFlagBits::eTransfer,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, pre_barrier);
+        cmdbuf.copyBufferToImage(staging_buffer, dst_image, vk::ImageLayout::eTransferDstOptimal,
+                                 image_copy);
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eAllCommands,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, post_barrier);
+    });
+
+    scheduler.Finish();
+    vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
+    return true;
+}
+
 void DirectCopyPresentTextureToFrame(Scheduler& scheduler, vk::Image src_image, vk::Image dst_image,
                                     u32 src_width, u32 src_height, u32 dst_width, u32 dst_height) {
     if (!src_image || !dst_image || src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0) {
@@ -1601,14 +1701,7 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
     if (IsStrictCompatEnabled() &&
         Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off) {
         std::vector<u8> composed_rgba;
-        if (ComposeStrictCompatWindowCanvas(layout, composed_rgba) &&
-            EnsureRGBA8PresentTexture(instance, main_window, screen_infos[0].texture, layout.width,
-                                     layout.height) &&
-            UploadRGBA8ToImage(instance, scheduler, screen_infos[0].texture.image, layout.width,
-                               layout.height, composed_rgba)) {
-            screen_infos[0].image_view = screen_infos[0].texture.image_view;
-            screen_infos[0].texcoords = {0.f, 0.f, 1.f, 1.f};
-
+        if (ComposeStrictCompatWindowCanvas(layout, composed_rgba)) {
             if (IsPresentTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
                          "TRACE_PRESENT cpu_compose_window uploaded=1 width={} height={} top_valid={} bottom_valid={}",
@@ -1618,15 +1711,34 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
                          static_cast<u32>(g_strict_compat_cpu_screens[2].valid));
             }
 
-            if (IsPresentTraceEnabled()) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT cpu_compose_window direct_copy_frame=1 src={}x{} dst={}x{}",
-                         layout.width, layout.height, frame->width, frame->height);
+            if (layout.width == frame->width && layout.height == frame->height &&
+                UploadRGBA8DirectlyToFrameImage(instance, scheduler, frame->image, frame->width,
+                                                frame->height, composed_rgba)) {
+                if (IsPresentTraceEnabled()) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_PRESENT cpu_compose_window direct_upload_frame=1 src={}x{} dst={}x{}",
+                             layout.width, layout.height, frame->width, frame->height);
+                }
+                return;
             }
-            DirectCopyPresentTextureToFrame(scheduler, screen_infos[0].texture.image, frame->image,
-                                            layout.width, layout.height, frame->width,
-                                            frame->height);
-            return;
+
+            if (EnsureRGBA8PresentTexture(instance, main_window, screen_infos[0].texture, layout.width,
+                                         layout.height) &&
+                UploadRGBA8ToImage(instance, scheduler, screen_infos[0].texture.image, layout.width,
+                                   layout.height, composed_rgba)) {
+                screen_infos[0].image_view = screen_infos[0].texture.image_view;
+                screen_infos[0].texcoords = {0.f, 0.f, 1.f, 1.f};
+
+                if (IsPresentTraceEnabled()) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_PRESENT cpu_compose_window direct_copy_frame=1 src={}x{} dst={}x{}",
+                             layout.width, layout.height, frame->width, frame->height);
+                }
+                DirectCopyPresentTextureToFrame(scheduler, screen_infos[0].texture.image, frame->image,
+                                                layout.width, layout.height, frame->width,
+                                                frame->height);
+                return;
+            }
         }
     }
 
