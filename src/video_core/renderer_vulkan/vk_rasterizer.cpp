@@ -766,7 +766,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             return false;
         }
         large_textured_software_draw_index = ++g_vk_large_textured_software_allow_counter;
-        return large_textured_software_draw_index <= 4;
+        return large_textured_software_draw_index <= 1;
     }();
 
     if (!accelerate) {
@@ -815,7 +815,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (large_textured_software_draw && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_large_textured_software_skip_window_v4 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw_v2 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      large_textured_software_draw_index, vertex_batch.size(),
                      regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1452,25 +1452,38 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         return false;
     }
 
-    const Surface& src_surface = res_cache.GetSurface(src_surface_id);
+    Surface& src_surface = res_cache.GetSurface(src_surface_id);
     const u32 scaled_width = src_surface.GetScaledWidth();
     const u32 scaled_height = src_surface.GetScaledHeight();
 
     screen_info.texcoords = Common::Rectangle<f32>(
-        (float)src_rect.bottom / (float)scaled_height, (float)src_rect.left / (float)scaled_width,
-        (float)src_rect.top / (float)scaled_height, (float)src_rect.right / (float)scaled_width);
+        static_cast<float>(src_rect.bottom) / static_cast<float>(scaled_height),
+        static_cast<float>(src_rect.left) / static_cast<float>(scaled_width),
+        static_cast<float>(src_rect.top) / static_cast<float>(scaled_height),
+        static_cast<float>(src_rect.right) / static_cast<float>(scaled_width));
 
-    screen_info.image_view = src_surface.ImageView();
+    const bool strict_compat = IsStrictCompatEnabled();
+    const vk::ImageView base_view = src_surface.ImageView();
+    const vk::ImageView copy_view = src_surface.CopyImageView();
+
+    screen_info.image_view = base_view;
+    if (strict_compat && copy_view) {
+        screen_info.image_view = copy_view;
+    } else if (!screen_info.image_view && copy_view) {
+        screen_info.image_view = copy_view;
+    }
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) view_valid={}",
+                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
-                 src_rect.right, src_rect.top, static_cast<bool>(screen_info.image_view));
+                 src_rect.right, src_rect.top, static_cast<bool>(base_view),
+                 static_cast<bool>(copy_view), static_cast<bool>(screen_info.image_view),
+                 static_cast<u32>(strict_compat));
     }
 
-    return true;
+    return static_cast<bool>(screen_info.image_view);
 }
 
 void RasterizerVulkan::MakeSoftwareVertexLayout() {

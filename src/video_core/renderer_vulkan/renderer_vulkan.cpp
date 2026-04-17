@@ -47,14 +47,6 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
-[[nodiscard]] bool PreferOwnedPresentView() {
-    const char* value = std::getenv("BORKED3DS_V3DV_PREFER_OWNED_PRESENT");
-    if (value != nullptr && value[0] != '\0') {
-        return value[0] != '0';
-    }
-    return IsStrictCompatEnabled();
-}
-
 [[nodiscard]] u32 GetRenderTargetTraceFrameBudget() {
     const char* value = std::getenv("BORKED3DS_V3DV_TRACE_RT_FRAMES");
     if (value == nullptr || value[0] == '\0') {
@@ -265,28 +257,23 @@ void RendererVulkan::PrepareRendertarget() {
 void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& layout) {
     const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
     const auto present_set = present_heap.Commit();
-    const bool prefer_owned_present = PreferOwnedPresentView();
     for (u32 index = 0; index < screen_infos.size(); index++) {
-        const vk::ImageView external_view = screen_infos[index].image_view;
+        const vk::ImageView display_view = screen_infos[index].image_view;
         const vk::ImageView owned_view = screen_infos[index].texture.image_view;
-        vk::ImageView image_view = external_view;
 
-        if (prefer_owned_present && external_view && owned_view && external_view != owned_view) {
+        vk::ImageView image_view = display_view;
+        std::string_view source = "display_view";
+
+        if (!image_view && owned_view) {
             image_view = owned_view;
-            if (IsPresentTraceEnabled() || IsRenderTargetTraceEnabled()) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT prepare_draw force_owned_present_view index={} external_valid={} owned_valid={}",
-                         index, static_cast<bool>(external_view), static_cast<bool>(owned_view));
-            }
+            source = "owned_fallback";
         }
 
-        if (!image_view) {
-            image_view = owned_view;
-            if (IsPresentTraceEnabled()) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT prepare_draw fallback_owned_texture index={} view_valid={}",
-                         index, static_cast<bool>(image_view));
-            }
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT prepare_draw select_view index={} source={} display_valid={} owned_valid={} strict_compat={}",
+                     index, source, static_cast<bool>(display_view), static_cast<bool>(owned_view),
+                     static_cast<u32>(IsStrictCompatEnabled()));
         }
 
         update_queue.AddImageSampler(present_set, 0, index, image_view, sampler);
