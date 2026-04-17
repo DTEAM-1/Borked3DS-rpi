@@ -1472,11 +1472,16 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
         const vk::Image src_image = src_surface.Image();
         const vk::Image dst_image = screen_info.texture.image;
-        const u32 copy_width = std::min<u32>(src_params.width, screen_info.texture.width);
-        const u32 copy_height = std::min<u32>(src_params.height, screen_info.texture.height);
+        const u32 dst_width = std::max<u32>(1, screen_info.texture.width);
+        const u32 dst_height = std::max<u32>(1, screen_info.texture.height);
+        const s32 src_left = static_cast<s32>(src_rect.left);
+        const s32 src_bottom = static_cast<s32>(src_rect.bottom);
+        const s32 src_right = static_cast<s32>(src_rect.right);
+        const s32 src_top = static_cast<s32>(src_rect.top);
 
-        scheduler.Record([src_image, dst_image, copy_width, copy_height](vk::CommandBuffer cmdbuf) {
-            if (!src_image || !dst_image || copy_width == 0 || copy_height == 0) {
+        scheduler.Record([src_image, dst_image, dst_width, dst_height,
+                          src_left, src_bottom, src_right, src_top](vk::CommandBuffer cmdbuf) {
+            if (!src_image || !dst_image || dst_width == 0 || dst_height == 0) {
                 return;
             }
 
@@ -1490,9 +1495,11 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
             const std::array pre_barriers = {
                 vk::ImageMemoryBarrier{
-                    .srcAccessMask = vk::AccessFlagBits::eShaderRead |
+                    .srcAccessMask = vk::AccessFlagBits::eMemoryWrite |
+                                     vk::AccessFlagBits::eShaderRead |
                                      vk::AccessFlagBits::eColorAttachmentWrite |
-                                     vk::AccessFlagBits::eTransferWrite,
+                                     vk::AccessFlagBits::eTransferWrite |
+                                     vk::AccessFlagBits::eTransferRead,
                     .dstAccessMask = vk::AccessFlagBits::eTransferRead,
                     .oldLayout = vk::ImageLayout::eGeneral,
                     .newLayout = vk::ImageLayout::eTransferSrcOptimal,
@@ -1516,8 +1523,10 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
             const std::array post_barriers = {
                 vk::ImageMemoryBarrier{
                     .srcAccessMask = vk::AccessFlagBits::eTransferRead,
-                    .dstAccessMask = vk::AccessFlagBits::eShaderRead |
-                                     vk::AccessFlagBits::eColorAttachmentWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
+                                     vk::AccessFlagBits::eMemoryWrite |
+                                     vk::AccessFlagBits::eColorAttachmentWrite |
+                                     vk::AccessFlagBits::eShaderRead,
                     .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
                     .newLayout = vk::ImageLayout::eGeneral,
                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1537,35 +1546,38 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
                 },
             };
 
-            const vk::ImageCopy copy_region = {
+            const vk::ImageBlit blit_region = {
                 .srcSubresource = {
                     .aspectMask = vk::ImageAspectFlagBits::eColor,
                     .mipLevel = 0,
                     .baseArrayLayer = 0,
                     .layerCount = 1,
                 },
-                .srcOffset = {0, 0, 0},
+                .srcOffsets = std::array{vk::Offset3D{src_left, src_bottom, 0},
+                                         vk::Offset3D{src_right, src_top, 1}},
                 .dstSubresource = {
                     .aspectMask = vk::ImageAspectFlagBits::eColor,
                     .mipLevel = 0,
                     .baseArrayLayer = 0,
                     .layerCount = 1,
                 },
-                .dstOffset = {0, 0, 0},
-                .extent = {copy_width, copy_height, 1},
+                .dstOffsets = std::array{vk::Offset3D{0, 0, 0},
+                                         vk::Offset3D{static_cast<s32>(dst_width), static_cast<s32>(dst_height), 1}},
             };
 
             cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
                                    vk::PipelineStageFlagBits::eTransfer,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, pre_barriers);
-            cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
-                             vk::ImageLayout::eTransferDstOptimal, copy_region);
+            cmdbuf.blitImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
+                             vk::ImageLayout::eTransferDstOptimal, blit_region,
+                             vk::Filter::eNearest);
             cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
                                    vk::PipelineStageFlagBits::eFragmentShader,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, post_barriers);
         });
 
         screen_info.image_view = screen_info.texture.image_view;
+        screen_info.texcoords = Common::Rectangle<f32>(0.0f, 0.0f, 1.0f, 1.0f);
         dedicated_display_copy = static_cast<bool>(screen_info.image_view);
     } else {
         screen_info.image_view = base_view;
