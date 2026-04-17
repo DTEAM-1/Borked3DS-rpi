@@ -1038,6 +1038,10 @@ void GMainWindow::TriggerHotkeyAction(const QString& group, const QString& actio
     if (action == QStringLiteral("Load File")) {
         OnMenuLoadFile();
     } else if (action == QStringLiteral("Exit Borked3DS")) {
+        LOG_INFO(Frontend,
+                 "TRACE_FRONTEND TriggerHotkeyAction requesting_exit_via_hotkey emulation_running={} emu_thread_present={}",
+                 static_cast<u32>(emulation_running), static_cast<u32>(emu_thread != nullptr));
+        MarkFrontendShutdownRequested("TriggerHotkeyAction::Exit Borked3DS");
         close();
     } else if (action == QStringLiteral("Restart Emulation")) {
         if (emu_thread) {
