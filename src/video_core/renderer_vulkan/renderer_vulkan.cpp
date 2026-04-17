@@ -59,6 +59,16 @@ namespace {
 }
 
 
+struct CpuScreenDump {
+    std::vector<u8> rgba;
+    u32 width = 0;
+    u32 height = 0;
+    bool valid = false;
+};
+
+static std::array<CpuScreenDump, 3> g_strict_compat_cpu_screens{};
+
+
 [[nodiscard]] bool DecodeFramebufferToRGBA8(const u8* framebuffer_data, u32 width, u32 height,
                                             u32 pixel_stride, Pica::PixelFormat format,
                                             std::vector<u8>& rgba) {
@@ -134,6 +144,206 @@ namespace {
     default:
         return false;
     }
+}
+
+
+[[nodiscard]] bool EnsureRGBA8PresentTexture(const Instance& instance, PresentWindow& main_window,
+                                             TextureInfo& texture, u32 width, u32 height) {
+    if (width == 0 || height == 0) {
+        return false;
+    }
+
+    vk::Device device = instance.GetDevice();
+    if (texture.image_view && texture.width == width && texture.height == height &&
+        texture.format == Pica::PixelFormat::RGBA8) {
+        return true;
+    }
+
+    if (texture.image_view) {
+        main_window.WaitPresent();
+        device.destroyImageView(texture.image_view);
+        texture.image_view = nullptr;
+    }
+    if (texture.image) {
+        main_window.WaitPresent();
+        vmaDestroyImage(instance.GetAllocator(), texture.image, texture.allocation);
+        texture.image = nullptr;
+        texture.allocation = nullptr;
+    }
+
+    const vk::ImageCreateInfo image_info = {
+        .imageType = vk::ImageType::e2D,
+        .format = vk::Format::eR8G8B8A8Unorm,
+        .extent = {width, height, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
+        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+        .sharingMode = vk::SharingMode::eExclusive,
+        .initialLayout = vk::ImageLayout::eUndefined,
+    };
+
+    const VmaAllocationCreateInfo alloc_info = {
+        .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+        .requiredFlags = 0,
+        .preferredFlags = 0,
+        .pool = VK_NULL_HANDLE,
+        .pUserData = nullptr,
+    };
+
+    VkImage unsafe_image{};
+    VkImageCreateInfo unsafe_image_info = static_cast<VkImageCreateInfo>(image_info);
+    const VkResult result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &alloc_info,
+                                           &unsafe_image, &texture.allocation, nullptr);
+    if (result != VK_SUCCESS) [[unlikely]] {
+        LOG_CRITICAL(Render_Vulkan, "Failed allocating present texture with error {}", result);
+        return false;
+    }
+    texture.image = vk::Image{unsafe_image};
+
+    const vk::ImageViewCreateInfo view_info = {
+        .image = texture.image,
+        .viewType = vk::ImageViewType::e2D,
+        .format = vk::Format::eR8G8B8A8Unorm,
+        .subresourceRange{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    };
+
+    texture.image_view = device.createImageView(view_info);
+    texture.width = width;
+    texture.height = height;
+    texture.format = Pica::PixelFormat::RGBA8;
+    return true;
+}
+
+void BlitCpuScreenToCanvas(const CpuScreenDump& screen, std::vector<u8>& canvas, u32 canvas_width,
+                           u32 canvas_height, const Common::Rectangle<u32>& rect,
+                           Layout::DisplayOrientation orientation) {
+    if (!screen.valid || screen.rgba.empty() || canvas.empty()) {
+        return;
+    }
+
+    const u32 dst_w = rect.GetWidth();
+    const u32 dst_h = rect.GetHeight();
+    if (dst_w == 0 || dst_h == 0) {
+        return;
+    }
+
+    const auto sample = [&](u32 sx, u32 sy, std::size_t channel) -> u8 {
+        sx = std::min(sx, screen.width - 1);
+        sy = std::min(sy, screen.height - 1);
+        const std::size_t index =
+            (static_cast<std::size_t>(sy) * static_cast<std::size_t>(screen.width) +
+             static_cast<std::size_t>(sx)) * 4 + channel;
+        return screen.rgba[index];
+    };
+
+    for (u32 dy = 0; dy < dst_h; ++dy) {
+        const u32 py = rect.top + dy;
+        if (py >= canvas_height) {
+            continue;
+        }
+        for (u32 dx = 0; dx < dst_w; ++dx) {
+            const u32 px = rect.left + dx;
+            if (px >= canvas_width) {
+                continue;
+            }
+
+            u32 sx = 0;
+            u32 sy = 0;
+            switch (orientation) {
+            case Layout::DisplayOrientation::Landscape:
+                sx = static_cast<u32>((static_cast<u64>(dx) * screen.width) / std::max<u32>(1, dst_w));
+                sy = static_cast<u32>((static_cast<u64>(dy) * screen.height) / std::max<u32>(1, dst_h));
+                break;
+            case Layout::DisplayOrientation::Portrait:
+                sx = static_cast<u32>((static_cast<u64>(dy) * screen.width) / std::max<u32>(1, dst_h));
+                sy = screen.height - 1 -
+                     static_cast<u32>((static_cast<u64>(dx) * screen.height) /
+                                      std::max<u32>(1, dst_w));
+                break;
+            case Layout::DisplayOrientation::LandscapeFlipped:
+                sx = screen.width - 1 -
+                     static_cast<u32>((static_cast<u64>(dx) * screen.width) / std::max<u32>(1, dst_w));
+                sy = screen.height - 1 -
+                     static_cast<u32>((static_cast<u64>(dy) * screen.height) / std::max<u32>(1, dst_h));
+                break;
+            case Layout::DisplayOrientation::PortraitFlipped:
+                sx = screen.width - 1 -
+                     static_cast<u32>((static_cast<u64>(dy) * screen.width) / std::max<u32>(1, dst_h));
+                sy = static_cast<u32>((static_cast<u64>(dx) * screen.height) / std::max<u32>(1, dst_w));
+                break;
+            default:
+                break;
+            }
+
+            const std::size_t dst_index =
+                (static_cast<std::size_t>(py) * static_cast<std::size_t>(canvas_width) +
+                 static_cast<std::size_t>(px)) * 4;
+            canvas[dst_index + 0] = sample(sx, sy, 0);
+            canvas[dst_index + 1] = sample(sx, sy, 1);
+            canvas[dst_index + 2] = sample(sx, sy, 2);
+            canvas[dst_index + 3] = sample(sx, sy, 3);
+        }
+    }
+}
+
+[[nodiscard]] bool ComposeStrictCompatWindowCanvas(const Layout::FramebufferLayout& layout,
+                                                   std::vector<u8>& canvas) {
+    if (Settings::values.render_3d.GetValue() != Settings::StereoRenderOption::Off) {
+        return false;
+    }
+
+    canvas.assign(static_cast<std::size_t>(layout.width) * static_cast<std::size_t>(layout.height) * 4, 0);
+
+    const auto orientation = layout.is_rotated ? Layout::DisplayOrientation::Landscape
+                                               : Layout::DisplayOrientation::Portrait;
+
+    const int mono_eye = static_cast<int>(Settings::values.mono_render_option.GetValue());
+    const u32 top_screen_id = mono_eye >= 0 && mono_eye < 2 ? static_cast<u32>(mono_eye) : 0;
+    const u32 bottom_screen_id = 2;
+
+    const auto draw_top = [&](const Common::Rectangle<u32>& rect) {
+        BlitCpuScreenToCanvas(g_strict_compat_cpu_screens[top_screen_id], canvas, layout.width,
+                              layout.height, rect, orientation);
+    };
+    const auto draw_bottom = [&](const Common::Rectangle<u32>& rect) {
+        BlitCpuScreenToCanvas(g_strict_compat_cpu_screens[bottom_screen_id], canvas, layout.width,
+                              layout.height, rect, orientation);
+    };
+
+    if (!Settings::values.swap_screen.GetValue()) {
+        if (layout.top_screen_enabled) {
+            draw_top(layout.top_screen);
+        }
+        if (layout.bottom_screen_enabled) {
+            draw_bottom(layout.bottom_screen);
+        }
+    } else {
+        if (layout.bottom_screen_enabled) {
+            draw_bottom(layout.bottom_screen);
+        }
+        if (layout.top_screen_enabled) {
+            draw_top(layout.top_screen);
+        }
+    }
+
+    if (layout.additional_screen_enabled) {
+        if (!Settings::values.swap_screen.GetValue()) {
+            draw_top(layout.additional_screen);
+        } else {
+            draw_bottom(layout.additional_screen);
+        }
+    }
+
+    return true;
 }
 
 [[nodiscard]] bool UploadRGBA8ToImage(const Instance& instance, Scheduler& scheduler,
@@ -432,29 +642,35 @@ void RendererVulkan::PrepareRendertarget() {
 }
 
 void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& layout) {
-    const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
-    const auto present_set = present_heap.Commit();
-    for (u32 index = 0; index < screen_infos.size(); index++) {
-        const vk::ImageView display_view = screen_infos[index].image_view;
-        const vk::ImageView owned_view = screen_infos[index].texture.image_view;
-
-        vk::ImageView image_view = display_view ? display_view : owned_view;
-        std::string_view source = display_view ? "display_view" : "owned_fallback";
-
-        if (IsPresentTraceEnabled()) {
+    if (IsPresentTraceEnabled()) {
+        for (u32 index = 0; index < screen_infos.size(); index++) {
+            const vk::ImageView display_view = screen_infos[index].image_view;
+            const vk::ImageView owned_view = screen_infos[index].texture.image_view;
+            const bool use_display = static_cast<bool>(display_view);
+            const std::string_view source = use_display ? "display_view" : "owned_fallback";
             LOG_INFO(Render_Vulkan,
                      "TRACE_PRESENT prepare_draw select_view index={} source={} display_valid={} owned_valid={} strict_compat={}",
                      index, source, static_cast<bool>(display_view), static_cast<bool>(owned_view),
                      static_cast<u32>(IsStrictCompatEnabled()));
         }
-
-        update_queue.AddImageSampler(present_set, 0, index, image_view, sampler);
     }
-    update_queue.Flush();
+
+    const bool strict_compat = IsStrictCompatEnabled();
+    const auto present_set = strict_compat ? vk::DescriptorSet{} : present_heap.Commit();
+    if (!strict_compat) {
+        const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
+        for (u32 index = 0; index < screen_infos.size(); index++) {
+            const vk::ImageView display_view = screen_infos[index].image_view;
+            const vk::ImageView owned_view = screen_infos[index].texture.image_view;
+            const vk::ImageView image_view = display_view ? display_view : owned_view;
+            update_queue.AddImageSampler(present_set, 0, index, image_view, sampler);
+        }
+        update_queue.Flush();
+    }
 
     renderpass_cache.EndRendering();
     scheduler.Record([this, layout, frame, present_set, renderpass = main_window.Renderpass(),
-                      index = current_pipeline](vk::CommandBuffer cmdbuf) {
+                      index = current_pipeline, strict_compat](vk::CommandBuffer cmdbuf) {
         const vk::Viewport viewport = {
             .x = 0.0f,
             .y = 0.0f,
@@ -473,7 +689,7 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
         cmdbuf.setScissor(0, scissor);
 
         const vk::ClearValue clear{.color = clear_color};
-        const vk::PipelineLayout layout{*present_pipeline_layout};
+        const vk::PipelineLayout pipeline_layout{*present_pipeline_layout};
         const vk::RenderPassBeginInfo renderpass_begin_info = {
             .renderPass = renderpass,
             .framebuffer = frame->framebuffer,
@@ -488,7 +704,10 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
 
         cmdbuf.beginRenderPass(renderpass_begin_info, vk::SubpassContents::eInline);
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, present_pipelines[index]);
-        cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 0, present_set, {});
+        if (!strict_compat) {
+            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0,
+                                      present_set, {});
+        }
     });
 }
 
@@ -576,6 +795,18 @@ bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuff
                               UploadRGBA8ToImage(instance, scheduler, screen_info.texture.image,
                                                  framebuffer.width.Value(), framebuffer.height.Value(),
                                                  rgba);
+
+        const std::size_t screen_index = static_cast<std::size_t>(&screen_info - screen_infos.data());
+        if (screen_index < g_strict_compat_cpu_screens.size()) {
+            if (uploaded) {
+                g_strict_compat_cpu_screens[screen_index].rgba = rgba;
+                g_strict_compat_cpu_screens[screen_index].width = framebuffer.width.Value();
+                g_strict_compat_cpu_screens[screen_index].height = framebuffer.height.Value();
+                g_strict_compat_cpu_screens[screen_index].valid = true;
+            } else {
+                g_strict_compat_cpu_screens[screen_index] = {};
+            }
+        }
 
         screen_info.image_view = uploaded ? screen_info.texture.image_view : vk::ImageView{};
         screen_info.texcoords = {0.f, 0.f, 1.f, 1.f};
@@ -985,12 +1216,33 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
     draw_info.o_resolution = Common::MakeVec(h, w, 1.0f / h, 1.0f / w);
     draw_info.screen_id_l = screen_id;
 
-    scheduler.Record([this, offset = offset, info = draw_info](vk::CommandBuffer cmdbuf) {
+    const bool strict_compat = IsStrictCompatEnabled();
+    const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
+    const auto present_set = strict_compat ? present_heap.Commit() : vk::DescriptorSet{};
+    if (strict_compat) {
+        const vk::ImageView image_view = screen_info.image_view ? screen_info.image_view
+                                                                : screen_info.texture.image_view;
+        for (u32 i = 0; i < 3; ++i) {
+            update_queue.AddImageSampler(present_set, 0, i, image_view, sampler);
+        }
+        update_queue.Flush();
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT compat_bind_single screen_id={} duplicated_view_valid={} strict_compat=1",
+                     screen_id, static_cast<bool>(image_view));
+        }
+    }
+
+    scheduler.Record([this, offset = offset, info = draw_info, present_set, strict_compat](vk::CommandBuffer cmdbuf) {
         const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
         cmdbuf.pushConstants(*present_pipeline_layout,
                              vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eVertex,
                              0, sizeof(info), &info);
 
+        if (strict_compat) {
+            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *present_pipeline_layout,
+                                      0, present_set, {});
+        }
         cmdbuf.bindVertexBuffers(0, vertex_buffer.Handle(), {0});
         cmdbuf.draw(4, 1, first_vertex, 0);
     });
@@ -1058,12 +1310,39 @@ void RendererVulkan::DrawSingleScreenStereo(u32 screen_id_l, u32 screen_id_r, fl
     draw_info.screen_id_l = screen_id_l;
     draw_info.screen_id_r = screen_id_r;
 
-    scheduler.Record([this, offset = offset, info = draw_info](vk::CommandBuffer cmdbuf) {
+    const bool strict_compat = IsStrictCompatEnabled();
+    const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
+    const auto present_set = strict_compat ? present_heap.Commit() : vk::DescriptorSet{};
+    if (strict_compat) {
+        const vk::ImageView left_view = screen_infos[screen_id_l].image_view
+                                            ? screen_infos[screen_id_l].image_view
+                                            : screen_infos[screen_id_l].texture.image_view;
+        const vk::ImageView right_view = screen_infos[screen_id_r].image_view
+                                             ? screen_infos[screen_id_r].image_view
+                                             : screen_infos[screen_id_r].texture.image_view;
+        for (u32 i = 0; i < 3; ++i) {
+            const vk::ImageView view = (i == screen_id_r) ? right_view : left_view;
+            update_queue.AddImageSampler(present_set, 0, i, view, sampler);
+        }
+        update_queue.Flush();
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT compat_bind_stereo screen_id_l={} screen_id_r={} left_valid={} right_valid={} strict_compat=1",
+                     screen_id_l, screen_id_r, static_cast<bool>(left_view),
+                     static_cast<bool>(right_view));
+        }
+    }
+
+    scheduler.Record([this, offset = offset, info = draw_info, present_set, strict_compat](vk::CommandBuffer cmdbuf) {
         const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
         cmdbuf.pushConstants(*present_pipeline_layout,
                              vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eVertex,
                              0, sizeof(info), &info);
 
+        if (strict_compat) {
+            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *present_pipeline_layout,
+                                      0, present_set, {});
+        }
         cmdbuf.bindVertexBuffers(0, vertex_buffer.Handle(), {0});
         cmdbuf.draw(4, 1, first_vertex, 0);
     });
@@ -1220,6 +1499,77 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
     }
     if (settings.shader_update_requested.exchange(false)) {
         ReloadPipeline();
+    }
+
+    if (IsStrictCompatEnabled() &&
+        Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off) {
+        std::vector<u8> composed_rgba;
+        if (ComposeStrictCompatWindowCanvas(layout, composed_rgba) &&
+            EnsureRGBA8PresentTexture(instance, main_window, screen_infos[0].texture, layout.width,
+                                     layout.height) &&
+            UploadRGBA8ToImage(instance, scheduler, screen_infos[0].texture.image, layout.width,
+                               layout.height, composed_rgba)) {
+            screen_infos[0].image_view = screen_infos[0].texture.image_view;
+            screen_infos[0].texcoords = {0.f, 0.f, 1.f, 1.f};
+
+            if (IsPresentTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT cpu_compose_window uploaded=1 width={} height={} top_valid={} bottom_valid={}",
+                         layout.width, layout.height,
+                         static_cast<u32>(g_strict_compat_cpu_screens[0].valid ||
+                                          g_strict_compat_cpu_screens[1].valid),
+                         static_cast<u32>(g_strict_compat_cpu_screens[2].valid));
+            }
+
+            PrepareDraw(frame, layout);
+            draw_info.modelview = MakeOrthographicMatrix(layout.width, layout.height);
+            draw_info.layer = 0;
+            draw_info.screen_id_l = 0;
+            draw_info.screen_id_r = 0;
+            draw_info.i_resolution =
+                Common::MakeVec(static_cast<f32>(layout.width), static_cast<f32>(layout.height),
+                                1.0f / static_cast<f32>(layout.width),
+                                1.0f / static_cast<f32>(layout.height));
+            draw_info.o_resolution =
+                Common::MakeVec(static_cast<f32>(layout.height), static_cast<f32>(layout.width),
+                                1.0f / static_cast<f32>(layout.height),
+                                1.0f / static_cast<f32>(layout.width));
+
+            std::array<ScreenRectVertex, 4> vertices = {{
+                ScreenRectVertex(0.0f, 0.0f, 0.0f, 0.0f),
+                ScreenRectVertex(static_cast<float>(layout.width), 0.0f, 1.0f, 0.0f),
+                ScreenRectVertex(0.0f, static_cast<float>(layout.height), 0.0f, 1.0f),
+                ScreenRectVertex(static_cast<float>(layout.width), static_cast<float>(layout.height),
+                                 1.0f, 1.0f),
+            }};
+
+            const u64 size = sizeof(ScreenRectVertex) * vertices.size();
+            auto [data, offset, invalidate] = vertex_buffer.Map(size, 16);
+            std::memcpy(data, vertices.data(), size);
+            vertex_buffer.Commit(size);
+
+            const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
+            const auto present_set = present_heap.Commit();
+            for (u32 i = 0; i < 3; ++i) {
+                update_queue.AddImageSampler(present_set, 0, i, screen_infos[0].image_view, sampler);
+            }
+            update_queue.Flush();
+
+            scheduler.Record([this, offset = offset, info = draw_info, present_set](vk::CommandBuffer cmdbuf) {
+                const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
+                cmdbuf.pushConstants(*present_pipeline_layout,
+                                     vk::ShaderStageFlagBits::eFragment |
+                                         vk::ShaderStageFlagBits::eVertex,
+                                     0, sizeof(info), &info);
+                cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *present_pipeline_layout,
+                                          0, present_set, {});
+                cmdbuf.bindVertexBuffers(0, vertex_buffer.Handle(), {0});
+                cmdbuf.draw(4, 1, first_vertex, 0);
+            });
+
+            scheduler.Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRenderPass(); });
+            return;
+        }
     }
 
     PrepareDraw(frame, layout);
