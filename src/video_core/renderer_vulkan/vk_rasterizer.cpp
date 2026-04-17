@@ -1466,21 +1466,124 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
     const vk::ImageView base_view = src_surface.ImageView();
     const vk::ImageView copy_view = src_surface.CopyImageView();
 
-    screen_info.image_view = base_view;
-    if (strict_compat && copy_view) {
-        screen_info.image_view = copy_view;
-    } else if (!screen_info.image_view && copy_view) {
-        screen_info.image_view = copy_view;
+    bool dedicated_display_copy = false;
+    if (strict_compat && src_surface.Image() && screen_info.texture.image && screen_info.texture.image_view) {
+        renderpass_cache.EndRendering();
+
+        const vk::Image src_image = src_surface.Image();
+        const vk::Image dst_image = screen_info.texture.image;
+        const u32 copy_width = std::min<u32>(src_params.width, screen_info.texture.width);
+        const u32 copy_height = std::min<u32>(src_params.height, screen_info.texture.height);
+
+        scheduler.Record([src_image, dst_image, copy_width, copy_height](vk::CommandBuffer cmdbuf) {
+            if (!src_image || !dst_image || copy_width == 0 || copy_height == 0) {
+                return;
+            }
+
+            const vk::ImageSubresourceRange range = {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            };
+
+            const std::array pre_barriers = {
+                vk::ImageMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eShaderRead |
+                                     vk::AccessFlagBits::eColorAttachmentWrite |
+                                     vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                    .oldLayout = vk::ImageLayout::eGeneral,
+                    .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = src_image,
+                    .subresourceRange = range,
+                },
+                vk::ImageMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eNone,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .oldLayout = vk::ImageLayout::eUndefined,
+                    .newLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = dst_image,
+                    .subresourceRange = range,
+                },
+            };
+
+            const std::array post_barriers = {
+                vk::ImageMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                    .dstAccessMask = vk::AccessFlagBits::eShaderRead |
+                                     vk::AccessFlagBits::eColorAttachmentWrite,
+                    .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = src_image,
+                    .subresourceRange = range,
+                },
+                vk::ImageMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                    .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = dst_image,
+                    .subresourceRange = range,
+                },
+            };
+
+            const vk::ImageCopy copy_region = {
+                .srcSubresource = {
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .mipLevel = 0,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .srcOffset = {0, 0, 0},
+                .dstSubresource = {
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .mipLevel = 0,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .dstOffset = {0, 0, 0},
+                .extent = {copy_width, copy_height, 1},
+            };
+
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                   vk::PipelineStageFlagBits::eTransfer,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, pre_barriers);
+            cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
+                             vk::ImageLayout::eTransferDstOptimal, copy_region);
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                   vk::PipelineStageFlagBits::eFragmentShader,
+                                   vk::DependencyFlagBits::eByRegion, {}, {}, post_barriers);
+        });
+
+        screen_info.image_view = screen_info.texture.image_view;
+        dedicated_display_copy = static_cast<bool>(screen_info.image_view);
+    } else {
+        screen_info.image_view = base_view;
+        if (strict_compat && copy_view) {
+            screen_info.image_view = copy_view;
+        } else if (!screen_info.image_view && copy_view) {
+            screen_info.image_view = copy_view;
+        }
     }
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={}",
+                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} dedicated_owned_valid={} chosen={} strict_compat={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
                  src_rect.right, src_rect.top, static_cast<bool>(base_view),
-                 static_cast<bool>(copy_view), static_cast<bool>(screen_info.image_view),
-                 static_cast<u32>(strict_compat));
+                 static_cast<bool>(copy_view), static_cast<u32>(dedicated_display_copy),
+                 static_cast<bool>(screen_info.image_view), static_cast<u32>(strict_compat));
     }
 
     return static_cast<bool>(screen_info.image_view);

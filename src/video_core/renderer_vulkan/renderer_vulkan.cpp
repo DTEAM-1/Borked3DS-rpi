@@ -258,21 +258,16 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
     const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
     const auto present_set = present_heap.Commit();
     for (u32 index = 0; index < screen_infos.size(); index++) {
-        const vk::ImageView display_view = screen_infos[index].image_view;
+        const vk::ImageView selected_view = screen_infos[index].image_view;
         const vk::ImageView owned_view = screen_infos[index].texture.image_view;
 
-        vk::ImageView image_view = display_view;
-        std::string_view source = "display_view";
-
-        if (!image_view && owned_view) {
-            image_view = owned_view;
-            source = "owned_fallback";
-        }
+        vk::ImageView image_view = selected_view ? selected_view : owned_view;
+        std::string_view source = selected_view ? "screen_info_view" : "owned_fallback";
 
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT prepare_draw select_view index={} source={} display_valid={} owned_valid={} strict_compat={}",
-                     index, source, static_cast<bool>(display_view), static_cast<bool>(owned_view),
+                     "TRACE_PRESENT prepare_draw select_view index={} source={} selected_valid={} owned_valid={} strict_compat={}",
+                     index, source, static_cast<bool>(selected_view), static_cast<bool>(owned_view),
                      static_cast<u32>(IsStrictCompatEnabled()));
         }
 
