@@ -1432,6 +1432,16 @@ bool RasterizerVulkan::AccelerateFill(const Pica::MemoryFillConfig& config) {
 bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
                                          PAddr framebuffer_addr, u32 pixel_stride,
                                          ScreenInfo& screen_info) {
+    if (IsStrictCompatEnabled()) {
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_DRAW accelerate_display bypass_cpu_present addr=0x{:08x} pixel_stride={} format={} strict_compat=1",
+                     framebuffer_addr, pixel_stride,
+                     static_cast<u32>(config.color_format.Value()));
+        }
+        return false;
+    }
+
     if (framebuffer_addr == 0) [[unlikely]] {
         return false;
     }

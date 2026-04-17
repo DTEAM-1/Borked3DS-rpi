@@ -5,6 +5,8 @@
 
 #include "common/assert.h"
 #include <algorithm>
+#include <vector>
+#include "common/color.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -54,6 +56,181 @@ namespace {
     }
     const long parsed = std::strtol(value, nullptr, 10);
     return parsed > 0 ? static_cast<u32>(parsed) : 3u;
+}
+
+
+[[nodiscard]] bool DecodeFramebufferToRGBA8(const u8* framebuffer_data, u32 width, u32 height,
+                                            u32 pixel_stride, Pica::PixelFormat format,
+                                            std::vector<u8>& rgba) {
+    if (framebuffer_data == nullptr || width == 0 || height == 0 || pixel_stride == 0) {
+        return false;
+    }
+
+    const u32 copy_width = std::min(width, pixel_stride);
+    rgba.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4, 0);
+
+    auto write_pixel = [&](u32 x, u32 y, u8 r, u8 g, u8 b, u8 a) {
+        const std::size_t offset =
+            (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+             static_cast<std::size_t>(x)) *
+            4;
+        rgba[offset + 0] = r;
+        rgba[offset + 1] = g;
+        rgba[offset + 2] = b;
+        rgba[offset + 3] = a;
+    };
+
+    switch (format) {
+    case Pica::PixelFormat::RGBA8:
+        for (u32 y = 0; y < height; ++y) {
+            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 4);
+            for (u32 x = 0; x < copy_width; ++x) {
+                const auto color = Common::Color::DecodeRGBA8(src_row + static_cast<std::size_t>(x) * 4);
+                write_pixel(x, y, color.r(), color.g(), color.b(), color.a());
+            }
+        }
+        return true;
+
+    case Pica::PixelFormat::RGB8:
+        for (u32 y = 0; y < height; ++y) {
+            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 3);
+            for (u32 x = 0; x < copy_width; ++x) {
+                const auto color = Common::Color::DecodeRGB8(src_row + static_cast<std::size_t>(x) * 3);
+                write_pixel(x, y, color.r(), color.g(), color.b(), 255);
+            }
+        }
+        return true;
+
+    case Pica::PixelFormat::RGB565:
+        for (u32 y = 0; y < height; ++y) {
+            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 2);
+            for (u32 x = 0; x < copy_width; ++x) {
+                const auto color = Common::Color::DecodeRGB565(src_row + static_cast<std::size_t>(x) * 2);
+                write_pixel(x, y, color.r(), color.g(), color.b(), 255);
+            }
+        }
+        return true;
+
+    case Pica::PixelFormat::RGB5A1:
+        for (u32 y = 0; y < height; ++y) {
+            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 2);
+            for (u32 x = 0; x < copy_width; ++x) {
+                const auto color = Common::Color::DecodeRGB5A1(src_row + static_cast<std::size_t>(x) * 2);
+                write_pixel(x, y, color.r(), color.g(), color.b(), color.a());
+            }
+        }
+        return true;
+
+    case Pica::PixelFormat::RGBA4:
+        for (u32 y = 0; y < height; ++y) {
+            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 2);
+            for (u32 x = 0; x < copy_width; ++x) {
+                const auto color = Common::Color::DecodeRGBA4(src_row + static_cast<std::size_t>(x) * 2);
+                write_pixel(x, y, color.r(), color.g(), color.b(), color.a());
+            }
+        }
+        return true;
+
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] bool UploadRGBA8ToImage(const Instance& instance, Scheduler& scheduler,
+                                      vk::Image dst_image, u32 width, u32 height,
+                                      const std::vector<u8>& rgba) {
+    if (!dst_image || width == 0 || height == 0 || rgba.empty()) {
+        return false;
+    }
+
+    const vk::BufferCreateInfo staging_buffer_info = {
+        .size = static_cast<vk::DeviceSize>(rgba.size()),
+        .usage = vk::BufferUsageFlagBits::eTransferSrc,
+    };
+
+    const VmaAllocationCreateInfo alloc_create_info = {
+        .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                 VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        .requiredFlags = 0,
+        .preferredFlags = 0,
+        .pool = VK_NULL_HANDLE,
+        .pUserData = nullptr,
+    };
+
+    VkBuffer unsafe_buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo alloc_info{};
+    VkBufferCreateInfo unsafe_buffer_info = static_cast<VkBufferCreateInfo>(staging_buffer_info);
+
+    const VkResult result = vmaCreateBuffer(instance.GetAllocator(), &unsafe_buffer_info,
+                                            &alloc_create_info, &unsafe_buffer, &allocation,
+                                            &alloc_info);
+    if (result != VK_SUCCESS) {
+        return false;
+    }
+
+    std::memcpy(alloc_info.pMappedData, rgba.data(), rgba.size());
+    const vk::Buffer staging_buffer{unsafe_buffer};
+
+    scheduler.Record([dst_image, staging_buffer, width, height](vk::CommandBuffer cmdbuf) {
+        const vk::ImageSubresourceRange range = {
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+
+        const vk::ImageMemoryBarrier pre_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eNone,
+            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eTransferDstOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst_image,
+            .subresourceRange = range,
+        };
+
+        const vk::BufferImageCopy image_copy = {
+            .bufferOffset = 0,
+            .bufferRowLength = width,
+            .bufferImageHeight = height,
+            .imageSubresource = {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {width, height, 1},
+        };
+
+        const vk::ImageMemoryBarrier post_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst_image,
+            .subresourceRange = range,
+        };
+
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+                               vk::PipelineStageFlagBits::eTransfer,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, pre_barrier);
+        cmdbuf.copyBufferToImage(staging_buffer, dst_image, vk::ImageLayout::eTransferDstOptimal,
+                                 image_copy);
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eFragmentShader,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, post_barrier);
+    });
+
+    scheduler.Finish();
+    vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
+    return true;
 }
 
 struct RenderTargetTraceStats {
@@ -233,8 +410,8 @@ void RendererVulkan::PrepareRendertarget() {
             continue;
         }
 
-        if (texture.width != framebuffer.width || texture.height != framebuffer.height ||
-            texture.format != framebuffer.color_format) {
+        if (IsStrictCompatEnabled() || texture.width != framebuffer.width ||
+            texture.height != framebuffer.height || texture.format != framebuffer.color_format) {
             if (!ConfigureFramebufferTexture(texture, framebuffer)) {
                 continue;
             }
@@ -387,6 +564,29 @@ bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuff
         LOG_INFO(Render_Vulkan,
                  "TRACE_PRESENT load_fb_to_screen permissive_unaligned_stride addr=0x{:08X} pixel_stride={}",
                  framebuffer_addr, pixel_stride);
+    }
+
+    if (IsStrictCompatEnabled()) {
+        const u8* framebuffer_data = memory.GetPhysicalPointer(framebuffer_addr);
+        std::vector<u8> rgba;
+        const bool decoded = DecodeFramebufferToRGBA8(
+            framebuffer_data, framebuffer.width.Value(), framebuffer.height.Value(),
+            static_cast<u32>(pixel_stride), framebuffer.color_format, rgba);
+        const bool uploaded = decoded &&
+                              UploadRGBA8ToImage(instance, scheduler, screen_info.texture.image,
+                                                 framebuffer.width.Value(), framebuffer.height.Value(),
+                                                 rgba);
+
+        screen_info.image_view = uploaded ? screen_info.texture.image_view : vk::ImageView{};
+        screen_info.texcoords = {0.f, 0.f, 1.f, 1.f};
+
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT load_fb_to_screen result accelerated=0 cpu_upload={} decoded={} addr=0x{:08X} pixel_stride={} width={} height={}",
+                     static_cast<u32>(uploaded), static_cast<u32>(decoded), framebuffer_addr,
+                     pixel_stride, framebuffer.width.Value(), framebuffer.height.Value());
+        }
+        return uploaded;
     }
 
     const bool accelerated =
