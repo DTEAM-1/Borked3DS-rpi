@@ -179,7 +179,8 @@ static std::array<CpuScreenDump, 3> g_strict_compat_cpu_screens{};
         .arrayLayers = 1,
         .samples = vk::SampleCountFlagBits::e1,
         .tiling = vk::ImageTiling::eOptimal,
-        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
+        vk::ImageUsageFlagBits::eTransferSrc,
         .sharingMode = vk::SharingMode::eExclusive,
         .initialLayout = vk::ImageLayout::eUndefined,
     };
@@ -441,6 +442,101 @@ void BlitCpuScreenToCanvas(const CpuScreenDump& screen, std::vector<u8>& canvas,
     scheduler.Finish();
     vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
     return true;
+}
+
+void DirectCopyPresentTextureToFrame(Scheduler& scheduler, vk::Image src_image, vk::Image dst_image,
+                                    u32 src_width, u32 src_height, u32 dst_width, u32 dst_height) {
+    if (!src_image || !dst_image || src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0) {
+        return;
+    }
+
+    scheduler.Record([src_image, dst_image, src_width, src_height, dst_width, dst_height](vk::CommandBuffer cmdbuf) {
+        const vk::ImageSubresourceRange range = {
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+
+        const vk::ImageMemoryBarrier src_pre_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eShaderRead,
+            .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+            .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = src_image,
+            .subresourceRange = range,
+        };
+
+        const vk::ImageMemoryBarrier dst_pre_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eNone,
+            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eTransferDstOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst_image,
+            .subresourceRange = range,
+        };
+
+        const vk::ImageCopy image_copy = {
+            .srcSubresource = {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .srcOffset = {0, 0, 0},
+            .dstSubresource = {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .dstOffset = {0, 0, 0},
+            .extent = {
+                std::min(src_width, dst_width),
+                std::min(src_height, dst_height),
+                1,
+            },
+        };
+
+        const vk::ImageMemoryBarrier src_post_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+            .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = src_image,
+            .subresourceRange = range,
+        };
+
+        const vk::ImageMemoryBarrier dst_post_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dst_image,
+            .subresourceRange = range,
+        };
+
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader,
+                               vk::PipelineStageFlagBits::eTransfer,
+                               vk::DependencyFlagBits::eByRegion, {}, {},
+                               std::array{src_pre_barrier, dst_pre_barrier});
+        cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal,
+                         dst_image, vk::ImageLayout::eTransferDstOptimal,
+                         image_copy);
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eAllCommands,
+                               vk::DependencyFlagBits::eByRegion, {}, {},
+                               std::array{src_post_barrier, dst_post_barrier});
+    });
 }
 
 struct RenderTargetTraceStats {
@@ -1039,7 +1135,8 @@ bool RendererVulkan::ConfigureFramebufferTexture(TextureInfo& texture,
         .arrayLayers = 1,
         .samples = vk::SampleCountFlagBits::e1,
         .tiling = vk::ImageTiling::eOptimal,
-        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
+        vk::ImageUsageFlagBits::eTransferSrc,
         .sharingMode = vk::SharingMode::eExclusive,
         .initialLayout = vk::ImageLayout::eUndefined,
     };
@@ -1521,53 +1618,14 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
                          static_cast<u32>(g_strict_compat_cpu_screens[2].valid));
             }
 
-            PrepareDraw(frame, layout);
-            draw_info.modelview = MakeOrthographicMatrix(layout.width, layout.height);
-            draw_info.layer = 0;
-            draw_info.screen_id_l = 0;
-            draw_info.screen_id_r = 0;
-            draw_info.i_resolution =
-                Common::MakeVec(static_cast<f32>(layout.width), static_cast<f32>(layout.height),
-                                1.0f / static_cast<f32>(layout.width),
-                                1.0f / static_cast<f32>(layout.height));
-            draw_info.o_resolution =
-                Common::MakeVec(static_cast<f32>(layout.height), static_cast<f32>(layout.width),
-                                1.0f / static_cast<f32>(layout.height),
-                                1.0f / static_cast<f32>(layout.width));
-
-            std::array<ScreenRectVertex, 4> vertices = {{
-                ScreenRectVertex(0.0f, 0.0f, 0.0f, 0.0f),
-                ScreenRectVertex(static_cast<float>(layout.width), 0.0f, 1.0f, 0.0f),
-                ScreenRectVertex(0.0f, static_cast<float>(layout.height), 0.0f, 1.0f),
-                ScreenRectVertex(static_cast<float>(layout.width), static_cast<float>(layout.height),
-                                 1.0f, 1.0f),
-            }};
-
-            const u64 size = sizeof(ScreenRectVertex) * vertices.size();
-            auto [data, offset, invalidate] = vertex_buffer.Map(size, 16);
-            std::memcpy(data, vertices.data(), size);
-            vertex_buffer.Commit(size);
-
-            const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
-            const auto present_set = present_heap.Commit();
-            for (u32 i = 0; i < 3; ++i) {
-                update_queue.AddImageSampler(present_set, 0, i, screen_infos[0].image_view, sampler);
+            if (IsPresentTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT cpu_compose_window direct_copy_frame=1 src={}x{} dst={}x{}",
+                         layout.width, layout.height, frame->width, frame->height);
             }
-            update_queue.Flush();
-
-            scheduler.Record([this, offset = offset, info = draw_info, present_set](vk::CommandBuffer cmdbuf) {
-                const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
-                cmdbuf.pushConstants(*present_pipeline_layout,
-                                     vk::ShaderStageFlagBits::eFragment |
-                                         vk::ShaderStageFlagBits::eVertex,
-                                     0, sizeof(info), &info);
-                cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *present_pipeline_layout,
-                                          0, present_set, {});
-                cmdbuf.bindVertexBuffers(0, vertex_buffer.Handle(), {0});
-                cmdbuf.draw(4, 1, first_vertex, 0);
-            });
-
-            scheduler.Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRenderPass(); });
+            DirectCopyPresentTextureToFrame(scheduler, screen_infos[0].texture.image, frame->image,
+                                            layout.width, layout.height, frame->width,
+                                            frame->height);
             return;
         }
     }
