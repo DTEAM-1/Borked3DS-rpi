@@ -1432,16 +1432,6 @@ bool RasterizerVulkan::AccelerateFill(const Pica::MemoryFillConfig& config) {
 bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
                                          PAddr framebuffer_addr, u32 pixel_stride,
                                          ScreenInfo& screen_info) {
-    if (IsStrictCompatEnabled()) {
-        if (IsDrawTraceEnabled()) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW accelerate_display bypass_cpu_present addr=0x{:08x} pixel_stride={} format={} strict_compat=1",
-                     framebuffer_addr, pixel_stride,
-                     static_cast<u32>(config.color_format.Value()));
-        }
-        return false;
-    }
-
     if (framebuffer_addr == 0) [[unlikely]] {
         return false;
     }
@@ -1462,150 +1452,28 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         return false;
     }
 
-    Surface& src_surface = res_cache.GetSurface(src_surface_id);
+    const Surface& src_surface = res_cache.GetSurface(src_surface_id);
     const u32 scaled_width = src_surface.GetScaledWidth();
     const u32 scaled_height = src_surface.GetScaledHeight();
 
     screen_info.texcoords = Common::Rectangle<f32>(
-        static_cast<float>(src_rect.bottom) / static_cast<float>(scaled_height),
-        static_cast<float>(src_rect.left) / static_cast<float>(scaled_width),
-        static_cast<float>(src_rect.top) / static_cast<float>(scaled_height),
-        static_cast<float>(src_rect.right) / static_cast<float>(scaled_width));
+        (float)src_rect.bottom / (float)scaled_height, (float)src_rect.left / (float)scaled_width,
+        (float)src_rect.top / (float)scaled_height, (float)src_rect.right / (float)scaled_width);
 
-    const bool strict_compat = IsStrictCompatEnabled();
     const vk::ImageView base_view = src_surface.ImageView();
     const vk::ImageView copy_view = src_surface.CopyImageView();
-
-    bool dedicated_display_copy = false;
-    if (strict_compat && src_surface.Image() && screen_info.texture.image && screen_info.texture.image_view) {
-        renderpass_cache.EndRendering();
-
-        const vk::Image src_image = src_surface.Image();
-        const vk::Image dst_image = screen_info.texture.image;
-        const u32 dst_width = std::max<u32>(1, screen_info.texture.width);
-        const u32 dst_height = std::max<u32>(1, screen_info.texture.height);
-        const s32 src_left = static_cast<s32>(src_rect.left);
-        const s32 src_bottom = static_cast<s32>(src_rect.bottom);
-        const s32 src_right = static_cast<s32>(src_rect.right);
-        const s32 src_top = static_cast<s32>(src_rect.top);
-
-        scheduler.Record([src_image, dst_image, dst_width, dst_height,
-                          src_left, src_bottom, src_right, src_top](vk::CommandBuffer cmdbuf) {
-            if (!src_image || !dst_image || dst_width == 0 || dst_height == 0) {
-                return;
-            }
-
-            const vk::ImageSubresourceRange range = {
-                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            };
-
-            const std::array pre_barriers = {
-                vk::ImageMemoryBarrier{
-                    .srcAccessMask = vk::AccessFlagBits::eMemoryWrite |
-                                     vk::AccessFlagBits::eShaderRead |
-                                     vk::AccessFlagBits::eColorAttachmentWrite |
-                                     vk::AccessFlagBits::eTransferWrite |
-                                     vk::AccessFlagBits::eTransferRead,
-                    .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                    .oldLayout = vk::ImageLayout::eGeneral,
-                    .newLayout = vk::ImageLayout::eTransferSrcOptimal,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = src_image,
-                    .subresourceRange = range,
-                },
-                vk::ImageMemoryBarrier{
-                    .srcAccessMask = vk::AccessFlagBits::eNone,
-                    .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-                    .oldLayout = vk::ImageLayout::eUndefined,
-                    .newLayout = vk::ImageLayout::eTransferDstOptimal,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = dst_image,
-                    .subresourceRange = range,
-                },
-            };
-
-            const std::array post_barriers = {
-                vk::ImageMemoryBarrier{
-                    .srcAccessMask = vk::AccessFlagBits::eTransferRead,
-                    .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
-                                     vk::AccessFlagBits::eMemoryWrite |
-                                     vk::AccessFlagBits::eColorAttachmentWrite |
-                                     vk::AccessFlagBits::eShaderRead,
-                    .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-                    .newLayout = vk::ImageLayout::eGeneral,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = src_image,
-                    .subresourceRange = range,
-                },
-                vk::ImageMemoryBarrier{
-                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                    .dstAccessMask = vk::AccessFlagBits::eShaderRead,
-                    .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-                    .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = dst_image,
-                    .subresourceRange = range,
-                },
-            };
-
-            const vk::ImageBlit blit_region = {
-                .srcSubresource = {
-                    .aspectMask = vk::ImageAspectFlagBits::eColor,
-                    .mipLevel = 0,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-                .srcOffsets = std::array{vk::Offset3D{src_left, src_bottom, 0},
-                                         vk::Offset3D{src_right, src_top, 1}},
-                .dstSubresource = {
-                    .aspectMask = vk::ImageAspectFlagBits::eColor,
-                    .mipLevel = 0,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-                .dstOffsets = std::array{vk::Offset3D{0, 0, 0},
-                                         vk::Offset3D{static_cast<s32>(dst_width), static_cast<s32>(dst_height), 1}},
-            };
-
-            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                   vk::PipelineStageFlagBits::eTransfer,
-                                   vk::DependencyFlagBits::eByRegion, {}, {}, pre_barriers);
-            cmdbuf.blitImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
-                             vk::ImageLayout::eTransferDstOptimal, blit_region,
-                             vk::Filter::eNearest);
-            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                   vk::PipelineStageFlagBits::eFragmentShader,
-                                   vk::DependencyFlagBits::eByRegion, {}, {}, post_barriers);
-        });
-
-        screen_info.image_view = screen_info.texture.image_view;
-        screen_info.texcoords = Common::Rectangle<f32>(0.0f, 0.0f, 1.0f, 1.0f);
-        dedicated_display_copy = static_cast<bool>(screen_info.image_view);
-    } else {
-        screen_info.image_view = base_view;
-        if (strict_compat && copy_view) {
-            screen_info.image_view = copy_view;
-        } else if (!screen_info.image_view && copy_view) {
-            screen_info.image_view = copy_view;
-        }
-    }
+    const bool strict_compat = IsStrictCompatEnabled();
+    screen_info.image_view = (strict_compat && static_cast<bool>(copy_view)) ? copy_view : base_view;
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} dedicated_owned_valid={} chosen={} strict_compat={}",
+                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
-                 src_rect.right, src_rect.top, static_cast<bool>(base_view),
-                 static_cast<bool>(copy_view), static_cast<u32>(dedicated_display_copy),
-                 static_cast<bool>(screen_info.image_view), static_cast<u32>(strict_compat));
+                 src_rect.right, src_rect.top, static_cast<u32>(static_cast<bool>(base_view)),
+                 static_cast<u32>(static_cast<bool>(copy_view)),
+                 static_cast<u32>(static_cast<bool>(screen_info.image_view)),
+                 static_cast<u32>(strict_compat));
     }
 
     return static_cast<bool>(screen_info.image_view);
