@@ -1452,7 +1452,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         return false;
     }
 
-    Surface& src_surface = res_cache.GetSurface(src_surface_id);
+    const Surface& src_surface = res_cache.GetSurface(src_surface_id);
     const u32 scaled_width = src_surface.GetScaledWidth();
     const u32 scaled_height = src_surface.GetScaledHeight();
 
