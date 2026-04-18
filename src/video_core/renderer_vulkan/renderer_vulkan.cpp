@@ -52,7 +52,9 @@ namespace {
     if (value != nullptr && value[0] != '\0') {
         return value[0] != '0';
     }
-    return IsStrictCompatEnabled();
+    // On Pi5/V3DV strict-compat, prefer sampling the external display/copy view by default.
+    // The owned present texture is kept only as a fallback unless the env var above forces it.
+    return false;
 }
 
 [[nodiscard]] u32 GetRenderTargetTraceFrameBudget() {
@@ -278,6 +280,12 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
                          "TRACE_PRESENT prepare_draw force_owned_present_view index={} external_valid={} owned_valid={}",
                          index, static_cast<bool>(external_view), static_cast<bool>(owned_view));
             }
+        } else if (external_view && (IsPresentTraceEnabled() || IsRenderTargetTraceEnabled())) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT prepare_draw prefer_external_present_view index={} external_valid={} owned_valid={} prefer_owned={} strict_compat={}",
+                     index, static_cast<bool>(external_view), static_cast<bool>(owned_view),
+                     static_cast<u32>(prefer_owned_present),
+                     static_cast<u32>(IsStrictCompatEnabled()));
         }
 
         if (!image_view) {
