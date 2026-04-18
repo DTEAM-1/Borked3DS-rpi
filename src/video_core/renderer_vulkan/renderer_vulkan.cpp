@@ -64,6 +64,7 @@ struct CpuScreenDump {
     u32 width = 0;
     u32 height = 0;
     bool valid = false;
+    bool has_visible_content = false;
 };
 
 static std::array<CpuScreenDump, 3> g_strict_compat_cpu_screens{};
@@ -294,6 +295,25 @@ void BlitCpuScreenToCanvas(const CpuScreenDump& screen, std::vector<u8>& canvas,
             canvas[dst_index + 3] = sample(sx, sy, 3);
         }
     }
+}
+
+[[nodiscard]] bool CanUseStrictCompatCpuCompose(const Layout::FramebufferLayout& layout) {
+    const int mono_eye = static_cast<int>(Settings::values.mono_render_option.GetValue());
+    const u32 top_screen_id = mono_eye >= 0 && mono_eye < 2 ? static_cast<u32>(mono_eye) : 0;
+    const u32 bottom_screen_id = 2;
+
+    const bool need_top = layout.top_screen_enabled ||
+                          (layout.additional_screen_enabled && !Settings::values.swap_screen.GetValue());
+    const bool need_bottom = layout.bottom_screen_enabled ||
+                             (layout.additional_screen_enabled && Settings::values.swap_screen.GetValue());
+
+    const bool top_ok = !need_top ||
+                        (g_strict_compat_cpu_screens[top_screen_id].valid &&
+                         g_strict_compat_cpu_screens[top_screen_id].has_visible_content);
+    const bool bottom_ok = !need_bottom ||
+                           (g_strict_compat_cpu_screens[bottom_screen_id].valid &&
+                            g_strict_compat_cpu_screens[bottom_screen_id].has_visible_content);
+    return top_ok && bottom_ok;
 }
 
 [[nodiscard]] bool ComposeStrictCompatWindowCanvas(const Layout::FramebufferLayout& layout,
@@ -1033,9 +1053,12 @@ bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuff
                                                  framebuffer.width.Value(), framebuffer.height.Value(),
                                                  rgba);
 
+        const auto cpu_stats = AnalyzeRGBA8Vector(rgba, framebuffer.width.Value(),
+                                                  framebuffer.height.Value());
+        const bool cpu_has_visible_content = cpu_stats.nonzero_pixels != 0 ||
+                                             cpu_stats.alpha_nonzero_pixels != 0;
+
         if (IsPresentTraceEnabled()) {
-            const auto cpu_stats = AnalyzeRGBA8Vector(rgba, framebuffer.width.Value(),
-                                                      framebuffer.height.Value());
             LOG_INFO(Render_Vulkan,
                      "TRACE_PRESENT cpu_screen_stats addr=0x{:08X} width={} height={} decoded={} uploaded={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
                      framebuffer_addr, framebuffer.width.Value(), framebuffer.height.Value(),
@@ -1056,6 +1079,7 @@ bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuff
                 g_strict_compat_cpu_screens[screen_index].width = framebuffer.width.Value();
                 g_strict_compat_cpu_screens[screen_index].height = framebuffer.height.Value();
                 g_strict_compat_cpu_screens[screen_index].valid = true;
+                g_strict_compat_cpu_screens[screen_index].has_visible_content = cpu_has_visible_content;
             } else {
                 g_strict_compat_cpu_screens[screen_index] = {};
             }
@@ -1064,13 +1088,33 @@ bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuff
         screen_info.image_view = uploaded ? screen_info.texture.image_view : vk::ImageView{};
         screen_info.texcoords = {0.f, 0.f, 1.f, 1.f};
 
+        bool host_fallback_valid = false;
+        if ((!uploaded || !cpu_has_visible_content) && framebuffer_addr != 0) {
+            ScreenInfo host_screen_info{};
+            host_fallback_valid = rasterizer.AccelerateDisplay(framebuffer, framebuffer_addr,
+                                                               static_cast<u32>(pixel_stride),
+                                                               host_screen_info);
+            if (host_fallback_valid) {
+                screen_info.image_view = host_screen_info.image_view;
+                screen_info.texcoords = host_screen_info.texcoords;
+            }
+            if (IsPresentTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT cpu_screen_black_fallback_host addr=0x{:08X} uploaded={} cpu_visible={} host_valid={}",
+                         framebuffer_addr, static_cast<u32>(uploaded),
+                         static_cast<u32>(cpu_has_visible_content),
+                         static_cast<u32>(host_fallback_valid));
+            }
+        }
+
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT load_fb_to_screen result accelerated=0 cpu_upload={} decoded={} addr=0x{:08X} pixel_stride={} width={} height={}",
-                     static_cast<u32>(uploaded), static_cast<u32>(decoded), framebuffer_addr,
-                     pixel_stride, framebuffer.width.Value(), framebuffer.height.Value());
+                     "TRACE_PRESENT load_fb_to_screen result accelerated={} cpu_upload={} decoded={} addr=0x{:08X} pixel_stride={} width={} height={}",
+                     static_cast<u32>(host_fallback_valid), static_cast<u32>(uploaded),
+                     static_cast<u32>(decoded), framebuffer_addr, pixel_stride,
+                     framebuffer.width.Value(), framebuffer.height.Value());
         }
-        return uploaded;
+        return static_cast<bool>(screen_info.image_view);
     }
 
     const bool accelerated =
@@ -1757,8 +1801,20 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
 
     if (IsStrictCompatEnabled() &&
         Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off) {
-        std::vector<u8> composed_rgba;
-        if (ComposeStrictCompatWindowCanvas(layout, composed_rgba)) {
+        if (!CanUseStrictCompatCpuCompose(layout)) {
+            if (IsPresentTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT cpu_compose_window bypass_gpu_present=1 top_valid={} top_visible={} bottom_valid={} bottom_visible={}",
+                         static_cast<u32>(g_strict_compat_cpu_screens[0].valid ||
+                                          g_strict_compat_cpu_screens[1].valid),
+                         static_cast<u32>(g_strict_compat_cpu_screens[0].has_visible_content ||
+                                          g_strict_compat_cpu_screens[1].has_visible_content),
+                         static_cast<u32>(g_strict_compat_cpu_screens[2].valid),
+                         static_cast<u32>(g_strict_compat_cpu_screens[2].has_visible_content));
+            }
+        } else {
+            std::vector<u8> composed_rgba;
+            if (ComposeStrictCompatWindowCanvas(layout, composed_rgba)) {
             if (IsPresentTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
                          "TRACE_PRESENT cpu_compose_window uploaded=1 width={} height={} top_valid={} bottom_valid={}",
@@ -1825,6 +1881,7 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
                                                 frame->height);
                 return;
             }
+        }
         }
     }
 
