@@ -766,7 +766,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             return false;
         }
         large_textured_software_draw_index = ++g_vk_large_textured_software_allow_counter;
-        return large_textured_software_draw_index <= 1;
+        return large_textured_software_draw_index <= 4;
     }();
 
     if (!accelerate) {
@@ -1452,7 +1452,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         return false;
     }
 
-    const Surface& src_surface = res_cache.GetSurface(src_surface_id);
+    Surface& src_surface = res_cache.GetSurface(src_surface_id);
     const u32 scaled_width = src_surface.GetScaledWidth();
     const u32 scaled_height = src_surface.GetScaledHeight();
 
@@ -1460,23 +1460,17 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         (float)src_rect.bottom / (float)scaled_height, (float)src_rect.left / (float)scaled_width,
         (float)src_rect.top / (float)scaled_height, (float)src_rect.right / (float)scaled_width);
 
-    const vk::ImageView base_view = src_surface.ImageView();
-    const vk::ImageView copy_view = src_surface.CopyImageView();
-    const bool strict_compat = IsStrictCompatEnabled();
-    screen_info.image_view = (strict_compat && static_cast<bool>(copy_view)) ? copy_view : base_view;
+    screen_info.image_view = src_surface.ImageView();
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={}",
+                 "TRACE_DRAW accelerate_display addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) view_valid={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
-                 src_rect.right, src_rect.top, static_cast<u32>(static_cast<bool>(base_view)),
-                 static_cast<u32>(static_cast<bool>(copy_view)),
-                 static_cast<u32>(static_cast<bool>(screen_info.image_view)),
-                 static_cast<u32>(strict_compat));
+                 src_rect.right, src_rect.top, static_cast<bool>(screen_info.image_view));
     }
 
-    return static_cast<bool>(screen_info.image_view);
+    return true;
 }
 
 void RasterizerVulkan::MakeSoftwareVertexLayout() {

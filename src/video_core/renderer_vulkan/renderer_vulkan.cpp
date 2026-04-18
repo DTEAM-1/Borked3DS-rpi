@@ -5,8 +5,6 @@
 
 #include "common/assert.h"
 #include <algorithm>
-#include <vector>
-#include "common/color.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -49,6 +47,14 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+[[nodiscard]] bool PreferOwnedPresentView() {
+    const char* value = std::getenv("BORKED3DS_V3DV_PREFER_OWNED_PRESENT");
+    if (value != nullptr && value[0] != '\0') {
+        return value[0] != '0';
+    }
+    return IsStrictCompatEnabled();
+}
+
 [[nodiscard]] u32 GetRenderTargetTraceFrameBudget() {
     const char* value = std::getenv("BORKED3DS_V3DV_TRACE_RT_FRAMES");
     if (value == nullptr || value[0] == '\0') {
@@ -56,610 +62,6 @@ namespace {
     }
     const long parsed = std::strtol(value, nullptr, 10);
     return parsed > 0 ? static_cast<u32>(parsed) : 3u;
-}
-
-
-struct CpuScreenDump {
-    std::vector<u8> rgba;
-    u32 width = 0;
-    u32 height = 0;
-    bool valid = false;
-    bool visible = false;
-    bool alpha_only = false;
-};
-
-static std::array<CpuScreenDump, 3> g_strict_compat_cpu_screens{};
-
-struct RenderTargetTraceStats;
-[[nodiscard]] bool StatsHaveVisibleRGB(const RenderTargetTraceStats& stats);
-[[nodiscard]] bool StatsAreAlphaOnly(const RenderTargetTraceStats& stats);
-
-void DecodeFramebufferRGB8AsBGR(const u8* framebuffer_data, u32 width, u32 height, u32 pixel_stride,
-                                std::vector<u8>& rgba) {
-    const u32 copy_width = std::min(width, pixel_stride);
-    rgba.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4, 0);
-    for (u32 y = 0; y < height; ++y) {
-        const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 3);
-        for (u32 x = 0; x < copy_width; ++x) {
-            const std::size_t src = static_cast<std::size_t>(x) * 3;
-            const std::size_t dst = (static_cast<std::size_t>(y) * width + x) * 4;
-            rgba[dst + 0] = src_row[src + 2];
-            rgba[dst + 1] = src_row[src + 1];
-            rgba[dst + 2] = src_row[src + 0];
-            rgba[dst + 3] = 255;
-        }
-    }
-}
-
-
-[[nodiscard]] bool DecodeFramebufferToRGBA8(const u8* framebuffer_data, u32 width, u32 height,
-                                            u32 pixel_stride, Pica::PixelFormat format,
-                                            std::vector<u8>& rgba) {
-    if (framebuffer_data == nullptr || width == 0 || height == 0 || pixel_stride == 0) {
-        return false;
-    }
-
-    const u32 copy_width = std::min(width, pixel_stride);
-    rgba.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4, 0);
-
-    auto write_pixel = [&](u32 x, u32 y, u8 r, u8 g, u8 b, u8 a) {
-        const std::size_t offset =
-            (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
-             static_cast<std::size_t>(x)) *
-            4;
-        rgba[offset + 0] = r;
-        rgba[offset + 1] = g;
-        rgba[offset + 2] = b;
-        rgba[offset + 3] = a;
-    };
-
-    switch (format) {
-    case Pica::PixelFormat::RGBA8:
-        for (u32 y = 0; y < height; ++y) {
-            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 4);
-            for (u32 x = 0; x < copy_width; ++x) {
-                const auto color = Common::Color::DecodeRGBA8(src_row + static_cast<std::size_t>(x) * 4);
-                write_pixel(x, y, color.r(), color.g(), color.b(), color.a());
-            }
-        }
-        return true;
-
-    case Pica::PixelFormat::RGB8:
-        for (u32 y = 0; y < height; ++y) {
-            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 3);
-            for (u32 x = 0; x < copy_width; ++x) {
-                const auto color = Common::Color::DecodeRGB8(src_row + static_cast<std::size_t>(x) * 3);
-                write_pixel(x, y, color.r(), color.g(), color.b(), 255);
-            }
-        }
-        return true;
-
-    case Pica::PixelFormat::RGB565:
-        for (u32 y = 0; y < height; ++y) {
-            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 2);
-            for (u32 x = 0; x < copy_width; ++x) {
-                const auto color = Common::Color::DecodeRGB565(src_row + static_cast<std::size_t>(x) * 2);
-                write_pixel(x, y, color.r(), color.g(), color.b(), 255);
-            }
-        }
-        return true;
-
-    case Pica::PixelFormat::RGB5A1:
-        for (u32 y = 0; y < height; ++y) {
-            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 2);
-            for (u32 x = 0; x < copy_width; ++x) {
-                const auto color = Common::Color::DecodeRGB5A1(src_row + static_cast<std::size_t>(x) * 2);
-                write_pixel(x, y, color.r(), color.g(), color.b(), color.a());
-            }
-        }
-        return true;
-
-    case Pica::PixelFormat::RGBA4:
-        for (u32 y = 0; y < height; ++y) {
-            const u8* src_row = framebuffer_data + (static_cast<std::size_t>(y) * pixel_stride * 2);
-            for (u32 x = 0; x < copy_width; ++x) {
-                const auto color = Common::Color::DecodeRGBA4(src_row + static_cast<std::size_t>(x) * 2);
-                write_pixel(x, y, color.r(), color.g(), color.b(), color.a());
-            }
-        }
-        return true;
-
-    default:
-        return false;
-    }
-}
-
-
-[[nodiscard]] bool EnsureRGBA8PresentTexture(const Instance& instance, PresentWindow& main_window,
-                                             TextureInfo& texture, u32 width, u32 height) {
-    if (width == 0 || height == 0) {
-        return false;
-    }
-
-    vk::Device device = instance.GetDevice();
-    if (texture.image_view && texture.width == width && texture.height == height &&
-        texture.format == Pica::PixelFormat::RGBA8) {
-        return true;
-    }
-
-    if (texture.image_view) {
-        main_window.WaitPresent();
-        device.destroyImageView(texture.image_view);
-        texture.image_view = nullptr;
-    }
-    if (texture.image) {
-        main_window.WaitPresent();
-        vmaDestroyImage(instance.GetAllocator(), texture.image, texture.allocation);
-        texture.image = nullptr;
-        texture.allocation = nullptr;
-    }
-
-    const vk::ImageCreateInfo image_info = {
-        .imageType = vk::ImageType::e2D,
-        .format = vk::Format::eR8G8B8A8Unorm,
-        .extent = {width, height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = vk::SampleCountFlagBits::e1,
-        .tiling = vk::ImageTiling::eOptimal,
-        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
-        vk::ImageUsageFlagBits::eTransferSrc,
-        .sharingMode = vk::SharingMode::eExclusive,
-        .initialLayout = vk::ImageLayout::eUndefined,
-    };
-
-    const VmaAllocationCreateInfo alloc_info = {
-        .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-        .requiredFlags = 0,
-        .preferredFlags = 0,
-        .pool = VK_NULL_HANDLE,
-        .pUserData = nullptr,
-    };
-
-    VkImage unsafe_image{};
-    VkImageCreateInfo unsafe_image_info = static_cast<VkImageCreateInfo>(image_info);
-    const VkResult result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &alloc_info,
-                                           &unsafe_image, &texture.allocation, nullptr);
-    if (result != VK_SUCCESS) [[unlikely]] {
-        LOG_CRITICAL(Render_Vulkan, "Failed allocating present texture with error {}", result);
-        return false;
-    }
-    texture.image = vk::Image{unsafe_image};
-
-    const vk::ImageViewCreateInfo view_info = {
-        .image = texture.image,
-        .viewType = vk::ImageViewType::e2D,
-        .format = vk::Format::eR8G8B8A8Unorm,
-        .subresourceRange{
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    };
-
-    texture.image_view = device.createImageView(view_info);
-    texture.width = width;
-    texture.height = height;
-    texture.format = Pica::PixelFormat::RGBA8;
-    return true;
-}
-
-void BlitCpuScreenToCanvas(const CpuScreenDump& screen, std::vector<u8>& canvas, u32 canvas_width,
-                           u32 canvas_height, const Common::Rectangle<u32>& rect,
-                           Layout::DisplayOrientation orientation) {
-    if (!screen.valid || screen.rgba.empty() || canvas.empty()) {
-        return;
-    }
-
-    const u32 dst_w = rect.GetWidth();
-    const u32 dst_h = rect.GetHeight();
-    if (dst_w == 0 || dst_h == 0) {
-        return;
-    }
-
-    const auto sample = [&](u32 sx, u32 sy, std::size_t channel) -> u8 {
-        sx = std::min(sx, screen.width - 1);
-        sy = std::min(sy, screen.height - 1);
-        const std::size_t index =
-            (static_cast<std::size_t>(sy) * static_cast<std::size_t>(screen.width) +
-             static_cast<std::size_t>(sx)) * 4 + channel;
-        return screen.rgba[index];
-    };
-
-    for (u32 dy = 0; dy < dst_h; ++dy) {
-        const u32 py = rect.top + dy;
-        if (py >= canvas_height) {
-            continue;
-        }
-        for (u32 dx = 0; dx < dst_w; ++dx) {
-            const u32 px = rect.left + dx;
-            if (px >= canvas_width) {
-                continue;
-            }
-
-            u32 sx = 0;
-            u32 sy = 0;
-            switch (orientation) {
-            case Layout::DisplayOrientation::Landscape:
-                sx = static_cast<u32>((static_cast<u64>(dx) * screen.width) / std::max<u32>(1, dst_w));
-                sy = static_cast<u32>((static_cast<u64>(dy) * screen.height) / std::max<u32>(1, dst_h));
-                break;
-            case Layout::DisplayOrientation::Portrait:
-                sx = static_cast<u32>((static_cast<u64>(dy) * screen.width) / std::max<u32>(1, dst_h));
-                sy = screen.height - 1 -
-                     static_cast<u32>((static_cast<u64>(dx) * screen.height) /
-                                      std::max<u32>(1, dst_w));
-                break;
-            case Layout::DisplayOrientation::LandscapeFlipped:
-                sx = screen.width - 1 -
-                     static_cast<u32>((static_cast<u64>(dx) * screen.width) / std::max<u32>(1, dst_w));
-                sy = screen.height - 1 -
-                     static_cast<u32>((static_cast<u64>(dy) * screen.height) / std::max<u32>(1, dst_h));
-                break;
-            case Layout::DisplayOrientation::PortraitFlipped:
-                sx = screen.width - 1 -
-                     static_cast<u32>((static_cast<u64>(dy) * screen.width) / std::max<u32>(1, dst_h));
-                sy = static_cast<u32>((static_cast<u64>(dx) * screen.height) / std::max<u32>(1, dst_w));
-                break;
-            default:
-                break;
-            }
-
-            const std::size_t dst_index =
-                (static_cast<std::size_t>(py) * static_cast<std::size_t>(canvas_width) +
-                 static_cast<std::size_t>(px)) * 4;
-            canvas[dst_index + 0] = sample(sx, sy, 0);
-            canvas[dst_index + 1] = sample(sx, sy, 1);
-            canvas[dst_index + 2] = sample(sx, sy, 2);
-            canvas[dst_index + 3] = sample(sx, sy, 3);
-        }
-    }
-}
-
-[[nodiscard]] bool ComposeStrictCompatWindowCanvas(const Layout::FramebufferLayout& layout,
-                                                   std::vector<u8>& canvas) {
-    if (Settings::values.render_3d.GetValue() != Settings::StereoRenderOption::Off) {
-        return false;
-    }
-
-    canvas.assign(static_cast<std::size_t>(layout.width) * static_cast<std::size_t>(layout.height) * 4, 0);
-
-    const auto orientation = layout.is_rotated ? Layout::DisplayOrientation::Landscape
-                                               : Layout::DisplayOrientation::Portrait;
-
-    const int mono_eye = static_cast<int>(Settings::values.mono_render_option.GetValue());
-    const u32 top_screen_id = mono_eye >= 0 && mono_eye < 2 ? static_cast<u32>(mono_eye) : 0;
-    const u32 bottom_screen_id = 2;
-
-    const auto draw_top = [&](const Common::Rectangle<u32>& rect) {
-        BlitCpuScreenToCanvas(g_strict_compat_cpu_screens[top_screen_id], canvas, layout.width,
-                              layout.height, rect, orientation);
-    };
-    const auto draw_bottom = [&](const Common::Rectangle<u32>& rect) {
-        BlitCpuScreenToCanvas(g_strict_compat_cpu_screens[bottom_screen_id], canvas, layout.width,
-                              layout.height, rect, orientation);
-    };
-
-    if (!Settings::values.swap_screen.GetValue()) {
-        if (layout.top_screen_enabled) {
-            draw_top(layout.top_screen);
-        }
-        if (layout.bottom_screen_enabled) {
-            draw_bottom(layout.bottom_screen);
-        }
-    } else {
-        if (layout.bottom_screen_enabled) {
-            draw_bottom(layout.bottom_screen);
-        }
-        if (layout.top_screen_enabled) {
-            draw_top(layout.top_screen);
-        }
-    }
-
-    if (layout.additional_screen_enabled) {
-        if (!Settings::values.swap_screen.GetValue()) {
-            draw_top(layout.additional_screen);
-        } else {
-            draw_bottom(layout.additional_screen);
-        }
-    }
-
-    return true;
-}
-
-[[nodiscard]] bool UploadRGBA8ToImage(const Instance& instance, Scheduler& scheduler,
-                                      vk::Image dst_image, u32 width, u32 height,
-                                      const std::vector<u8>& rgba) {
-    if (!dst_image || width == 0 || height == 0 || rgba.empty()) {
-        return false;
-    }
-
-    const vk::BufferCreateInfo staging_buffer_info = {
-        .size = static_cast<vk::DeviceSize>(rgba.size()),
-        .usage = vk::BufferUsageFlagBits::eTransferSrc,
-    };
-
-    const VmaAllocationCreateInfo alloc_create_info = {
-        .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT |
-                 VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-        .requiredFlags = 0,
-        .preferredFlags = 0,
-        .pool = VK_NULL_HANDLE,
-        .pUserData = nullptr,
-    };
-
-    VkBuffer unsafe_buffer{};
-    VmaAllocation allocation{};
-    VmaAllocationInfo alloc_info{};
-    VkBufferCreateInfo unsafe_buffer_info = static_cast<VkBufferCreateInfo>(staging_buffer_info);
-
-    const VkResult result = vmaCreateBuffer(instance.GetAllocator(), &unsafe_buffer_info,
-                                            &alloc_create_info, &unsafe_buffer, &allocation,
-                                            &alloc_info);
-    if (result != VK_SUCCESS) {
-        return false;
-    }
-
-    std::memcpy(alloc_info.pMappedData, rgba.data(), rgba.size());
-    const vk::Buffer staging_buffer{unsafe_buffer};
-
-    scheduler.Record([dst_image, staging_buffer, width, height](vk::CommandBuffer cmdbuf) {
-        const vk::ImageSubresourceRange range = {
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        };
-
-        const vk::ImageMemoryBarrier pre_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eNone,
-            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .oldLayout = vk::ImageLayout::eUndefined,
-            .newLayout = vk::ImageLayout::eTransferDstOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = dst_image,
-            .subresourceRange = range,
-        };
-
-        const vk::BufferImageCopy image_copy = {
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = {
-                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .imageOffset = {0, 0, 0},
-            .imageExtent = {width, height, 1},
-        };
-
-        const vk::ImageMemoryBarrier post_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .dstAccessMask = vk::AccessFlagBits::eShaderRead,
-            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = dst_image,
-            .subresourceRange = range,
-        };
-
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
-                               vk::PipelineStageFlagBits::eTransfer,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, pre_barrier);
-        cmdbuf.copyBufferToImage(staging_buffer, dst_image, vk::ImageLayout::eTransferDstOptimal,
-                                 image_copy);
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                               vk::PipelineStageFlagBits::eFragmentShader,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, post_barrier);
-    });
-
-    scheduler.Finish();
-    vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
-    return true;
-}
-
-[[nodiscard]] bool UploadRGBA8DirectlyToFrameImage(const Instance& instance, Scheduler& scheduler,
-                                                   vk::Image dst_image, u32 width, u32 height,
-                                                   const std::vector<u8>& rgba) {
-    if (!dst_image || width == 0 || height == 0 ||
-        rgba.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4) {
-        return false;
-    }
-
-    const vk::DeviceSize buffer_size = static_cast<vk::DeviceSize>(rgba.size());
-    const vk::BufferCreateInfo staging_buffer_info = {
-        .size = buffer_size,
-        .usage = vk::BufferUsageFlagBits::eTransferSrc,
-        .sharingMode = vk::SharingMode::eExclusive,
-    };
-
-    const VmaAllocationCreateInfo alloc_create_info = {
-        .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT |
-                 VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-        .requiredFlags = 0,
-        .preferredFlags = 0,
-        .pool = VK_NULL_HANDLE,
-        .pUserData = nullptr,
-    };
-
-    VkBuffer unsafe_buffer{};
-    VmaAllocation allocation{};
-    VmaAllocationInfo alloc_info{};
-    VkBufferCreateInfo unsafe_buffer_info = static_cast<VkBufferCreateInfo>(staging_buffer_info);
-
-    const VkResult result = vmaCreateBuffer(instance.GetAllocator(), &unsafe_buffer_info,
-                                            &alloc_create_info, &unsafe_buffer, &allocation,
-                                            &alloc_info);
-    if (result != VK_SUCCESS) {
-        return false;
-    }
-
-    std::memcpy(alloc_info.pMappedData, rgba.data(), rgba.size());
-    const vk::Buffer staging_buffer{unsafe_buffer};
-
-    scheduler.Record([dst_image, staging_buffer, width, height](vk::CommandBuffer cmdbuf) {
-        const vk::ImageSubresourceRange range = {
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        };
-
-        const vk::ImageMemoryBarrier pre_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eMemoryRead,
-            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-            .newLayout = vk::ImageLayout::eTransferDstOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = dst_image,
-            .subresourceRange = range,
-        };
-
-        const vk::BufferImageCopy image_copy = {
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = {
-                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .imageOffset = {0, 0, 0},
-            .imageExtent = {width, height, 1},
-        };
-
-        const vk::ImageMemoryBarrier post_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .dstAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eMemoryRead,
-            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = dst_image,
-            .subresourceRange = range,
-        };
-
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                               vk::PipelineStageFlagBits::eTransfer,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, pre_barrier);
-        cmdbuf.copyBufferToImage(staging_buffer, dst_image, vk::ImageLayout::eTransferDstOptimal,
-                                 image_copy);
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                               vk::PipelineStageFlagBits::eAllCommands,
-                               vk::DependencyFlagBits::eByRegion, {}, {}, post_barrier);
-    });
-
-    scheduler.Finish();
-    vmaDestroyBuffer(instance.GetAllocator(), staging_buffer, allocation);
-    return true;
-}
-
-void DirectCopyPresentTextureToFrame(Scheduler& scheduler, vk::Image src_image, vk::Image dst_image,
-                                    u32 src_width, u32 src_height, u32 dst_width, u32 dst_height) {
-    if (!src_image || !dst_image || src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0) {
-        return;
-    }
-
-    scheduler.Record([src_image, dst_image, src_width, src_height, dst_width, dst_height](vk::CommandBuffer cmdbuf) {
-        const vk::ImageSubresourceRange range = {
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        };
-
-        const vk::ImageMemoryBarrier src_pre_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eShaderRead,
-            .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-            .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = src_image,
-            .subresourceRange = range,
-        };
-
-        const vk::ImageMemoryBarrier dst_pre_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eNone,
-            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .oldLayout = vk::ImageLayout::eUndefined,
-            .newLayout = vk::ImageLayout::eTransferDstOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = dst_image,
-            .subresourceRange = range,
-        };
-
-        const vk::ImageCopy image_copy = {
-            .srcSubresource = {
-                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .srcOffset = {0, 0, 0},
-            .dstSubresource = {
-                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .dstOffset = {0, 0, 0},
-            .extent = {
-                std::min(src_width, dst_width),
-                std::min(src_height, dst_height),
-                1,
-            },
-        };
-
-        const vk::ImageMemoryBarrier src_post_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eTransferRead,
-            .dstAccessMask = vk::AccessFlagBits::eShaderRead,
-            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = src_image,
-            .subresourceRange = range,
-        };
-
-        const vk::ImageMemoryBarrier dst_post_barrier = {
-            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = dst_image,
-            .subresourceRange = range,
-        };
-
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader,
-                               vk::PipelineStageFlagBits::eTransfer,
-                               vk::DependencyFlagBits::eByRegion, {}, {},
-                               std::array{src_pre_barrier, dst_pre_barrier});
-        cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal,
-                         dst_image, vk::ImageLayout::eTransferDstOptimal,
-                         image_copy);
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                               vk::PipelineStageFlagBits::eAllCommands,
-                               vk::DependencyFlagBits::eByRegion, {}, {},
-                               std::array{src_post_barrier, dst_post_barrier});
-    });
 }
 
 struct RenderTargetTraceStats {
@@ -674,15 +76,6 @@ struct RenderTargetTraceStats {
     u32 width = 0;
     u32 height = 0;
 };
-
-[[nodiscard]] bool StatsHaveVisibleRGB(const RenderTargetTraceStats& stats) {
-    return stats.sum_r != 0 || stats.sum_g != 0 || stats.sum_b != 0;
-}
-
-[[nodiscard]] bool StatsAreAlphaOnly(const RenderTargetTraceStats& stats) {
-    return !StatsHaveVisibleRGB(stats) && stats.sum_a != 0 && stats.nonzero_pixels != 0;
-}
-
 
 [[nodiscard]] RenderTargetTraceStats AnalyzeRenderTargetRGBA8(const u8* rgba, u32 width, u32 height) {
     RenderTargetTraceStats stats{};
@@ -716,47 +109,6 @@ struct RenderTargetTraceStats {
         }
     }
     return stats;
-}
-
-[[nodiscard]] RenderTargetTraceStats AnalyzeRGBA8Vector(const std::vector<u8>& rgba, u32 width,
-                                                      u32 height) {
-    if (rgba.empty()) {
-        return {};
-    }
-    return AnalyzeRenderTargetRGBA8(rgba.data(), width, height);
-}
-
-void InjectStrictCompatDebugOverlay(std::vector<u8>& rgba, u32 width, u32 height) {
-    if (rgba.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4 ||
-        width == 0 || height == 0) {
-        return;
-    }
-
-    const u32 marker_w = std::min<u32>(width, 64);
-    const u32 marker_h = std::min<u32>(height, 64);
-    for (u32 y = 0; y < marker_h; ++y) {
-        for (u32 x = 0; x < marker_w; ++x) {
-            const std::size_t base = (static_cast<std::size_t>(y) * width + x) * 4;
-            const bool checker = ((x / 8) ^ (y / 8)) & 1;
-            rgba[base + 0] = checker ? 255 : 0;
-            rgba[base + 1] = checker ? 0 : 255;
-            rgba[base + 2] = 255;
-            rgba[base + 3] = 255;
-        }
-    }
-
-    for (u32 x = 0; x < width; ++x) {
-        const std::size_t top = static_cast<std::size_t>(x) * 4;
-        const std::size_t bottom = (static_cast<std::size_t>(height - 1) * width + x) * 4;
-        rgba[top + 0] = 255; rgba[top + 1] = 255; rgba[top + 2] = 255; rgba[top + 3] = 255;
-        rgba[bottom + 0] = 255; rgba[bottom + 1] = 255; rgba[bottom + 2] = 255; rgba[bottom + 3] = 255;
-    }
-    for (u32 y = 0; y < height; ++y) {
-        const std::size_t left = (static_cast<std::size_t>(y) * width) * 4;
-        const std::size_t right = (static_cast<std::size_t>(y) * width + (width - 1)) * 4;
-        rgba[left + 0] = 255; rgba[left + 1] = 255; rgba[left + 2] = 255; rgba[left + 3] = 255;
-        rgba[right + 0] = 255; rgba[right + 1] = 255; rgba[right + 2] = 255; rgba[right + 3] = 255;
-    }
 }
 
 void MaybeWriteRenderTargetPPM(const u8* rgba, u32 width, u32 height, u64 trace_index) {
@@ -889,8 +241,8 @@ void RendererVulkan::PrepareRendertarget() {
             continue;
         }
 
-        if (IsStrictCompatEnabled() || texture.width != framebuffer.width ||
-            texture.height != framebuffer.height || texture.format != framebuffer.color_format) {
+        if (texture.width != framebuffer.width || texture.height != framebuffer.height ||
+            texture.format != framebuffer.color_format) {
             if (!ConfigureFramebufferTexture(texture, framebuffer)) {
                 continue;
             }
@@ -911,35 +263,39 @@ void RendererVulkan::PrepareRendertarget() {
 }
 
 void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& layout) {
-    if (IsPresentTraceEnabled()) {
-        for (u32 index = 0; index < screen_infos.size(); index++) {
-            const vk::ImageView display_view = screen_infos[index].image_view;
-            const vk::ImageView owned_view = screen_infos[index].texture.image_view;
-            const bool use_display = static_cast<bool>(display_view);
-            const std::string_view source = use_display ? "display_view" : "owned_fallback";
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT prepare_draw select_view index={} source={} display_valid={} owned_valid={} strict_compat={}",
-                     index, source, static_cast<bool>(display_view), static_cast<bool>(owned_view),
-                     static_cast<u32>(IsStrictCompatEnabled()));
-        }
-    }
+    const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
+    const auto present_set = present_heap.Commit();
+    const bool prefer_owned_present = PreferOwnedPresentView();
+    for (u32 index = 0; index < screen_infos.size(); index++) {
+        const vk::ImageView external_view = screen_infos[index].image_view;
+        const vk::ImageView owned_view = screen_infos[index].texture.image_view;
+        vk::ImageView image_view = external_view;
 
-    const bool strict_compat = IsStrictCompatEnabled();
-    const auto present_set = strict_compat ? vk::DescriptorSet{} : present_heap.Commit();
-    if (!strict_compat) {
-        const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
-        for (u32 index = 0; index < screen_infos.size(); index++) {
-            const vk::ImageView display_view = screen_infos[index].image_view;
-            const vk::ImageView owned_view = screen_infos[index].texture.image_view;
-            const vk::ImageView image_view = display_view ? display_view : owned_view;
-            update_queue.AddImageSampler(present_set, 0, index, image_view, sampler);
+        if (prefer_owned_present && external_view && owned_view && external_view != owned_view) {
+            image_view = owned_view;
+            if (IsPresentTraceEnabled() || IsRenderTargetTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT prepare_draw force_owned_present_view index={} external_valid={} owned_valid={}",
+                         index, static_cast<bool>(external_view), static_cast<bool>(owned_view));
+            }
         }
-        update_queue.Flush();
+
+        if (!image_view) {
+            image_view = owned_view;
+            if (IsPresentTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT prepare_draw fallback_owned_texture index={} view_valid={}",
+                         index, static_cast<bool>(image_view));
+            }
+        }
+
+        update_queue.AddImageSampler(present_set, 0, index, image_view, sampler);
     }
+    update_queue.Flush();
 
     renderpass_cache.EndRendering();
     scheduler.Record([this, layout, frame, present_set, renderpass = main_window.Renderpass(),
-                      index = current_pipeline, strict_compat](vk::CommandBuffer cmdbuf) {
+                      index = current_pipeline](vk::CommandBuffer cmdbuf) {
         const vk::Viewport viewport = {
             .x = 0.0f,
             .y = 0.0f,
@@ -958,7 +314,7 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
         cmdbuf.setScissor(0, scissor);
 
         const vk::ClearValue clear{.color = clear_color};
-        const vk::PipelineLayout pipeline_layout{*present_pipeline_layout};
+        const vk::PipelineLayout layout{*present_pipeline_layout};
         const vk::RenderPassBeginInfo renderpass_begin_info = {
             .renderPass = renderpass,
             .framebuffer = frame->framebuffer,
@@ -973,10 +329,7 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
 
         cmdbuf.beginRenderPass(renderpass_begin_info, vk::SubpassContents::eInline);
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, present_pipelines[index]);
-        if (!strict_compat) {
-            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0,
-                                      present_set, {});
-        }
+        cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 0, present_set, {});
     });
 }
 
@@ -1052,99 +405,6 @@ bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuff
         LOG_INFO(Render_Vulkan,
                  "TRACE_PRESENT load_fb_to_screen permissive_unaligned_stride addr=0x{:08X} pixel_stride={}",
                  framebuffer_addr, pixel_stride);
-    }
-
-    if (IsStrictCompatEnabled()) {
-        const u8* framebuffer_data = memory.GetPhysicalPointer(framebuffer_addr);
-        std::vector<u8> rgba;
-        bool decoded = DecodeFramebufferToRGBA8(
-            framebuffer_data, framebuffer.width.Value(), framebuffer.height.Value(),
-            static_cast<u32>(pixel_stride), framebuffer.color_format, rgba);
-        auto cpu_stats = AnalyzeRGBA8Vector(rgba, framebuffer.width.Value(), framebuffer.height.Value());
-
-        if (decoded && framebuffer.color_format == Pica::PixelFormat::RGB8 &&
-            !StatsHaveVisibleRGB(cpu_stats) && cpu_stats.sum_a != 0) {
-            std::vector<u8> bgr_rgba;
-            DecodeFramebufferRGB8AsBGR(framebuffer_data, framebuffer.width.Value(), framebuffer.height.Value(),
-                                       static_cast<u32>(pixel_stride), bgr_rgba);
-            const auto bgr_stats = AnalyzeRGBA8Vector(bgr_rgba, framebuffer.width.Value(), framebuffer.height.Value());
-            if (IsPresentTraceEnabled()) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT cpu_screen_rgb8_bgr_retry addr=0x{:08X} width={} height={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
-                         framebuffer_addr, framebuffer.width.Value(), framebuffer.height.Value(),
-                         static_cast<unsigned long long>(bgr_stats.nonzero_pixels),
-                         static_cast<unsigned long long>(bgr_stats.alpha_nonzero_pixels),
-                         static_cast<unsigned long long>(bgr_stats.opaque_pixels),
-                         static_cast<unsigned long long>(bgr_stats.sum_r),
-                         static_cast<unsigned long long>(bgr_stats.sum_g),
-                         static_cast<unsigned long long>(bgr_stats.sum_b),
-                         static_cast<unsigned long long>(bgr_stats.sum_a));
-            }
-            if (StatsHaveVisibleRGB(bgr_stats)) {
-                rgba.swap(bgr_rgba);
-                cpu_stats = bgr_stats;
-            }
-        }
-
-        const bool cpu_visible = StatsHaveVisibleRGB(cpu_stats);
-        const bool uploaded = decoded &&
-                              UploadRGBA8ToImage(instance, scheduler, screen_info.texture.image,
-                                                 framebuffer.width.Value(), framebuffer.height.Value(),
-                                                 rgba);
-
-        if (IsPresentTraceEnabled()) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT cpu_screen_stats addr=0x{:08X} width={} height={} decoded={} uploaded={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
-                     framebuffer_addr, framebuffer.width.Value(), framebuffer.height.Value(),
-                     static_cast<u32>(decoded), static_cast<u32>(uploaded),
-                     static_cast<unsigned long long>(cpu_stats.nonzero_pixels),
-                     static_cast<unsigned long long>(cpu_stats.alpha_nonzero_pixels),
-                     static_cast<unsigned long long>(cpu_stats.opaque_pixels),
-                     static_cast<unsigned long long>(cpu_stats.sum_r),
-                     static_cast<unsigned long long>(cpu_stats.sum_g),
-                     static_cast<unsigned long long>(cpu_stats.sum_b),
-                     static_cast<unsigned long long>(cpu_stats.sum_a));
-        }
-
-        const std::size_t screen_index = static_cast<std::size_t>(&screen_info - screen_infos.data());
-        if (screen_index < g_strict_compat_cpu_screens.size()) {
-            if (uploaded && cpu_visible) {
-                g_strict_compat_cpu_screens[screen_index].rgba = rgba;
-                g_strict_compat_cpu_screens[screen_index].width = framebuffer.width.Value();
-                g_strict_compat_cpu_screens[screen_index].height = framebuffer.height.Value();
-                g_strict_compat_cpu_screens[screen_index].valid = true;
-                g_strict_compat_cpu_screens[screen_index].visible = true;
-                g_strict_compat_cpu_screens[screen_index].alpha_only = false;
-            } else {
-                g_strict_compat_cpu_screens[screen_index] = {};
-                g_strict_compat_cpu_screens[screen_index].alpha_only = StatsAreAlphaOnly(cpu_stats);
-            }
-        }
-
-        bool accelerated = false;
-        if (!cpu_visible) {
-            accelerated = rasterizer.AccelerateDisplay(framebuffer, framebuffer_addr,
-                                                       static_cast<u32>(pixel_stride), screen_info);
-            if (IsPresentTraceEnabled()) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT cpu_screen_black_fallback_host addr=0x{:08X} uploaded={} cpu_visible={} host_valid={}",
-                         framebuffer_addr, static_cast<u32>(uploaded), static_cast<u32>(cpu_visible),
-                         static_cast<u32>(accelerated && static_cast<bool>(screen_info.image_view)));
-            }
-        }
-
-        if (!accelerated) {
-            screen_info.image_view = uploaded ? screen_info.texture.image_view : vk::ImageView{};
-            screen_info.texcoords = {0.f, 0.f, 1.f, 1.f};
-        }
-
-        if (IsPresentTraceEnabled()) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT load_fb_to_screen result accelerated={} cpu_upload={} decoded={} addr=0x{:08X} pixel_stride={} width={} height={}",
-                     static_cast<u32>(accelerated), static_cast<u32>(uploaded), static_cast<u32>(decoded), framebuffer_addr,
-                     pixel_stride, framebuffer.width.Value(), framebuffer.height.Value());
-        }
-        return accelerated || uploaded;
     }
 
     const bool accelerated =
@@ -1355,8 +615,7 @@ bool RendererVulkan::ConfigureFramebufferTexture(TextureInfo& texture,
 
     const VideoCore::PixelFormat pixel_format =
         VideoCore::PixelFormatFromGPUPixelFormat(framebuffer.color_format);
-    const vk::Format format = IsStrictCompatEnabled() ? vk::Format::eR8G8B8A8Unorm
-                                                       : instance.GetTraits(pixel_format).native;
+    const vk::Format format = instance.GetTraits(pixel_format).native;
 
     const vk::ImageCreateInfo image_info = {
         .imageType = vk::ImageType::e2D,
@@ -1366,8 +625,7 @@ bool RendererVulkan::ConfigureFramebufferTexture(TextureInfo& texture,
         .arrayLayers = 1,
         .samples = vk::SampleCountFlagBits::e1,
         .tiling = vk::ImageTiling::eOptimal,
-        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
-        vk::ImageUsageFlagBits::eTransferSrc,
+        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
         .sharingMode = vk::SharingMode::eExclusive,
         .initialLayout = vk::ImageLayout::eUndefined,
     };
@@ -1544,33 +802,12 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
     draw_info.o_resolution = Common::MakeVec(h, w, 1.0f / h, 1.0f / w);
     draw_info.screen_id_l = screen_id;
 
-    const bool strict_compat = IsStrictCompatEnabled();
-    const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
-    const auto present_set = strict_compat ? present_heap.Commit() : vk::DescriptorSet{};
-    if (strict_compat) {
-        const vk::ImageView image_view = screen_info.image_view ? screen_info.image_view
-                                                                : screen_info.texture.image_view;
-        for (u32 i = 0; i < 3; ++i) {
-            update_queue.AddImageSampler(present_set, 0, i, image_view, sampler);
-        }
-        update_queue.Flush();
-        if (IsPresentTraceEnabled()) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT compat_bind_single screen_id={} duplicated_view_valid={} strict_compat=1",
-                     screen_id, static_cast<bool>(image_view));
-        }
-    }
-
-    scheduler.Record([this, offset = offset, info = draw_info, present_set, strict_compat](vk::CommandBuffer cmdbuf) {
+    scheduler.Record([this, offset = offset, info = draw_info](vk::CommandBuffer cmdbuf) {
         const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
         cmdbuf.pushConstants(*present_pipeline_layout,
                              vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eVertex,
                              0, sizeof(info), &info);
 
-        if (strict_compat) {
-            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *present_pipeline_layout,
-                                      0, present_set, {});
-        }
         cmdbuf.bindVertexBuffers(0, vertex_buffer.Handle(), {0});
         cmdbuf.draw(4, 1, first_vertex, 0);
     });
@@ -1638,39 +875,12 @@ void RendererVulkan::DrawSingleScreenStereo(u32 screen_id_l, u32 screen_id_r, fl
     draw_info.screen_id_l = screen_id_l;
     draw_info.screen_id_r = screen_id_r;
 
-    const bool strict_compat = IsStrictCompatEnabled();
-    const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
-    const auto present_set = strict_compat ? present_heap.Commit() : vk::DescriptorSet{};
-    if (strict_compat) {
-        const vk::ImageView left_view = screen_infos[screen_id_l].image_view
-                                            ? screen_infos[screen_id_l].image_view
-                                            : screen_infos[screen_id_l].texture.image_view;
-        const vk::ImageView right_view = screen_infos[screen_id_r].image_view
-                                             ? screen_infos[screen_id_r].image_view
-                                             : screen_infos[screen_id_r].texture.image_view;
-        for (u32 i = 0; i < 3; ++i) {
-            const vk::ImageView view = (i == screen_id_r) ? right_view : left_view;
-            update_queue.AddImageSampler(present_set, 0, i, view, sampler);
-        }
-        update_queue.Flush();
-        if (IsPresentTraceEnabled()) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT compat_bind_stereo screen_id_l={} screen_id_r={} left_valid={} right_valid={} strict_compat=1",
-                     screen_id_l, screen_id_r, static_cast<bool>(left_view),
-                     static_cast<bool>(right_view));
-        }
-    }
-
-    scheduler.Record([this, offset = offset, info = draw_info, present_set, strict_compat](vk::CommandBuffer cmdbuf) {
+    scheduler.Record([this, offset = offset, info = draw_info](vk::CommandBuffer cmdbuf) {
         const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
         cmdbuf.pushConstants(*present_pipeline_layout,
                              vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eVertex,
                              0, sizeof(info), &info);
 
-        if (strict_compat) {
-            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *present_pipeline_layout,
-                                      0, present_set, {});
-        }
         cmdbuf.bindVertexBuffers(0, vertex_buffer.Handle(), {0});
         cmdbuf.draw(4, 1, first_vertex, 0);
     });
@@ -1827,93 +1037,6 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
     }
     if (settings.shader_update_requested.exchange(false)) {
         ReloadPipeline();
-    }
-
-    if (IsStrictCompatEnabled() &&
-        Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off) {
-        const int mono_eye = static_cast<int>(Settings::values.mono_render_option.GetValue());
-        const u32 top_screen_id = mono_eye >= 0 && mono_eye < 2 ? static_cast<u32>(mono_eye) : 0;
-        const bool top_visible = !layout.top_screen_enabled || g_strict_compat_cpu_screens[top_screen_id].visible;
-        const bool bottom_visible = !layout.bottom_screen_enabled || g_strict_compat_cpu_screens[2].visible;
-        const bool additional_visible = !layout.additional_screen_enabled || g_strict_compat_cpu_screens[top_screen_id].visible;
-        const bool can_cpu_compose = top_visible && bottom_visible && additional_visible;
-
-        std::vector<u8> composed_rgba;
-        if (can_cpu_compose && ComposeStrictCompatWindowCanvas(layout, composed_rgba)) {
-            if (IsPresentTraceEnabled()) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT cpu_compose_window uploaded=1 width={} height={} top_valid={} bottom_valid={}",
-                         layout.width, layout.height,
-                         static_cast<u32>(g_strict_compat_cpu_screens[0].visible ||
-                                          g_strict_compat_cpu_screens[1].visible),
-                         static_cast<u32>(g_strict_compat_cpu_screens[2].visible));
-            }
-
-            const auto canvas_stats = AnalyzeRGBA8Vector(composed_rgba, layout.width, layout.height);
-            if (IsPresentTraceEnabled()) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT cpu_canvas_stats width={} height={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
-                         layout.width, layout.height,
-                         static_cast<unsigned long long>(canvas_stats.nonzero_pixels),
-                         static_cast<unsigned long long>(canvas_stats.alpha_nonzero_pixels),
-                         static_cast<unsigned long long>(canvas_stats.opaque_pixels),
-                         static_cast<unsigned long long>(canvas_stats.sum_r),
-                         static_cast<unsigned long long>(canvas_stats.sum_g),
-                         static_cast<unsigned long long>(canvas_stats.sum_b),
-                         static_cast<unsigned long long>(canvas_stats.sum_a));
-            }
-
-            if (canvas_stats.nonzero_pixels == 0 && IsPresentTraceEnabled()) {
-                InjectStrictCompatDebugOverlay(composed_rgba, layout.width, layout.height);
-                const auto overlay_stats = AnalyzeRGBA8Vector(composed_rgba, layout.width, layout.height);
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT cpu_canvas_overlay_injected=1 width={} height={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
-                         layout.width, layout.height,
-                         static_cast<unsigned long long>(overlay_stats.nonzero_pixels),
-                         static_cast<unsigned long long>(overlay_stats.alpha_nonzero_pixels),
-                         static_cast<unsigned long long>(overlay_stats.opaque_pixels),
-                         static_cast<unsigned long long>(overlay_stats.sum_r),
-                         static_cast<unsigned long long>(overlay_stats.sum_g),
-                         static_cast<unsigned long long>(overlay_stats.sum_b),
-                         static_cast<unsigned long long>(overlay_stats.sum_a));
-            }
-
-            if (layout.width == frame->width && layout.height == frame->height &&
-                UploadRGBA8DirectlyToFrameImage(instance, scheduler, frame->image, frame->width,
-                                                frame->height, composed_rgba)) {
-                if (IsPresentTraceEnabled()) {
-                    LOG_INFO(Render_Vulkan,
-                             "TRACE_PRESENT cpu_compose_window direct_upload_frame=1 src={}x{} dst={}x{}",
-                             layout.width, layout.height, frame->width, frame->height);
-                }
-                return;
-            }
-
-            if (EnsureRGBA8PresentTexture(instance, main_window, screen_infos[0].texture, layout.width,
-                                         layout.height) &&
-                UploadRGBA8ToImage(instance, scheduler, screen_infos[0].texture.image, layout.width,
-                                   layout.height, composed_rgba)) {
-                screen_infos[0].image_view = screen_infos[0].texture.image_view;
-                screen_infos[0].texcoords = {0.f, 0.f, 1.f, 1.f};
-
-                if (IsPresentTraceEnabled()) {
-                    LOG_INFO(Render_Vulkan,
-                             "TRACE_PRESENT cpu_compose_window direct_copy_frame=1 src={}x{} dst={}x{}",
-                             layout.width, layout.height, frame->width, frame->height);
-                }
-                DirectCopyPresentTextureToFrame(scheduler, screen_infos[0].texture.image, frame->image,
-                                                layout.width, layout.height, frame->width,
-                                                frame->height);
-                return;
-            }
-        } else if (IsPresentTraceEnabled()) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT cpu_compose_window bypass_gpu_present=1 top_valid={} top_visible={} bottom_valid={} bottom_visible={}",
-                     static_cast<u32>(g_strict_compat_cpu_screens[0].valid || g_strict_compat_cpu_screens[1].valid),
-                     static_cast<u32>(g_strict_compat_cpu_screens[0].visible || g_strict_compat_cpu_screens[1].visible),
-                     static_cast<u32>(g_strict_compat_cpu_screens[2].valid),
-                     static_cast<u32>(g_strict_compat_cpu_screens[2].visible));
-        }
     }
 
     PrepareDraw(frame, layout);
