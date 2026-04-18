@@ -810,12 +810,37 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
     draw_info.o_resolution = Common::MakeVec(h, w, 1.0f / h, 1.0f / w);
     draw_info.screen_id_l = screen_id;
 
-    scheduler.Record([this, offset = offset, info = draw_info](vk::CommandBuffer cmdbuf) {
+    vk::DescriptorSet strict_present_set{};
+    if (IsStrictCompatEnabled()) {
+        const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
+        const vk::ImageView external_view = screen_info.image_view;
+        const vk::ImageView owned_view = screen_info.texture.image_view;
+        const vk::ImageView bind_view = external_view ? external_view : owned_view;
+        strict_present_set = present_heap.Commit();
+        for (u32 i = 0; i < 3; i++) {
+            update_queue.AddImageSampler(strict_present_set, 0, i, bind_view, sampler);
+        }
+        update_queue.Flush();
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT strict_compat bind_single_screen screen_id={} bind_view_valid={} external_valid={} owned_valid={} duplicated_slots=3",
+                     screen_id, static_cast<u32>(static_cast<bool>(bind_view)),
+                     static_cast<u32>(static_cast<bool>(external_view)),
+                     static_cast<u32>(static_cast<bool>(owned_view)));
+        }
+    }
+
+    scheduler.Record([this, offset = offset, info = draw_info,
+                      strict_present_set = strict_present_set](vk::CommandBuffer cmdbuf) {
         const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
         cmdbuf.pushConstants(*present_pipeline_layout,
                              vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eVertex,
                              0, sizeof(info), &info);
 
+        if (strict_present_set) {
+            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                      *present_pipeline_layout, 0, strict_present_set, {});
+        }
         cmdbuf.bindVertexBuffers(0, vertex_buffer.Handle(), {0});
         cmdbuf.draw(4, 1, first_vertex, 0);
     });
@@ -883,12 +908,38 @@ void RendererVulkan::DrawSingleScreenStereo(u32 screen_id_l, u32 screen_id_r, fl
     draw_info.screen_id_l = screen_id_l;
     draw_info.screen_id_r = screen_id_r;
 
-    scheduler.Record([this, offset = offset, info = draw_info](vk::CommandBuffer cmdbuf) {
+    vk::DescriptorSet strict_present_set{};
+    if (IsStrictCompatEnabled()) {
+        const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
+        const vk::ImageView external_view = screen_info_l.image_view;
+        const vk::ImageView owned_view = screen_info_l.texture.image_view;
+        const vk::ImageView bind_view = external_view ? external_view : owned_view;
+        strict_present_set = present_heap.Commit();
+        for (u32 i = 0; i < 3; i++) {
+            update_queue.AddImageSampler(strict_present_set, 0, i, bind_view, sampler);
+        }
+        update_queue.Flush();
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT strict_compat bind_single_screen_stereo left={} right={} bind_view_valid={} external_valid={} owned_valid={} duplicated_slots=3",
+                     screen_id_l, screen_id_r,
+                     static_cast<u32>(static_cast<bool>(bind_view)),
+                     static_cast<u32>(static_cast<bool>(external_view)),
+                     static_cast<u32>(static_cast<bool>(owned_view)));
+        }
+    }
+
+    scheduler.Record([this, offset = offset, info = draw_info,
+                      strict_present_set = strict_present_set](vk::CommandBuffer cmdbuf) {
         const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
         cmdbuf.pushConstants(*present_pipeline_layout,
                              vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eVertex,
                              0, sizeof(info), &info);
 
+        if (strict_present_set) {
+            cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                      *present_pipeline_layout, 0, strict_present_set, {});
+        }
         cmdbuf.bindVertexBuffers(0, vertex_buffer.Handle(), {0});
         cmdbuf.draw(4, 1, first_vertex, 0);
     });
