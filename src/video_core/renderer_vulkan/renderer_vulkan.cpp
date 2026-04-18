@@ -406,8 +406,8 @@ void BlitCpuScreenToCanvas(const CpuScreenDump& screen, std::vector<u8>& canvas,
 
         const vk::BufferImageCopy image_copy = {
             .bufferOffset = 0,
-            .bufferRowLength = width,
-            .bufferImageHeight = height,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
             .imageSubresource = {
                 .aspectMask = vk::ImageAspectFlagBits::eColor,
                 .mipLevel = 0,
@@ -506,8 +506,8 @@ void BlitCpuScreenToCanvas(const CpuScreenDump& screen, std::vector<u8>& canvas,
 
         const vk::BufferImageCopy image_copy = {
             .bufferOffset = 0,
-            .bufferRowLength = width,
-            .bufferImageHeight = height,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
             .imageSubresource = {
                 .aspectMask = vk::ImageAspectFlagBits::eColor,
                 .mipLevel = 0,
@@ -684,6 +684,47 @@ struct RenderTargetTraceStats {
         }
     }
     return stats;
+}
+
+[[nodiscard]] RenderTargetTraceStats AnalyzeRGBA8Vector(const std::vector<u8>& rgba, u32 width,
+                                                      u32 height) {
+    if (rgba.empty()) {
+        return {};
+    }
+    return AnalyzeRenderTargetRGBA8(rgba.data(), width, height);
+}
+
+void InjectStrictCompatDebugOverlay(std::vector<u8>& rgba, u32 width, u32 height) {
+    if (rgba.size() < static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4 ||
+        width == 0 || height == 0) {
+        return;
+    }
+
+    const u32 marker_w = std::min<u32>(width, 64);
+    const u32 marker_h = std::min<u32>(height, 64);
+    for (u32 y = 0; y < marker_h; ++y) {
+        for (u32 x = 0; x < marker_w; ++x) {
+            const std::size_t base = (static_cast<std::size_t>(y) * width + x) * 4;
+            const bool checker = ((x / 8) ^ (y / 8)) & 1;
+            rgba[base + 0] = checker ? 255 : 0;
+            rgba[base + 1] = checker ? 0 : 255;
+            rgba[base + 2] = 255;
+            rgba[base + 3] = 255;
+        }
+    }
+
+    for (u32 x = 0; x < width; ++x) {
+        const std::size_t top = static_cast<std::size_t>(x) * 4;
+        const std::size_t bottom = (static_cast<std::size_t>(height - 1) * width + x) * 4;
+        rgba[top + 0] = 255; rgba[top + 1] = 255; rgba[top + 2] = 255; rgba[top + 3] = 255;
+        rgba[bottom + 0] = 255; rgba[bottom + 1] = 255; rgba[bottom + 2] = 255; rgba[bottom + 3] = 255;
+    }
+    for (u32 y = 0; y < height; ++y) {
+        const std::size_t left = (static_cast<std::size_t>(y) * width) * 4;
+        const std::size_t right = (static_cast<std::size_t>(y) * width + (width - 1)) * 4;
+        rgba[left + 0] = 255; rgba[left + 1] = 255; rgba[left + 2] = 255; rgba[left + 3] = 255;
+        rgba[right + 0] = 255; rgba[right + 1] = 255; rgba[right + 2] = 255; rgba[right + 3] = 255;
+    }
 }
 
 void MaybeWriteRenderTargetPPM(const u8* rgba, u32 width, u32 height, u64 trace_index) {
@@ -991,6 +1032,22 @@ bool RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuff
                               UploadRGBA8ToImage(instance, scheduler, screen_info.texture.image,
                                                  framebuffer.width.Value(), framebuffer.height.Value(),
                                                  rgba);
+
+        if (IsPresentTraceEnabled()) {
+            const auto cpu_stats = AnalyzeRGBA8Vector(rgba, framebuffer.width.Value(),
+                                                      framebuffer.height.Value());
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT cpu_screen_stats addr=0x{:08X} width={} height={} decoded={} uploaded={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
+                     framebuffer_addr, framebuffer.width.Value(), framebuffer.height.Value(),
+                     static_cast<u32>(decoded), static_cast<u32>(uploaded),
+                     static_cast<unsigned long long>(cpu_stats.nonzero_pixels),
+                     static_cast<unsigned long long>(cpu_stats.alpha_nonzero_pixels),
+                     static_cast<unsigned long long>(cpu_stats.opaque_pixels),
+                     static_cast<unsigned long long>(cpu_stats.sum_r),
+                     static_cast<unsigned long long>(cpu_stats.sum_g),
+                     static_cast<unsigned long long>(cpu_stats.sum_b),
+                     static_cast<unsigned long long>(cpu_stats.sum_a));
+        }
 
         const std::size_t screen_index = static_cast<std::size_t>(&screen_info - screen_infos.data());
         if (screen_index < g_strict_compat_cpu_screens.size()) {
@@ -1709,6 +1766,35 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
                          static_cast<u32>(g_strict_compat_cpu_screens[0].valid ||
                                           g_strict_compat_cpu_screens[1].valid),
                          static_cast<u32>(g_strict_compat_cpu_screens[2].valid));
+            }
+
+            const auto canvas_stats = AnalyzeRGBA8Vector(composed_rgba, layout.width, layout.height);
+            if (IsPresentTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT cpu_canvas_stats width={} height={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
+                         layout.width, layout.height,
+                         static_cast<unsigned long long>(canvas_stats.nonzero_pixels),
+                         static_cast<unsigned long long>(canvas_stats.alpha_nonzero_pixels),
+                         static_cast<unsigned long long>(canvas_stats.opaque_pixels),
+                         static_cast<unsigned long long>(canvas_stats.sum_r),
+                         static_cast<unsigned long long>(canvas_stats.sum_g),
+                         static_cast<unsigned long long>(canvas_stats.sum_b),
+                         static_cast<unsigned long long>(canvas_stats.sum_a));
+            }
+
+            if (canvas_stats.nonzero_pixels == 0 && IsPresentTraceEnabled()) {
+                InjectStrictCompatDebugOverlay(composed_rgba, layout.width, layout.height);
+                const auto overlay_stats = AnalyzeRGBA8Vector(composed_rgba, layout.width, layout.height);
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PRESENT cpu_canvas_overlay_injected=1 width={} height={} nonzero={} alpha_nonzero={} opaque={} sum_rgba=({}, {}, {}, {})",
+                         layout.width, layout.height,
+                         static_cast<unsigned long long>(overlay_stats.nonzero_pixels),
+                         static_cast<unsigned long long>(overlay_stats.alpha_nonzero_pixels),
+                         static_cast<unsigned long long>(overlay_stats.opaque_pixels),
+                         static_cast<unsigned long long>(overlay_stats.sum_r),
+                         static_cast<unsigned long long>(overlay_stats.sum_g),
+                         static_cast<unsigned long long>(overlay_stats.sum_b),
+                         static_cast<unsigned long long>(overlay_stats.sum_a));
             }
 
             if (layout.width == frame->width && layout.height == frame->height &&
