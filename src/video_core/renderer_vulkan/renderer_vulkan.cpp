@@ -70,13 +70,10 @@ struct CpuScreenDump {
 
 static std::array<CpuScreenDump, 3> g_strict_compat_cpu_screens{};
 
-[[nodiscard]] bool StatsHaveVisibleRGB(const RenderTargetTraceStats& stats) {
-    return stats.sum_r != 0 || stats.sum_g != 0 || stats.sum_b != 0;
-}
+struct RenderTargetTraceStats;
 
-[[nodiscard]] bool StatsAreAlphaOnly(const RenderTargetTraceStats& stats) {
-    return !StatsHaveVisibleRGB(stats) && stats.sum_a != 0 && stats.nonzero_pixels != 0;
-}
+[[nodiscard]] bool StatsHaveVisibleRGB(const RenderTargetTraceStats& stats);
+[[nodiscard]] bool StatsAreAlphaOnly(const RenderTargetTraceStats& stats);
 
 void DecodeFramebufferRGB8AsBGR(const u8* framebuffer_data, u32 width, u32 height, u32 pixel_stride,
                                 std::vector<u8>& rgba) {
@@ -678,6 +675,15 @@ struct RenderTargetTraceStats {
     u32 width = 0;
     u32 height = 0;
 };
+
+[[nodiscard]] bool StatsHaveVisibleRGB(const RenderTargetTraceStats& stats) {
+    return stats.sum_r != 0 || stats.sum_g != 0 || stats.sum_b != 0;
+}
+
+[[nodiscard]] bool StatsAreAlphaOnly(const RenderTargetTraceStats& stats) {
+    return !StatsHaveVisibleRGB(stats) && stats.sum_a != 0 && stats.nonzero_pixels != 0;
+}
+
 
 [[nodiscard]] RenderTargetTraceStats AnalyzeRenderTargetRGBA8(const u8* rgba, u32 width, u32 height) {
     RenderTargetTraceStats stats{};
