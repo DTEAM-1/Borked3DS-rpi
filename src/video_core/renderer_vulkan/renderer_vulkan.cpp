@@ -57,6 +57,57 @@ namespace {
     return false;
 }
 
+
+[[nodiscard]] bool UseSolidPresentProbe() {
+    const char* value = std::getenv("BORKED3DS_V3DV_SOLID_PRESENT_PROBE");
+    if (value != nullptr && value[0] != '\0') {
+        return value[0] != '0';
+    }
+    // On Pi5/V3DV strict-compat, enable a decisive present probe by default.
+    // This intentionally bypasses textured sampling during screen composition and paints
+    // the expected screen rectangles directly through the active render pass. If these
+    // colors are still not visible, the remaining failure is below descriptor/sampling
+    // and likely sits in the render pass / framebuffer / present path itself.
+    return IsStrictCompatEnabled();
+}
+
+[[nodiscard]] vk::ClearAttachment MakeSolidPresentAttachment(u32 screen_id) {
+    std::array<float, 4> color = {1.0f, 0.0f, 1.0f, 1.0f}; // magenta
+    switch (screen_id) {
+    case 0:
+        color = {1.0f, 0.0f, 1.0f, 1.0f}; // top / left
+        break;
+    case 1:
+        color = {0.0f, 1.0f, 1.0f, 1.0f}; // right eye / top-right
+        break;
+    case 2:
+        color = {0.0f, 1.0f, 0.0f, 1.0f}; // bottom
+        break;
+    default:
+        color = {1.0f, 1.0f, 0.0f, 1.0f};
+        break;
+    }
+
+    return vk::ClearAttachment{
+        vk::ImageAspectFlagBits::eColor,
+        0,
+        vk::ClearValue{vk::ClearColorValue{color}},
+    };
+}
+
+[[nodiscard]] vk::ClearRect MakeSolidPresentRect(float x, float y, float w, float h) {
+    const auto left = std::max(0, static_cast<int>(x));
+    const auto top = std::max(0, static_cast<int>(y));
+    const auto width = std::max(1u, static_cast<u32>(std::max(0.0f, w)));
+    const auto height = std::max(1u, static_cast<u32>(std::max(0.0f, h)));
+
+    return vk::ClearRect{
+        vk::Rect2D{vk::Offset2D{left, top}, vk::Extent2D{width, height}},
+        0,
+        1,
+    };
+}
+
 [[nodiscard]] u32 GetRenderTargetTraceFrameBudget() {
     const char* value = std::getenv("BORKED3DS_V3DV_TRACE_RT_FRAMES");
     if (value == nullptr || value[0] == '\0') {
@@ -830,8 +881,29 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
         }
     }
 
+    const bool solid_present_probe = UseSolidPresentProbe();
+    const vk::ClearAttachment solid_attachment =
+        solid_present_probe ? MakeSolidPresentAttachment(screen_id) : vk::ClearAttachment{};
+    const vk::ClearRect solid_rect =
+        solid_present_probe ? MakeSolidPresentRect(x, y, w, h) : vk::ClearRect{};
+
+    if (solid_present_probe && IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT strict_compat solid_present_probe screen_id={} rect=({}, {}, {}, {})",
+                 screen_id, static_cast<int>(x), static_cast<int>(y), static_cast<int>(w),
+                 static_cast<int>(h));
+    }
+
     scheduler.Record([this, offset = offset, info = draw_info,
-                      strict_present_set = strict_present_set](vk::CommandBuffer cmdbuf) {
+                      strict_present_set = strict_present_set,
+                      solid_present_probe = solid_present_probe,
+                      solid_attachment = solid_attachment,
+                      solid_rect = solid_rect](vk::CommandBuffer cmdbuf) {
+        if (solid_present_probe) {
+            cmdbuf.clearAttachments(1, &solid_attachment, 1, &solid_rect);
+            return;
+        }
+
         const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
         cmdbuf.pushConstants(*present_pipeline_layout,
                              vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eVertex,
@@ -929,8 +1001,29 @@ void RendererVulkan::DrawSingleScreenStereo(u32 screen_id_l, u32 screen_id_r, fl
         }
     }
 
+    const bool solid_present_probe = UseSolidPresentProbe();
+    const vk::ClearAttachment solid_attachment =
+        solid_present_probe ? MakeSolidPresentAttachment(screen_id_l) : vk::ClearAttachment{};
+    const vk::ClearRect solid_rect =
+        solid_present_probe ? MakeSolidPresentRect(x, y, w, h) : vk::ClearRect{};
+
+    if (solid_present_probe && IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT strict_compat solid_present_probe_stereo left={} right={} rect=({}, {}, {}, {})",
+                 screen_id_l, screen_id_r, static_cast<int>(x), static_cast<int>(y),
+                 static_cast<int>(w), static_cast<int>(h));
+    }
+
     scheduler.Record([this, offset = offset, info = draw_info,
-                      strict_present_set = strict_present_set](vk::CommandBuffer cmdbuf) {
+                      strict_present_set = strict_present_set,
+                      solid_present_probe = solid_present_probe,
+                      solid_attachment = solid_attachment,
+                      solid_rect = solid_rect](vk::CommandBuffer cmdbuf) {
+        if (solid_present_probe) {
+            cmdbuf.clearAttachments(1, &solid_attachment, 1, &solid_rect);
+            return;
+        }
+
         const u32 first_vertex = static_cast<u32>(offset) / sizeof(ScreenRectVertex);
         cmdbuf.pushConstants(*present_pipeline_layout,
                              vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eVertex,
