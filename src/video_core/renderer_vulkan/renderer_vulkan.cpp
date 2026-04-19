@@ -65,13 +65,17 @@ namespace {
 
 [[nodiscard]] bool UseColorPresentPipelineProbe() {
     const char* value = std::getenv("BORKED3DS_V3DV_COLOR_PRESENT_PROBE");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+[[nodiscard]] bool UseTexturePresentPipelineProbe() {
+    const char* value = std::getenv("BORKED3DS_V3DV_TEXTURE_PRESENT_PROBE");
     if (value != nullptr && value[0] != '\0') {
         return value[0] != '0';
     }
-    // The solid present probe finally produced visible rectangles on Pi5/V3DV.
-    // The next best discriminator is to keep the normal quad draw path but swap the
-    // textured fragment shader for a constant-color shader. If those quads appear,
-    // the remaining failure sits in textured sampling rather than vertex/pipeline setup.
+    // The constant-color present probe finally produced visible 3DS rectangles on Pi5/V3DV.
+    // The next best discriminator is to keep the normal quad draw path and sample the bound
+    // image view with a *minimal* fragment shader, bypassing the normal present shader logic.
     return IsStrictCompatEnabled();
 }
 
@@ -491,7 +495,20 @@ void RendererVulkan::CompileShaders() {
     static constexpr std::string_view STRICT_COMPAT_COLOR_PRESENT_FRAG = R"(#version 450
 layout(location = 0) out vec4 out_color;
 void main() {
-    out_color = vec4(1.0, 0.0, 1.0, 1.0);
+    out_color = vec4(0.0, 0.0, 1.0, 1.0);
+}
+)";
+    static constexpr std::string_view STRICT_COMPAT_TEXTURE_PRESENT_FRAG = R"(#version 450
+layout(set = 0, binding = 0) uniform sampler2D screen_textures[3];
+layout(location = 0) in vec2 frag_tex_coord;
+layout(location = 0) out vec4 out_color;
+void main() {
+    vec4 s = texture(screen_textures[0], frag_tex_coord);
+    vec3 rgb = s.bgr;
+    if (max(max(rgb.r, rgb.g), rgb.b) < 0.001 && s.a > 0.001) {
+        rgb = vec3(s.a, s.a, s.a);
+    }
+    out_color = vec4(rgb, 1.0);
 }
 )";
     present_vertex_shader =
@@ -503,6 +520,13 @@ void main() {
         }
         present_shaders[0] =
             Compile(STRICT_COMPAT_COLOR_PRESENT_FRAG, vk::ShaderStageFlagBits::eFragment, device);
+    } else if (UseTexturePresentPipelineProbe()) {
+        if (IsPresentTraceEnabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_PRESENT strict_compat texture_present_pipeline_probe enabled=1 mode='bgr_alpha_fallback'");
+        }
+        present_shaders[0] = Compile(STRICT_COMPAT_TEXTURE_PRESENT_FRAG,
+                                     vk::ShaderStageFlagBits::eFragment, device);
     } else {
         present_shaders[0] = Compile(HostShaders::VULKAN_PRESENT_FRAG,
                                      vk::ShaderStageFlagBits::eFragment, device, preamble);
@@ -916,6 +940,11 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
                  "TRACE_PRESENT strict_compat color_present_pipeline_probe_draw screen_id={} rect=({}, {}, {}, {})",
                  screen_id, static_cast<int>(x), static_cast<int>(y), static_cast<int>(w),
                  static_cast<int>(h));
+    } else if (UseTexturePresentPipelineProbe() && IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT strict_compat texture_present_pipeline_probe_draw screen_id={} rect=({}, {}, {}, {})",
+                 screen_id, static_cast<int>(x), static_cast<int>(y), static_cast<int>(w),
+                 static_cast<int>(h));
     }
 
     scheduler.Record([this, offset = offset, info = draw_info,
@@ -1039,6 +1068,11 @@ void RendererVulkan::DrawSingleScreenStereo(u32 screen_id_l, u32 screen_id_r, fl
     } else if (UseColorPresentPipelineProbe() && IsPresentTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_PRESENT strict_compat color_present_pipeline_probe_draw_stereo left={} right={} rect=({}, {}, {}, {})",
+                 screen_id_l, screen_id_r, static_cast<int>(x), static_cast<int>(y),
+                 static_cast<int>(w), static_cast<int>(h));
+    } else if (UseTexturePresentPipelineProbe() && IsPresentTraceEnabled()) {
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PRESENT strict_compat texture_present_pipeline_probe_draw_stereo left={} right={} rect=({}, {}, {}, {})",
                  screen_id_l, screen_id_r, static_cast<int>(x), static_cast<int>(y),
                  static_cast<int>(w), static_cast<int>(h));
     }
