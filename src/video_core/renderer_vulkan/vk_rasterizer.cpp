@@ -816,7 +816,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             return false;
         }
         startup_textured_software_skip_index = ++g_vk_startup_textured_software_skip_counter;
-        return startup_textured_software_skip_index <= 256;
+        return startup_textured_software_skip_index <= 384;
     }();
 
     const bool tiny_textured_software_draw =
@@ -831,7 +831,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             return false;
         }
         large_textured_software_draw_index = ++g_vk_large_textured_software_allow_counter;
-        return large_textured_software_draw_index <= 128;
+        return large_textured_software_draw_index <= 256;
     }();
 
     u64 medium_textured_software_draw_index = 0;
@@ -840,14 +840,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             return false;
         }
         medium_textured_software_draw_index = ++g_vk_medium_textured_software_skip_counter;
-        return medium_textured_software_draw_index <= 128;
+        return medium_textured_software_draw_index <= 256;
     }();
 
     if (!accelerate) {
         if (startup_textured_software_draw) {
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat early_skip_startup_textured_software_draw_v9 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                         "TRACE_DRAW strict_compat early_skip_startup_textured_software_draw_v10 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                          startup_textured_software_skip_index, vertex_batch.size(),
                          regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                          static_cast<u32>(HasActiveDepthState(regs)),
@@ -879,7 +879,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             if (bypass_index <= 128) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_bypass_textured_software_draw_v5 bypass_index={} vertex_batch_size={} num_vertices={} enabled_textures={} tiny_textured={} textures_disabled=0 depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                             "TRACE_DRAW strict_compat early_bypass_textured_software_draw_v6 bypass_index={} vertex_batch_size={} num_vertices={} enabled_textures={} tiny_textured={} textures_disabled=0 depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                              bypass_index, vertex_batch.size(), regs.pipeline.num_vertices,
                              CountEnabledPrimaryTextures(regs),
                              static_cast<u32>(tiny_textured_software_draw),
@@ -919,7 +919,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (medium_textured_software_draw) {
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat early_skip_medium_textured_software_draw_v8 medium_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                         "TRACE_DRAW strict_compat early_skip_medium_textured_software_draw_v10 medium_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                          medium_textured_software_draw_index, vertex_batch.size(),
                          regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                          static_cast<u32>(HasActiveDepthState(regs)),
@@ -933,7 +933,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (large_textured_software_draw) {
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat early_skip_large_textured_software_draw_v8 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                         "TRACE_DRAW strict_compat early_skip_large_textured_software_draw_v10 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                          large_textured_software_draw_index, vertex_batch.size(),
                          regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                          static_cast<u32>(HasActiveDepthState(regs)),
