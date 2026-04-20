@@ -786,14 +786,15 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
 
         if (ShouldBypassFragileTexturedSoftwareDraw(regs, vertex_batch.size()) &&
-            !tiny_textured_software_draw && !large_textured_software_draw) {
+            !large_textured_software_draw) {
             const u64 bypass_index = ++g_vk_textured_software_bypass_counter;
-            if (bypass_index <= 6) {
+            if (bypass_index <= 12) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_bypass_textured_software_draw bypass_index={} vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled=0 depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                             "TRACE_DRAW strict_compat early_bypass_textured_software_draw_v2 bypass_index={} vertex_batch_size={} num_vertices={} enabled_textures={} tiny_textured={} textures_disabled=0 depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                              bypass_index, vertex_batch.size(), regs.pipeline.num_vertices,
                              CountEnabledPrimaryTextures(regs),
+                             static_cast<u32>(tiny_textured_software_draw),
                              static_cast<u32>(HasActiveDepthState(regs)),
                              regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                              regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
@@ -805,7 +806,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (tiny_textured_software_draw && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_tiny_textured_software_draw vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat allowing_tiny_textured_software_draw_after_bypass_window vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs),
                      static_cast<u32>(HasActiveDepthState(regs)),
