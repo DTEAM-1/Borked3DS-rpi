@@ -71,6 +71,7 @@ std::atomic<u64> g_vk_textured_software_bypass_counter{0};
 std::atomic<u64> g_vk_large_textured_software_allow_counter{0};
 std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
 std::atomic<u64> g_vk_medium_textured_software_skip_counter{0};
+std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
 
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const Pica::RegsInternal& regs) {
     const auto& textures = regs.texturing.GetTextures();
@@ -186,6 +187,32 @@ std::atomic<u64> g_vk_medium_textured_software_skip_counter{0};
     }
     if (regs.pipeline.num_vertices < 24 || regs.pipeline.num_vertices > 96 ||
         regs.pipeline.num_vertices == 42) {
+        return false;
+    }
+    if (!HasPrimaryTexturesEnabled(regs)) {
+        return false;
+    }
+    if (CountEnabledPrimaryTextures(regs) != 1) {
+        return false;
+    }
+    if (regs.framebuffer.IsShadowRendering()) {
+        return false;
+    }
+    if (HasActiveDepthState(regs)) {
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool ShouldSkipStartupTexturedSoftwareDraw(const Pica::RegsInternal& regs,
+                                                      std::size_t vertex_batch_size) {
+    if (!IsStrictCompatEnabled()) {
+        return false;
+    }
+    if (vertex_batch_size == 0 || vertex_batch_size > 128) {
+        return false;
+    }
+    if (regs.pipeline.num_vertices == 0 || regs.pipeline.num_vertices > 128) {
         return false;
     }
     if (!HasPrimaryTexturesEnabled(regs)) {
@@ -783,6 +810,15 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         return true;
     }
 
+    u64 startup_textured_software_skip_index = 0;
+    const bool startup_textured_software_draw = [&] {
+        if (accelerate || !ShouldSkipStartupTexturedSoftwareDraw(regs, vertex_batch.size())) {
+            return false;
+        }
+        startup_textured_software_skip_index = ++g_vk_startup_textured_software_skip_counter;
+        return startup_textured_software_skip_index <= 256;
+    }();
+
     const bool tiny_textured_software_draw =
         !accelerate && ShouldAttemptTinyTexturedSoftwareDraw(regs, vertex_batch.size());
     const bool tiny_textured_accelerated_draw =
@@ -808,6 +844,20 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     }();
 
     if (!accelerate) {
+        if (startup_textured_software_draw) {
+            if (IsDrawTraceEnabled()) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW strict_compat early_skip_startup_textured_software_draw_v9 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                         startup_textured_software_skip_index, vertex_batch.size(),
+                         regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
+                         static_cast<u32>(HasActiveDepthState(regs)),
+                         regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                         regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+            }
+            vertex_batch.clear();
+            return true;
+        }
+
         if (ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
             const u64 bypass_index = ++g_vk_software_bypass_counter;
             if (bypass_index <= 128) {
