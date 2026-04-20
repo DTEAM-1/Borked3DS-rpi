@@ -760,17 +760,17 @@ void PicaCore::DrawArrays(bool is_indexed) {
             fragile_startup_draws_seen < 160 || startup_textured_index <= 128;
 
         if (keep_startup_textured_software_fallback) {
-            if (regs.internal.pipeline.num_vertices == 42) {
+            if (regs.internal.pipeline.num_vertices >= 18) {
                 const u64 large_textured_startup_skip_index = ++g_large_textured_startup_skip_counter;
-                if (large_textured_startup_skip_index <= 48) {
+                if (large_textured_startup_skip_index <= 96) {
                     if (trace_draw) {
                         LOG_INFO(HW_GPU,
-                                 "TRACE_DRAW_PICA strict_compat skipping large textured startup draw entirely draw_index={} startup_textured_index={} large_textured_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} fragile_startup_draws_seen={} startup_textured_window=128 fragile_cooldown_threshold=160 large_textured_startup_skip_window=48",
+                                 "TRACE_DRAW_PICA strict_compat skipping medium_or_large textured startup draw entirely v10 draw_index={} startup_textured_index={} medium_or_large_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} fragile_startup_draws_seen={} startup_textured_window=128 fragile_cooldown_threshold=160 medium_or_large_startup_skip_window=96",
                                  draw_index, startup_textured_index, large_textured_startup_skip_index,
                                  is_indexed, regs.internal.pipeline.num_vertices,
                                  primitive_assembler.IsEmpty(), textures_disabled,
                                  fragile_startup_draws_seen);
-                        LogPicaTextureState(regs.internal, "large_textured_startup_skip");
+                        LogPicaTextureState(regs.internal, "medium_or_large_textured_startup_skip_v10");
                     }
                     return;
                 }
@@ -788,7 +788,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
         } else if (trace_draw && startup_textured_index <= 16 &&
                    !g_logged_large_textured_startup_bypass.exchange(true)) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat allowing startup textured draw acceleration only after extra extended cooldown draw_index={} startup_textured_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} fragile_startup_draws_seen={} startup_textured_gate=post_extra_extended_cooldown",
+                     "TRACE_DRAW_PICA strict_compat allowing startup textured draw acceleration only after extra extended cooldown draw_index={} startup_textured_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} fragile_startup_draws_seen={} startup_textured_gate=post_extra_extended_cooldown_v10",
                      draw_index, startup_textured_index, is_indexed,
                      regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                      textures_disabled, fragile_startup_draws_seen);
