@@ -42,11 +42,6 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
-[[nodiscard]] bool IsEnvEnabled(const char* name) {
-    const char* value = std::getenv(name);
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
-}
-
 [[nodiscard]] bool IsRenderTargetTraceEnabled() {
     const char* value = std::getenv("BORKED3DS_V3DV_TRACE_RT");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
