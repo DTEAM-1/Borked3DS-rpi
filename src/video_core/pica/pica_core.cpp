@@ -103,6 +103,7 @@ std::atomic<u64> g_tiny_textured_startup_draw_counter{0};
 std::atomic<u64> g_tiny_textured_startup_skip_counter{0};
 std::atomic<u64> g_large_textured_startup_skip_counter{0};
 std::atomic<u64> g_batch42_textured_startup_skip_counter{0};
+std::atomic<u64> g_nonindexed96_textured_startup_skip_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 std::atomic<bool> g_logged_first_non_fragile_draw{false};
 std::atomic<bool> g_logged_first_non_fragile_textured_draw{false};
@@ -907,6 +908,45 @@ void PicaCore::DrawArrays(bool is_indexed) {
                      primitive_assembler.IsEmpty(), textures_disabled, accelerate_draw,
                      static_cast<u32>(regs.internal.pipeline.use_gs.Value()),
                      static_cast<u32>(primitive_assembler.GetTopology()));
+        }
+    }
+
+    const bool first_nonindexed96_textured_startup_candidate =
+        IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() &&
+        !is_fragile_startup_draw && !is_indexed && primitive_assembler.IsEmpty() &&
+        textures_disabled == 0 && regs.internal.pipeline.num_vertices == 96 &&
+        primitive_assembler.GetTopology() == PipelineRegs::TriangleTopology::List;
+
+    if (first_nonindexed96_textured_startup_candidate) {
+        const u64 nonindexed96_textured_startup_skip_index =
+            ++g_nonindexed96_textured_startup_skip_counter;
+        constexpr u64 nonindexed96_textured_startup_skip_window = 32;
+        if (nonindexed96_textured_startup_skip_index <= nonindexed96_textured_startup_skip_window) {
+            if (trace_draw) {
+                LOG_INFO(HW_GPU,
+                         "TRACE_DRAW_PICA strict_compat skipping nonindexed96 textured startup draw entirely v14 draw_index={} nonindexed96_textured_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={}",
+                         draw_index, nonindexed96_textured_startup_skip_index, is_indexed,
+                         regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
+                         textures_disabled,
+                         static_cast<u32>(primitive_assembler.GetTopology()),
+                         regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                         regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                         nonindexed96_textured_startup_skip_window);
+                LogPicaTextureState(regs.internal, "nonindexed96_textured_startup_skip_v14");
+            }
+            return;
+        }
+
+        if (trace_draw &&
+            nonindexed96_textured_startup_skip_index ==
+                nonindexed96_textured_startup_skip_window + 1) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA strict_compat allowing nonindexed96 textured startup draw acceleration after v14 skip window draw_index={} indexed={} num_vertices={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     static_cast<u32>(primitive_assembler.GetTopology()),
+                     regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+            LogPicaTextureState(regs.internal, "nonindexed96_textured_startup_allow_v14");
         }
     }
 
