@@ -926,10 +926,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (ShouldSkipNonIndexed96TexturedSoftwareDraw(regs, vertex_batch.size())) {
             const u64 nonindexed96_skip_index = ++g_vk_nonindexed96_textured_software_skip_counter;
-            if (nonindexed96_skip_index <= 512) {
+            if (nonindexed96_skip_index <= 1024) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_skip_nonindexed96_textured_software_draw_v18 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                             "TRACE_DRAW strict_compat early_skip_nonindexed96_textured_software_draw_v19 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                              nonindexed96_skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
                              CountEnabledPrimaryTextures(regs),
                              static_cast<u32>(HasActiveDepthState(regs)),
@@ -943,10 +943,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (ShouldSkipNonIndexed36TexturedSoftwareDraw(regs, vertex_batch.size())) {
             const u64 nonindexed36_skip_index = ++g_vk_nonindexed36_textured_software_skip_counter;
-            if (nonindexed36_skip_index <= 512) {
+            if (nonindexed36_skip_index <= 1024) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_skip_nonindexed36_textured_software_draw_v18 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                             "TRACE_DRAW strict_compat early_skip_nonindexed36_textured_software_draw_v19 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                              nonindexed36_skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
                              CountEnabledPrimaryTextures(regs),
                              static_cast<u32>(HasActiveDepthState(regs)),
