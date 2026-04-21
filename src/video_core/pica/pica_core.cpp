@@ -921,11 +921,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
     if (first_nonindexed96_textured_startup_candidate) {
         const u64 nonindexed96_textured_startup_skip_index =
             ++g_nonindexed96_textured_startup_skip_counter;
-        constexpr u64 nonindexed96_textured_startup_skip_window = 32;
+        constexpr u64 nonindexed96_textured_startup_skip_window = 96;
         if (nonindexed96_textured_startup_skip_index <= nonindexed96_textured_startup_skip_window) {
             if (trace_draw) {
                 LOG_INFO(HW_GPU,
-                         "TRACE_DRAW_PICA strict_compat skipping nonindexed96 textured startup draw entirely v14 draw_index={} nonindexed96_textured_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={}",
+                         "TRACE_DRAW_PICA strict_compat skipping nonindexed96 textured startup draw entirely v16 draw_index={} nonindexed96_textured_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={}",
                          draw_index, nonindexed96_textured_startup_skip_index, is_indexed,
                          regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                          textures_disabled,
@@ -933,7 +933,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                          regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                          regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
                          nonindexed96_textured_startup_skip_window);
-                LogPicaTextureState(regs.internal, "nonindexed96_textured_startup_skip_v14");
+                LogPicaTextureState(regs.internal, "nonindexed96_textured_startup_skip_v16");
             }
             return;
         }
@@ -942,12 +942,12 @@ void PicaCore::DrawArrays(bool is_indexed) {
             nonindexed96_textured_startup_skip_index ==
                 nonindexed96_textured_startup_skip_window + 1) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat allowing nonindexed96 textured startup draw acceleration after v14 skip window draw_index={} indexed={} num_vertices={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                     "TRACE_DRAW_PICA strict_compat allowing nonindexed96 textured startup draw acceleration after v16 skip window draw_index={} indexed={} num_vertices={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      static_cast<u32>(primitive_assembler.GetTopology()),
                      regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
-            LogPicaTextureState(regs.internal, "nonindexed96_textured_startup_allow_v14");
+            LogPicaTextureState(regs.internal, "nonindexed96_textured_startup_allow_v16");
         }
     }
 
@@ -966,11 +966,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
     if (first_nonindexed36_textured_startup_candidate) {
         const u64 nonindexed36_textured_startup_skip_index =
             ++g_nonindexed36_textured_startup_skip_counter;
-        constexpr u64 nonindexed36_textured_startup_skip_window = 64;
+        constexpr u64 nonindexed36_textured_startup_skip_window = 128;
         if (nonindexed36_textured_startup_skip_index <= nonindexed36_textured_startup_skip_window) {
             if (trace_draw) {
                 LOG_INFO(HW_GPU,
-                         "TRACE_DRAW_PICA strict_compat skipping nonindexed36 textured startup draw entirely v15 draw_index={} nonindexed36_textured_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={} tex0_format={}",
+                         "TRACE_DRAW_PICA strict_compat skipping nonindexed36 textured startup draw entirely v16 draw_index={} nonindexed36_textured_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={} tex0_format={}",
                          draw_index, nonindexed36_textured_startup_skip_index, is_indexed,
                          regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                          textures_disabled,
@@ -979,7 +979,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                          regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
                          nonindexed36_textured_startup_skip_window,
                          static_cast<u32>(primary_textures[0].format));
-                LogPicaTextureState(regs.internal, "nonindexed36_textured_startup_skip_v15");
+                LogPicaTextureState(regs.internal, "nonindexed36_textured_startup_skip_v16");
             }
             return;
         }
@@ -988,13 +988,13 @@ void PicaCore::DrawArrays(bool is_indexed) {
             nonindexed36_textured_startup_skip_index ==
                 nonindexed36_textured_startup_skip_window + 1) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat allowing nonindexed36 textured startup draw acceleration after v15 skip window draw_index={} indexed={} num_vertices={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} tex0_format={}",
+                     "TRACE_DRAW_PICA strict_compat allowing nonindexed36 textured startup draw acceleration after v16 skip window draw_index={} indexed={} num_vertices={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} tex0_format={}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      static_cast<u32>(primitive_assembler.GetTopology()),
                      regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
                      static_cast<u32>(primary_textures[0].format));
-            LogPicaTextureState(regs.internal, "nonindexed36_textured_startup_allow_v15");
+            LogPicaTextureState(regs.internal, "nonindexed36_textured_startup_allow_v16");
         }
     }
 
