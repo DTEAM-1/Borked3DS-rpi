@@ -106,6 +106,7 @@ std::atomic<u64> g_batch42_textured_startup_skip_counter{0};
 std::atomic<u64> g_nonindexed96_textured_startup_skip_counter{0};
 std::atomic<u64> g_nonindexed36_textured_startup_skip_counter{0};
 std::atomic<u64> g_indexed6_textured_late_startup_skip_counter{0};
+std::atomic<u64> g_indexed6_untextured_late_startup_skip_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 std::atomic<bool> g_logged_first_non_fragile_draw{false};
 std::atomic<bool> g_logged_first_non_fragile_textured_draw{false};
@@ -1047,6 +1048,53 @@ void PicaCore::DrawArrays(bool is_indexed) {
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
                      static_cast<u32>(primary_textures[0].format));
             LogPicaTextureState(regs.internal, "indexed6_textured_late_startup_allow_v20");
+        }
+    }
+
+    const bool late_indexed6_untextured_startup_candidate =
+        IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() && is_indexed &&
+        primitive_assembler.IsEmpty() && textures_disabled != 0 &&
+        regs.internal.pipeline.num_vertices == 6 &&
+        (g_nonindexed96_textured_startup_skip_counter.load() > 0 ||
+         g_nonindexed36_textured_startup_skip_counter.load() > 0 ||
+         g_batch42_textured_startup_skip_counter.load() >= 32 ||
+         g_indexed6_textured_late_startup_skip_counter.load() > 0);
+
+    if (late_indexed6_untextured_startup_candidate) {
+        const u64 indexed6_untextured_late_startup_skip_index =
+            ++g_indexed6_untextured_late_startup_skip_counter;
+        constexpr u64 indexed6_untextured_late_startup_skip_window = 4096;
+        if (indexed6_untextured_late_startup_skip_index <=
+            indexed6_untextured_late_startup_skip_window) {
+            if (trace_draw) {
+                LOG_INFO(HW_GPU,
+                         "TRACE_DRAW_PICA strict_compat skipping indexed6 untextured late-startup draw entirely v21 draw_index={} indexed6_untextured_late_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_indexed6_textured_skips={}",
+                         draw_index, indexed6_untextured_late_startup_skip_index, is_indexed,
+                         regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
+                         textures_disabled,
+                         static_cast<u32>(primitive_assembler.GetTopology()),
+                         regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                         regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                         indexed6_untextured_late_startup_skip_window,
+                         g_nonindexed96_textured_startup_skip_counter.load(),
+                         g_nonindexed36_textured_startup_skip_counter.load(),
+                         g_batch42_textured_startup_skip_counter.load(),
+                         g_indexed6_textured_late_startup_skip_counter.load());
+                LogPicaTextureState(regs.internal, "indexed6_untextured_late_startup_skip_v21");
+            }
+            return;
+        }
+
+        if (trace_draw &&
+            indexed6_untextured_late_startup_skip_index ==
+                indexed6_untextured_late_startup_skip_window + 1) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA strict_compat allowing indexed6 untextured late-startup draw after v21 skip window draw_index={} indexed={} num_vertices={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     static_cast<u32>(primitive_assembler.GetTopology()),
+                     regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+            LogPicaTextureState(regs.internal, "indexed6_untextured_late_startup_allow_v21");
         }
     }
 
