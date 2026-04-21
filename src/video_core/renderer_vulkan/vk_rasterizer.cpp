@@ -72,6 +72,7 @@ std::atomic<u64> g_vk_large_textured_software_allow_counter{0};
 std::atomic<u64> g_vk_batch42_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_nonindexed96_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_nonindexed36_textured_software_skip_counter{0};
+std::atomic<u64> g_vk_indexed6_textured_late_startup_skip_counter{0};
 std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
 std::atomic<u64> g_vk_medium_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
@@ -103,6 +104,12 @@ std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
     const auto& textures = regs.texturing.GetTextures();
     return textures[0].enabled && !textures[1].enabled && !textures[2].enabled &&
            static_cast<u32>(textures[0].format) == 8u;
+}
+
+[[nodiscard]] bool HasSinglePrimaryTexture0Format0(const Pica::RegsInternal& regs) {
+    const auto& textures = regs.texturing.GetTextures();
+    return textures[0].enabled && !textures[1].enabled && !textures[2].enabled &&
+           static_cast<u32>(textures[0].format) == 0u;
 }
 
 [[nodiscard]] bool HasActiveDepthState(const Pica::RegsInternal& regs) {
@@ -308,6 +315,30 @@ std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
         return false;
     }
     if (!HasSinglePrimaryTexture0Format8(regs)) {
+        return false;
+    }
+    if (regs.framebuffer.IsShadowRendering()) {
+        return false;
+    }
+    if (HasActiveDepthState(regs)) {
+        return false;
+    }
+    return true;
+}
+
+
+[[nodiscard]] bool ShouldSkipIndexed6TexturedLateStartupSoftwareDraw(
+    const Pica::RegsInternal& regs, std::size_t vertex_batch_size) {
+    if (!IsStrictCompatEnabled()) {
+        return false;
+    }
+    if (vertex_batch_size != 6) {
+        return false;
+    }
+    if (regs.pipeline.num_vertices != 6) {
+        return false;
+    }
+    if (!HasSinglePrimaryTexture0Format0(regs)) {
         return false;
     }
     if (regs.framebuffer.IsShadowRendering()) {
@@ -952,6 +983,29 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                              static_cast<u32>(HasActiveDepthState(regs)),
                              regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                              regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+                }
+                vertex_batch.clear();
+                return true;
+            }
+        }
+
+        if (ShouldSkipIndexed6TexturedLateStartupSoftwareDraw(regs, vertex_batch.size()) &&
+            (g_vk_nonindexed96_textured_software_skip_counter.load() > 0 ||
+             g_vk_nonindexed36_textured_software_skip_counter.load() > 0 ||
+             g_vk_batch42_textured_software_skip_counter.load() >= 32)) {
+            const u64 indexed6_skip_index = ++g_vk_indexed6_textured_late_startup_skip_counter;
+            if (indexed6_skip_index <= 2048) {
+                if (IsDrawTraceEnabled()) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_DRAW strict_compat early_skip_indexed6_textured_late_startup_software_draw_v20 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={}",
+                             indexed6_skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
+                             CountEnabledPrimaryTextures(regs),
+                             static_cast<u32>(HasActiveDepthState(regs)),
+                             regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                             regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                             g_vk_nonindexed96_textured_software_skip_counter.load(),
+                             g_vk_nonindexed36_textured_software_skip_counter.load(),
+                             g_vk_batch42_textured_software_skip_counter.load());
                 }
                 vertex_batch.clear();
                 return true;
