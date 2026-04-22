@@ -1083,7 +1083,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             if (indexed24_untextured_skip_index <= 16384) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_skip_indexed24_untextured_software_draw_v24t skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} topology={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_software_bypasses={}",
+                             "TRACE_DRAW strict_compat early_skip_indexed24_untextured_software_draw_v24u skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} topology={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_software_bypasses={}",
                              indexed24_untextured_skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
                              CountEnabledPrimaryTextures(regs),
                              static_cast<u32>(HasActiveDepthState(regs)), topology_u32,
@@ -1110,7 +1110,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             if (indexed18_textured_skip_index <= 16384) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_skip_indexed18_textured_followup_software_draw_v25t skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} topology={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_indexed24_skips={} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_software_bypasses={}",
+                             "TRACE_DRAW strict_compat early_skip_indexed18_textured_followup_software_draw_v25u skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} topology={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_indexed24_skips={} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_software_bypasses={}",
                              indexed18_textured_skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
                              CountEnabledPrimaryTextures(regs),
                              static_cast<u32>(HasActiveDepthState(regs)), topology_u32,
