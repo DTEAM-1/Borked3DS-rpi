@@ -1117,7 +1117,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
             indexed6_generic_late_startup_skip_window) {
             if (trace_draw) {
                 LOG_INFO(HW_GPU,
-                         "TRACE_DRAW_PICA strict_compat skipping generic indexed6 late-startup draw entirely v22r draw_index={} indexed6_generic_late_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_indexed6_textured_skips={} prior_indexed6_untextured_skips={}",
+                         "TRACE_DRAW_PICA strict_compat skipping generic indexed6 late-startup draw entirely v22s draw_index={} indexed6_generic_late_startup_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_indexed6_textured_skips={} prior_indexed6_untextured_skips={}",
                          draw_index, indexed6_generic_late_startup_skip_index, is_indexed,
                          regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                          textures_disabled,
@@ -1130,7 +1130,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                          g_batch42_textured_startup_skip_counter.load(),
                          g_indexed6_textured_late_startup_skip_counter.load(),
                          g_indexed6_untextured_late_startup_skip_counter.load());
-                LogPicaTextureState(regs.internal, "indexed6_generic_late_startup_skip_v22r");
+                LogPicaTextureState(regs.internal, "indexed6_generic_late_startup_skip_v22s");
             }
             return;
         }
@@ -1139,12 +1139,12 @@ void PicaCore::DrawArrays(bool is_indexed) {
             indexed6_generic_late_startup_skip_index ==
                 indexed6_generic_late_startup_skip_window + 1) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat allowing generic indexed6 late-startup draw after v22r skip window draw_index={} indexed={} num_vertices={} topology={} textures_disabled={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                     "TRACE_DRAW_PICA strict_compat allowing generic indexed6 late-startup draw after v22s skip window draw_index={} indexed={} num_vertices={} topology={} textures_disabled={} color_addr=0x{:08X} depth_addr=0x{:08X}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      static_cast<u32>(primitive_assembler.GetTopology()), textures_disabled,
                      regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
-            LogPicaTextureState(regs.internal, "indexed6_generic_late_startup_allow_v22r");
+            LogPicaTextureState(regs.internal, "indexed6_generic_late_startup_allow_v22s");
         }
     }
 
@@ -1162,7 +1162,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
         if (indexed24_untextured_fallback_index <= indexed24_untextured_fallback_window) {
             if (trace_draw) {
                 LOG_INFO(HW_GPU,
-                         "TRACE_DRAW_PICA strict_compat forcing software fallback for first non-fragile indexed24 untextured draw v23 draw_index={} indexed24_untextured_fallback_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} fallback_window={} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={}",
+                         "TRACE_DRAW_PICA strict_compat forcing software fallback for first non-fragile indexed24 untextured draw v23r draw_index={} indexed24_untextured_fallback_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} fallback_window={} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={}",
                          draw_index, indexed24_untextured_fallback_index, is_indexed,
                          regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                          textures_disabled,
@@ -1175,20 +1175,20 @@ void PicaCore::DrawArrays(bool is_indexed) {
                          g_nonindexed36_textured_startup_skip_counter.load(),
                          g_batch42_textured_startup_skip_counter.load());
                 LogPicaTextureState(regs.internal,
-                                    "indexed24_untextured_first_nonfragile_fallback_v23");
+                                    "indexed24_untextured_first_nonfragile_fallback_v23rr");
             }
             accelerate_draw = false;
         } else if (trace_draw &&
                    indexed24_untextured_fallback_index ==
                        indexed24_untextured_fallback_window + 1) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat allowing first non-fragile indexed24 untextured accelerated draw after v23 fallback window draw_index={} indexed={} num_vertices={} topology={} textures_disabled={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                     "TRACE_DRAW_PICA strict_compat allowing first non-fragile indexed24 untextured accelerated draw after v23r fallback window draw_index={} indexed={} num_vertices={} topology={} textures_disabled={} color_addr=0x{:08X} depth_addr=0x{:08X}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      static_cast<u32>(primitive_assembler.GetTopology()), textures_disabled,
                      regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
             LogPicaTextureState(regs.internal,
-                                "indexed24_untextured_first_nonfragile_allow_v23");
+                                "indexed24_untextured_first_nonfragile_allow_v23rr");
         }
     }
 
