@@ -1051,10 +1051,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
              g_vk_batch42_textured_software_skip_counter.load() >= 32)) {
             const u64 indexed6_generic_skip_index =
                 ++g_vk_indexed6_generic_late_startup_skip_counter;
-            if (indexed6_generic_skip_index <= 8192) {
+            if (indexed6_generic_skip_index <= 12288) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_skip_indexed6_generic_late_startup_software_draw_v22 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_indexed6_textured_skips={} prior_indexed6_untextured_skips={}",
+                             "TRACE_DRAW strict_compat early_skip_indexed6_generic_late_startup_software_draw_v22r skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_indexed6_textured_skips={} prior_indexed6_untextured_skips={}",
                              indexed6_generic_skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
                              CountEnabledPrimaryTextures(regs),
                              static_cast<u32>(HasActiveDepthState(regs)),
