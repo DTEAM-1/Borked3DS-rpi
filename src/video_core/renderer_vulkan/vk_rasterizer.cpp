@@ -1072,7 +1072,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        const u32 topology_u32 = static_cast<u32>(regs.pipeline.triangle_topology);
+        const u32 topology_u32 = static_cast<u32>(regs.pipeline.triangle_topology.Value());
         if (IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() && is_indexed &&
             regs.pipeline.num_vertices == 24 && vertex_batch.size() == 24 &&
             CountEnabledPrimaryTextures(regs) == 0 &&
