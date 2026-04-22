@@ -74,6 +74,7 @@ std::atomic<u64> g_vk_nonindexed96_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_nonindexed36_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_indexed6_textured_late_startup_skip_counter{0};
 std::atomic<u64> g_vk_indexed6_untextured_late_startup_skip_counter{0};
+std::atomic<u64> g_vk_indexed6_generic_late_startup_skip_counter{0};
 std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
 std::atomic<u64> g_vk_medium_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
@@ -1035,6 +1036,35 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                              g_vk_nonindexed36_textured_software_skip_counter.load(),
                              g_vk_batch42_textured_software_skip_counter.load(),
                              g_vk_indexed6_textured_late_startup_skip_counter.load());
+                }
+                vertex_batch.clear();
+                return true;
+            }
+        }
+
+        if (IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() &&
+            regs.pipeline.num_vertices == 6 && vertex_batch.size() == 6 &&
+            (g_vk_indexed6_textured_late_startup_skip_counter.load() > 0 ||
+             g_vk_indexed6_untextured_late_startup_skip_counter.load() > 0 ||
+             g_vk_nonindexed96_textured_software_skip_counter.load() > 0 ||
+             g_vk_nonindexed36_textured_software_skip_counter.load() > 0 ||
+             g_vk_batch42_textured_software_skip_counter.load() >= 32)) {
+            const u64 indexed6_generic_skip_index =
+                ++g_vk_indexed6_generic_late_startup_skip_counter;
+            if (indexed6_generic_skip_index <= 8192) {
+                if (IsDrawTraceEnabled()) {
+                    LOG_INFO(Render_Vulkan,
+                             "TRACE_DRAW strict_compat early_skip_indexed6_generic_late_startup_software_draw_v22 skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_indexed6_textured_skips={} prior_indexed6_untextured_skips={}",
+                             indexed6_generic_skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
+                             CountEnabledPrimaryTextures(regs),
+                             static_cast<u32>(HasActiveDepthState(regs)),
+                             regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                             regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                             g_vk_nonindexed96_textured_software_skip_counter.load(),
+                             g_vk_nonindexed36_textured_software_skip_counter.load(),
+                             g_vk_batch42_textured_software_skip_counter.load(),
+                             g_vk_indexed6_textured_late_startup_skip_counter.load(),
+                             g_vk_indexed6_untextured_late_startup_skip_counter.load());
                 }
                 vertex_batch.clear();
                 return true;
