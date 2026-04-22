@@ -109,6 +109,7 @@ std::atomic<u64> g_indexed6_textured_late_startup_skip_counter{0};
 std::atomic<u64> g_indexed6_untextured_late_startup_skip_counter{0};
 std::atomic<u64> g_indexed6_generic_late_startup_skip_counter{0};
 std::atomic<u64> g_first_nonfragile_indexed24_untextured_fallback_counter{0};
+std::atomic<u64> g_first_nonfragile_indexed18_textured_skip_counter{0};
 std::atomic<u64> g_pica_cmdlist_counter{0};
 std::atomic<bool> g_logged_first_non_fragile_draw{false};
 std::atomic<bool> g_logged_first_non_fragile_textured_draw{false};
@@ -1214,6 +1215,51 @@ void PicaCore::DrawArrays(bool is_indexed) {
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
             LogPicaTextureState(regs.internal,
                                 "indexed24_untextured_first_nonfragile_allow_v24t");
+        }
+    }
+
+    const bool first_followup_indexed18_textured_accel_candidate =
+        IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() && accelerate_draw &&
+        g_first_nonfragile_indexed24_untextured_fallback_counter.load() > 0 && is_indexed &&
+        primitive_assembler.IsEmpty() && regs.internal.pipeline.num_vertices == 18 &&
+        !textures_disabled && (topology_u32 == 3 || (regs.internal.pipeline.num_vertices % 3) == 0);
+
+    if (first_followup_indexed18_textured_accel_candidate) {
+        const u64 indexed18_textured_skip_index =
+            ++g_first_nonfragile_indexed18_textured_skip_counter;
+        constexpr u64 indexed18_textured_skip_window = 16384;
+        if (indexed18_textured_skip_index <= indexed18_textured_skip_window) {
+            if (trace_draw) {
+                LOG_INFO(HW_GPU,
+                         "TRACE_DRAW_PICA strict_compat skipping indexed18 textured followup draw entirely v25t draw_index={} indexed18_textured_skip_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} color_addr=0x{:08X} depth_addr=0x{:08X} skip_window={} prior_indexed24_skips={} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_indexed6_textured_skips={} prior_indexed6_untextured_skips={}",
+                         draw_index, indexed18_textured_skip_index, is_indexed,
+                         regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
+                         textures_disabled, topology_u32,
+                         regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                         regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                         indexed18_textured_skip_window,
+                         g_first_nonfragile_indexed24_untextured_fallback_counter.load(),
+                         g_indexed6_generic_late_startup_skip_counter.load(),
+                         g_nonindexed96_textured_startup_skip_counter.load(),
+                         g_nonindexed36_textured_startup_skip_counter.load(),
+                         g_batch42_textured_startup_skip_counter.load(),
+                         g_indexed6_textured_late_startup_skip_counter.load(),
+                         g_indexed6_untextured_late_startup_skip_counter.load());
+                LogPicaTextureState(regs.internal,
+                                    "indexed18_textured_followup_skip_v25t");
+            }
+            return;
+        } else if (trace_draw &&
+                   indexed18_textured_skip_index ==
+                       indexed18_textured_skip_window + 1) {
+            LOG_INFO(HW_GPU,
+                     "TRACE_DRAW_PICA strict_compat allowing indexed18 textured followup draw after v25t skip window draw_index={} indexed={} num_vertices={} topology={} textures_disabled={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                     draw_index, is_indexed, regs.internal.pipeline.num_vertices,
+                     topology_u32, textures_disabled,
+                     regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+            LogPicaTextureState(regs.internal,
+                                "indexed18_textured_followup_allow_v25t");
         }
     }
 
