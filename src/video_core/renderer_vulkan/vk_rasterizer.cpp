@@ -1076,17 +1076,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() && is_indexed &&
             regs.pipeline.num_vertices == 24 && vertex_batch.size() == 24 &&
             CountEnabledPrimaryTextures(regs) == 0 &&
-            (topology_u32 == 3 || (regs.pipeline.num_vertices % 3) == 0) &&
-            (g_vk_indexed6_generic_late_startup_skip_counter.load() > 0 ||
-             g_vk_nonindexed96_textured_software_skip_counter.load() > 0 ||
-             g_vk_nonindexed36_textured_software_skip_counter.load() > 0 ||
-             g_vk_batch42_textured_software_skip_counter.load() > 0)) {
+            (topology_u32 == 3 || (regs.pipeline.num_vertices % 3) == 0)) {
             const u64 indexed24_untextured_skip_index =
                 ++g_vk_indexed24_untextured_poststartup_skip_counter;
             if (indexed24_untextured_skip_index <= 16384) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_skip_indexed24_untextured_poststartup_software_draw_v23t skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} topology={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={}",
+                             "TRACE_DRAW strict_compat early_skip_indexed24_untextured_software_draw_v24t skip_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} topology={} color_addr=0x{:08x} depth_addr=0x{:08x} prior_generic_indexed6_skips={} prior_nonindexed96_skips={} prior_nonindexed36_skips={} prior_batch42_skips={} prior_software_bypasses={}",
                              indexed24_untextured_skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
                              CountEnabledPrimaryTextures(regs),
                              static_cast<u32>(HasActiveDepthState(regs)), topology_u32,
@@ -1095,7 +1091,8 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                              g_vk_indexed6_generic_late_startup_skip_counter.load(),
                              g_vk_nonindexed96_textured_software_skip_counter.load(),
                              g_vk_nonindexed36_textured_software_skip_counter.load(),
-                             g_vk_batch42_textured_software_skip_counter.load());
+                             g_vk_batch42_textured_software_skip_counter.load(),
+                             g_vk_software_bypass_counter.load());
                 }
                 vertex_batch.clear();
                 return true;
