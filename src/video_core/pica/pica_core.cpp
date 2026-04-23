@@ -1386,7 +1386,6 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
     }
 
-    const u32 topology_u32 = static_cast<u32>(primitive_assembler.GetTopology());
     const bool first_nonfragile_indexed24_untextured_precandidate =
         IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() && accelerate_draw &&
         !is_fragile_startup_draw && is_indexed && primitive_assembler.IsEmpty() &&
