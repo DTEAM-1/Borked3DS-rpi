@@ -758,6 +758,8 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
     }
 
+    const u64 fragile_startup_draws_seen_prestart = g_fragile_startup_draw_counter.load();
+
     const bool highdraw_indexed18_textured_precandidate =
         IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() &&
         is_indexed && primitive_assembler.IsEmpty() && textures_disabled == 0 &&
@@ -800,7 +802,6 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
     }
 
-    const u64 fragile_startup_draws_seen_prestart = g_fragile_startup_draw_counter.load();
     const bool late_startup_textured_pair_precandidate =
         IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() &&
         is_indexed && primitive_assembler.IsEmpty() && textures_disabled == 0 &&
