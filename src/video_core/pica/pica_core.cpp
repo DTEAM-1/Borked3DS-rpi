@@ -1176,6 +1176,8 @@ void PicaCore::DrawArrays(bool is_indexed) {
                                     "indexed18_textured_followup_bypass_generic_v35j");
             }
 
+            const auto& primary_textures = regs.internal.texturing.GetTextures();
+
             const bool direct_indexed6_textured_startup_skip_candidate =
                 IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() && is_indexed &&
                 primitive_assembler.IsEmpty() && textures_disabled == 0 &&
@@ -1354,7 +1356,6 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
     }
 
-    const auto& primary_textures = regs.internal.texturing.GetTextures();
     const bool single_tex0_format8_enabled =
         primary_textures[0].enabled && !primary_textures[1].enabled &&
         !primary_textures[2].enabled && static_cast<u32>(primary_textures[0].format) == 8u;
