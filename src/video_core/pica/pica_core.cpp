@@ -1385,7 +1385,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                          regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                          regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
                          nonindexed36_textured_startup_skip_window,
-                         static_cast<u32>(primary_textures[0].format));
+                         static_cast<u32>(primary_textures_fmt8[0].format));
                 LogPicaTextureState(regs.internal, "nonindexed36_textured_startup_skip_v19");
             }
             return;
@@ -1400,14 +1400,14 @@ void PicaCore::DrawArrays(bool is_indexed) {
                      static_cast<u32>(primitive_assembler.GetTopology()),
                      regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
-                     static_cast<u32>(primary_textures[0].format));
+                     static_cast<u32>(primary_textures_fmt8[0].format));
             LogPicaTextureState(regs.internal, "nonindexed36_textured_startup_allow_v19");
         }
     }
 
     const bool single_tex0_enabled =
-        primary_textures[0].enabled && !primary_textures[1].enabled &&
-        !primary_textures[2].enabled;
+        primary_textures_fmt8[0].enabled && !primary_textures_fmt8[1].enabled &&
+        !primary_textures_fmt8[2].enabled;
 
     const bool late_indexed6_textured_startup_candidate =
         IsStrictCompatEnabled() && Settings::values.use_hw_shader.GetValue() && is_indexed &&
@@ -1435,7 +1435,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                          regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                          regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
                          indexed6_textured_late_startup_skip_window,
-                         static_cast<u32>(primary_textures[0].format),
+                         static_cast<u32>(primary_textures_fmt8[0].format),
                          g_nonindexed96_textured_startup_skip_counter.load(),
                          g_nonindexed36_textured_startup_skip_counter.load(),
                          g_batch42_textured_startup_skip_counter.load());
@@ -1453,7 +1453,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                      static_cast<u32>(primitive_assembler.GetTopology()),
                      regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
-                     static_cast<u32>(primary_textures[0].format));
+                     static_cast<u32>(primary_textures_fmt8[0].format));
             LogPicaTextureState(regs.internal, "indexed6_textured_late_startup_allow_v20j");
         }
     }
