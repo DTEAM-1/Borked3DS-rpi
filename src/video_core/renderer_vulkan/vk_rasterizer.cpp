@@ -78,6 +78,10 @@ struct DrawParams {
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_SKIP");
 }
 
+[[nodiscard]] bool IsSoftwareTextureBindingAllowed() {
+    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES");
+}
+
 std::atomic<u64> g_vk_software_bypass_counter{0};
 std::atomic<u64> g_vk_textured_software_bypass_counter{0};
 std::atomic<u64> g_vk_large_textured_software_allow_counter{0};
@@ -96,6 +100,7 @@ std::atomic<u64> g_vk_late_textured_pair_skip_counter{0};
 std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
 std::atomic<u64> g_vk_medium_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
+std::atomic<bool> g_vk_strict_software_texture_guard{false};
 
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const Pica::RegsInternal& regs) {
     const auto& textures = regs.texturing.GetTextures();
@@ -132,13 +137,30 @@ std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
            static_cast<u32>(textures[0].format) == 0u;
 }
 
+[[nodiscard]] bool IsFragileSoftwareTextureFormat(Pica::TexturingRegs::TextureFormat format) {
+    switch (format) {
+    case Pica::TexturingRegs::TextureFormat::IA8:
+    case Pica::TexturingRegs::TextureFormat::I8:
+    case Pica::TexturingRegs::TextureFormat::A8:
+    case Pica::TexturingRegs::TextureFormat::IA4:
+    case Pica::TexturingRegs::TextureFormat::I4:
+    case Pica::TexturingRegs::TextureFormat::A4:
+    case Pica::TexturingRegs::TextureFormat::ETC1:
+    case Pica::TexturingRegs::TextureFormat::ETC1A4:
+        return true;
+    default:
+        return false;
+    }
+}
+
+
 
 [[nodiscard]] bool HasActiveDepthState(const Pica::RegsInternal& regs) {
     return regs.framebuffer.output_merger.depth_test_enable != 0 ||
            regs.framebuffer.output_merger.depth_write_enable != 0;
 }
 
-// v51: the old strict-compat bypasses were useful for isolating crashes, but they now keep the
+// v52: the old strict-compat bypasses were useful for isolating crashes, but they now keep the
 // framebuffer black by throwing away the software draws exposed by pica_core.cpp. Keep the helpers
 // available behind an explicit opt-in variable, but default to drawing.
 [[nodiscard]] bool CanUseSoftwareSkipWorkaround() {
@@ -854,7 +876,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (!accelerate) {
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v51 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v52 software skip disabled; drawing software batch; selective fragile texture guard enabled vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1026,7 +1048,11 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         fs_uniform_block_data.dirty = true;
     }
 
+    const bool strict_software_texture_guard =
+        IsStrictCompatEnabled() && !accelerate && !IsSoftwareTextureBindingAllowed();
+    g_vk_strict_software_texture_guard.store(strict_software_texture_guard, std::memory_order_relaxed);
     SyncTextureUnits(framebuffer);
+    g_vk_strict_software_texture_guard.store(false, std::memory_order_relaxed);
     SyncUtilityTextures(framebuffer);
 
     if (shader_dirty) {
@@ -1170,6 +1196,12 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
 
         if (!texture.enabled) {
             bind_null("disabled");
+            continue;
+        }
+
+        if (g_vk_strict_software_texture_guard.load(std::memory_order_relaxed) &&
+            IsFragileSoftwareTextureFormat(texture.format)) {
+            bind_null("strict_software_fragile_format_v52");
             continue;
         }
 
