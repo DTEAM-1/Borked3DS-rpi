@@ -78,8 +78,31 @@ struct DrawParams {
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_SKIP");
 }
 
-[[nodiscard]] bool IsSoftwareTextureBindingAllowed() {
+[[nodiscard]] bool IsSoftwareTexturesAllowed() {
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES");
+}
+
+[[nodiscard]] bool IsStrictCompatFragileTextureFormat(u32 format) {
+    // Pi5/V3DV strict mode: these small alpha/intensity/compressed formats are the exact
+    // family that currently crashes during GetTextureSurface()/Surface creation in the
+    // software fallback path. Bind a safe null texture before any surface is requested.
+    //
+    // Known PICA texture format values used by this fork/logs:
+    //   4=IA8, 5=I8, 6=A8, 7=IA4, 8=I4, 9=A4/IA4-class in logs, 10=ETC1, 11=ETC1A4.
+    // The log-visible crash is format 9 reported as IA4 by vk_texture_runtime.cpp.
+    switch (format) {
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 8:
+    case 9:
+    case 10:
+    case 11:
+        return true;
+    default:
+        return false;
+    }
 }
 
 std::atomic<u64> g_vk_software_bypass_counter{0};
@@ -100,7 +123,6 @@ std::atomic<u64> g_vk_late_textured_pair_skip_counter{0};
 std::atomic<u64> g_vk_non_bypassed_software_trace_counter{0};
 std::atomic<u64> g_vk_medium_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
-std::atomic<bool> g_vk_strict_software_texture_guard{false};
 
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const Pica::RegsInternal& regs) {
     const auto& textures = regs.texturing.GetTextures();
@@ -137,22 +159,6 @@ std::atomic<bool> g_vk_strict_software_texture_guard{false};
            static_cast<u32>(textures[0].format) == 0u;
 }
 
-[[nodiscard]] bool IsFragileSoftwareTextureFormat(Pica::TexturingRegs::TextureFormat format) {
-    switch (format) {
-    case Pica::TexturingRegs::TextureFormat::IA8:
-    case Pica::TexturingRegs::TextureFormat::I8:
-    case Pica::TexturingRegs::TextureFormat::A8:
-    case Pica::TexturingRegs::TextureFormat::IA4:
-    case Pica::TexturingRegs::TextureFormat::I4:
-    case Pica::TexturingRegs::TextureFormat::A4:
-    case Pica::TexturingRegs::TextureFormat::ETC1:
-    case Pica::TexturingRegs::TextureFormat::ETC1A4:
-        return true;
-    default:
-        return false;
-    }
-}
-
 
 
 [[nodiscard]] bool HasActiveDepthState(const Pica::RegsInternal& regs) {
@@ -160,7 +166,7 @@ std::atomic<bool> g_vk_strict_software_texture_guard{false};
            regs.framebuffer.output_merger.depth_write_enable != 0;
 }
 
-// v52: the old strict-compat bypasses were useful for isolating crashes, but they now keep the
+// v50: the old strict-compat bypasses were useful for isolating crashes, but they now keep the
 // framebuffer black by throwing away the software draws exposed by pica_core.cpp. Keep the helpers
 // available behind an explicit opt-in variable, but default to drawing.
 [[nodiscard]] bool CanUseSoftwareSkipWorkaround() {
@@ -876,7 +882,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (!accelerate) {
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v52 software skip disabled; drawing software batch; selective fragile texture guard enabled vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v50 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1048,11 +1054,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         fs_uniform_block_data.dirty = true;
     }
 
-    const bool strict_software_texture_guard =
-        IsStrictCompatEnabled() && !accelerate && !IsSoftwareTextureBindingAllowed();
-    g_vk_strict_software_texture_guard.store(strict_software_texture_guard, std::memory_order_relaxed);
     SyncTextureUnits(framebuffer);
-    g_vk_strict_software_texture_guard.store(false, std::memory_order_relaxed);
     SyncUtilityTextures(framebuffer);
 
     if (shader_dirty) {
@@ -1199,9 +1201,19 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
             continue;
         }
 
-        if (g_vk_strict_software_texture_guard.load(std::memory_order_relaxed) &&
-            IsFragileSoftwareTextureFormat(texture.format)) {
-            bind_null("strict_software_fragile_format_v52");
+        const bool strict_compat = IsStrictCompatEnabled();
+        const u32 texture_format = static_cast<u32>(texture.format);
+        const u32 texture_type = static_cast<u32>(texture.config.type.Value());
+
+        if (strict_compat && !IsSoftwareTexturesAllowed() &&
+            IsStrictCompatFragileTextureFormat(texture_format)) {
+            if (IsDrawTraceEnabled() && texture_index < 3) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v53 binding fragile texture to null before surface_create tex{} type={} format={} addr=0x{:08X}; set BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES=1 only for diagnosis",
+                            texture_index, texture_type, texture_format,
+                            texture.config.GetPhysicalAddress());
+            }
+            bind_null("strict_compat_v53_fragile_texture_before_surface_create");
             continue;
         }
 
@@ -1240,7 +1252,6 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
             continue;
         }
 
-        const bool strict_compat = IsStrictCompatEnabled();
         const bool direct_feedback = IsValidImageView(color_view) && color_view == base_view;
         vk::ImageView texture_view = base_view;
         const char* bind_reason = "base_view";
