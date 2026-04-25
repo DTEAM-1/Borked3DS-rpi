@@ -677,7 +677,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     const u32 textures_disabled = ArePrimaryTexturesDisabled(regs.internal) ? 1u : 0u;
 
-    // v48: On Pi 5/V3DV strict mode, do not skip PICA draws anymore and do not enter the
+    // v49: On Pi 5/V3DV strict mode, do not skip PICA draws anymore and do not enter the
     // Vulkan PICA accelerated draw path by default. The latest logs show present/display is
     // already alive, but the process closes at the first surviving AccelerateDrawBatch call.
     // Keep every draw alive by taking the CPU/software vertex path unless the developer
@@ -685,11 +685,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
     if (accelerate_draw && IsStrictCompatEnabled() && !IsPicaAccelAllowed()) {
         if (trace_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat v48 forcing software path before PICA acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} allow_pica_accel=0",
+                     "TRACE_DRAW_PICA strict_compat v49 forcing software path before PICA acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} allow_pica_accel=0",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty(), textures_disabled,
                      static_cast<u32>(primitive_assembler.GetTopology()));
-            LogPicaTextureState(regs.internal, "v48_force_software_before_accel");
+            LogPicaTextureState(regs.internal, "v49_force_software_before_accel");
         }
         if (!g_logged_strict_accel_gate.exchange(true)) {
             LOG_WARNING(HW_GPU,
