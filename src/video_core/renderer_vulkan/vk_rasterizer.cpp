@@ -882,7 +882,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (!accelerate) {
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v50 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v54 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -890,7 +890,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
         }
 
-        if (ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
+        if (IsSoftwareSkipAllowed() && ShouldBypassFragileSoftwareDraw(regs, vertex_batch.size())) {
             const u64 bypass_index = ++g_vk_software_bypass_counter;
             if (bypass_index <= 32) {
                 if (IsDrawTraceEnabled()) {
@@ -905,7 +905,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        if (ShouldBypassFragileTexturedSoftwareDraw(regs, vertex_batch.size()) &&
+        if (IsSoftwareSkipAllowed() && ShouldBypassFragileTexturedSoftwareDraw(regs, vertex_batch.size()) &&
             !tiny_textured_software_draw && !medium_textured_software_draw &&
             !large_textured_software_draw) {
             const u64 bypass_index = ++g_vk_textured_software_bypass_counter;
@@ -924,7 +924,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        if (ShouldSkipStartupTexturedSoftwareDraw(regs, vertex_batch.size())) {
+        if (IsSoftwareSkipAllowed() && ShouldSkipStartupTexturedSoftwareDraw(regs, vertex_batch.size())) {
             const u64 skip_index = ++g_vk_startup_textured_software_skip_counter;
             if (skip_index <= 320) {
                 if (IsDrawTraceEnabled()) {
@@ -938,7 +938,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        if (ShouldSkipBatch42TexturedSoftwareDraw(regs, vertex_batch.size())) {
+        if (IsSoftwareSkipAllowed() && ShouldSkipBatch42TexturedSoftwareDraw(regs, vertex_batch.size())) {
             const u64 skip_index = ++g_vk_batch42_textured_software_skip_counter;
             if (skip_index <= 4) {
                 if (IsDrawTraceEnabled()) {
@@ -951,7 +951,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        if (ShouldSkipNonIndexed96TexturedSoftwareDraw(regs, vertex_batch.size())) {
+        if (IsSoftwareSkipAllowed() && ShouldSkipNonIndexed96TexturedSoftwareDraw(regs, vertex_batch.size())) {
             const u64 skip_index = ++g_vk_nonindexed96_textured_software_skip_counter;
             if (skip_index <= 16) {
                 if (IsDrawTraceEnabled()) {
@@ -964,7 +964,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        if (ShouldSkipNonIndexed36TexturedSoftwareDraw(regs, vertex_batch.size())) {
+        if (IsSoftwareSkipAllowed() && ShouldSkipNonIndexed36TexturedSoftwareDraw(regs, vertex_batch.size())) {
             const u64 skip_index = ++g_vk_nonindexed36_textured_software_skip_counter;
             if (skip_index <= 16) {
                 if (IsDrawTraceEnabled()) {
@@ -977,12 +977,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        if (ShouldSkipIndexed6TexturedLateStartupSoftwareDraw(regs, vertex_batch.size())) {
+        if (IsSoftwareSkipAllowed() && ShouldSkipIndexed6TexturedLateStartupSoftwareDraw(regs, vertex_batch.size())) {
             const u64 skip_index = ++g_vk_indexed6_textured_late_startup_skip_counter;
             if (skip_index <= 128) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_skip_indexed6_textured_late_startup_software_draw_v50 skip_index={} vertex_batch_size={} num_vertices={}",
+                             "TRACE_DRAW strict_compat early_skip_indexed6_textured_late_startup_software_draw_v54_allowed_only skip_index={} vertex_batch_size={} num_vertices={}",
                              skip_index, vertex_batch.size(), regs.pipeline.num_vertices);
                 }
                 vertex_batch.clear();
@@ -1002,14 +1002,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (medium_textured_software_draw && IsDrawTraceEnabled()) {
             const u64 skip_index = ++g_vk_medium_textured_software_skip_counter;
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_medium_textured_software_draw_v50 trace_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={}",
+                     "TRACE_DRAW strict_compat allowing_medium_textured_software_draw_v54 trace_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={}",
                      skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(HasActiveDepthState(regs)));
         }
 
         if (large_textured_software_draw && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw_v50 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw_v54 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      large_textured_software_draw_index, vertex_batch.size(),
                      regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1184,6 +1184,32 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
     const vk::ImageView color_view =
         framebuffer ? framebuffer->ImageView(SurfaceType::Color) : vk::ImageView{};
 
+    // v54 strict fallback: when the draw path is software on Pi5/V3DV, avoid creating or
+    // binding any game texture surfaces unless explicitly requested. The last logs show
+    // crashes/cutoffs while entering SyncTextureUnits even after fragile-format guarding.
+    // Binding all primary texture slots to the known null texture keeps descriptor layout
+    // stable while proving whether the next wall is texture creation/binding or actual draw
+    // submission/render target writes.
+    if (IsStrictCompatEnabled() && !IsSoftwareTexturesAllowed()) {
+        if (IsDrawTraceEnabled()) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_DRAW strict_compat v54 binding all PICA texture units to null before surface_create; set BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES=1 only for diagnosis texture_slots={}",
+                        pica_textures.size());
+        }
+        for (u32 texture_index = 0; texture_index < pica_textures.size(); ++texture_index) {
+            const auto& texture = pica_textures[texture_index];
+            if (IsDrawTraceEnabled() && texture_index < 3) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_DRAW tex{} -> null reason=strict_compat_v54_all_textures_before_surface_create enabled={} type={} format={} addr=0x{:08X}",
+                         texture_index, static_cast<u32>(texture.enabled),
+                         static_cast<u32>(texture.config.type.Value()),
+                         static_cast<u32>(texture.format), texture.config.GetPhysicalAddress());
+            }
+            update_queue.AddImageSampler(texture_set, texture_index, 0, null_view, null_handle);
+        }
+        return;
+    }
+
     for (u32 texture_index = 0; texture_index < pica_textures.size(); ++texture_index) {
         const auto& texture = pica_textures[texture_index];
 
@@ -1209,11 +1235,11 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
             IsStrictCompatFragileTextureFormat(texture_format)) {
             if (IsDrawTraceEnabled() && texture_index < 3) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v53 binding fragile texture to null before surface_create tex{} type={} format={} addr=0x{:08X}; set BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES=1 only for diagnosis",
+                            "TRACE_DRAW strict_compat v54 binding fragile texture to null before surface_create tex{} type={} format={} addr=0x{:08X}; set BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES=1 only for diagnosis",
                             texture_index, texture_type, texture_format,
                             texture.config.GetPhysicalAddress());
             }
-            bind_null("strict_compat_v53_fragile_texture_before_surface_create");
+            bind_null("strict_compat_v54_fragile_texture_before_surface_create");
             continue;
         }
 
