@@ -132,24 +132,13 @@ std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
            static_cast<u32>(textures[0].format) == 0u;
 }
 
-[[nodiscard]] bool HasSinglePrimaryTexture0Format1(const Pica::RegsInternal& regs) {
-    const auto& textures = regs.texturing.GetTextures();
-    return textures[0].enabled && !textures[1].enabled && !textures[2].enabled &&
-           static_cast<u32>(textures[0].format) == 1u;
-}
-
-[[nodiscard]] bool HasSinglePrimaryTexture0Format9(const Pica::RegsInternal& regs) {
-    const auto& textures = regs.texturing.GetTextures();
-    return textures[0].enabled && !textures[1].enabled && !textures[2].enabled &&
-           static_cast<u32>(textures[0].format) == 9u;
-}
 
 [[nodiscard]] bool HasActiveDepthState(const Pica::RegsInternal& regs) {
     return regs.framebuffer.output_merger.depth_test_enable != 0 ||
            regs.framebuffer.output_merger.depth_write_enable != 0;
 }
 
-// v50: the old strict-compat bypasses were useful for isolating crashes, but they now keep the
+// v51: the old strict-compat bypasses were useful for isolating crashes, but they now keep the
 // framebuffer black by throwing away the software draws exposed by pica_core.cpp. Keep the helpers
 // available behind an explicit opt-in variable, but default to drawing.
 [[nodiscard]] bool CanUseSoftwareSkipWorkaround() {
@@ -865,7 +854,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (!accelerate) {
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v50 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v51 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
