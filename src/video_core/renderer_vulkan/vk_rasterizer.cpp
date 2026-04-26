@@ -1229,7 +1229,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 color_attachment.clearValue.color = vk::ClearColorValue{color};
 
                 vk::ClearRect clear_rect{};
-                clear_rect.rect.offset = vk::Offset2D{draw_rect.left, draw_rect.bottom};
+                clear_rect.rect.offset = vk::Offset2D{
+                    static_cast<s32>(draw_rect.left),
+                    static_cast<s32>(draw_rect.bottom),
+                };
                 clear_rect.rect.extent = vk::Extent2D{
                     static_cast<u32>(draw_rect.GetWidth()),
                     static_cast<u32>(draw_rect.GetHeight()),
