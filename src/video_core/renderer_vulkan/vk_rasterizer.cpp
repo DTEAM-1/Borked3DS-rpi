@@ -1740,10 +1740,10 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
             LOG_WARNING(Render_Vulkan,
                         "TRACE_DRAW strict_compat v63 forcing non-accelerated display fallback addr=0x{:08x} width={} height={} stride={} pixel_stride={} format={}; set BORKED3DS_V3DV_ALLOW_ACCELERATED_DISPLAY=1 only for diagnosis",
                         framebuffer_addr, config.width.Value(), config.height,
-                        config.stride.Value(), pixel_stride,
+                        config.stride, pixel_stride,
                         static_cast<u32>(config.color_format.Value()));
         }
-        screen_info.image_view = {};
+        screen_info.image_view = vk::ImageView{};
         return false;
     }
 
