@@ -329,7 +329,27 @@ void RendererVulkan::PrepareRendertarget() {
             }
         }
 
-        const bool loaded = LoadFBToScreenInfo(framebuffer, screen_infos[i], i == 1);
+        // v73 Pi5/V3DV: in strict monoscopic mode, do not call LoadFBToScreenInfo() for
+        // the top right-eye slot. The config has render_3d=Off, but the old present path still
+        // prepared screen_infos[1], which made AccelerateDisplay() hit the duplicate top/right-eye
+        // framebuffer and crash before the bottom screen / DrawSingleScreen path.
+        const bool strict_mono_right_eye_skip =
+            IsStrictCompatEnabled() && i == 1 &&
+            Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off;
+
+        bool loaded = false;
+        if (strict_mono_right_eye_skip) {
+            screen_infos[i].image_view = texture.image_view;
+            screen_infos[i].texcoords = {0.f, 0.f, 1.f, 1.f};
+            if (IsPresentTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_PRESENT strict_compat v73 skipping right-eye screen_info before LoadFBToScreenInfo index={} owned_valid={} render_3d_off=1",
+                            i, static_cast<bool>(screen_infos[i].image_view));
+            }
+        } else {
+            loaded = LoadFBToScreenInfo(framebuffer, screen_infos[i], i == 1);
+        }
+
         if (!loaded) {
             screen_infos[i].image_view = texture.image_view;
             screen_infos[i].texcoords = {0.f, 0.f, 1.f, 1.f};
