@@ -83,7 +83,7 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsSoftwareClearProbeEnabled() {
-    // v79: v75 proved that removing the descriptorless software clear bridge too early
+    // v80: v75 proved that removing the descriptorless software clear bridge too early
     // exposes the fragile real software shader/descriptor path again. Keep the bridge
     // enabled by default in strict Pi5/V3DV mode so software PICA draws never reach
     // SyncTextureUnits(), fragment shader setup, pipeline creation, or vkCmdDraw until
@@ -97,11 +97,15 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsNullSoftwareDrawProbeEnabled() {
-    return !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_NULL_SOFTWARE_DRAW_PROBE");
+    // v80: v79 proved even the first tiny untextured fixed-null software draw can
+    // make Sonic close almost immediately on Pi5/V3DV. Keep the descriptorless
+    // tile-clear bridge as the default stable path. Re-enter the real software
+    // shader/pipeline/vkCmdDraw path only with an explicit opt-in.
+    return IsEnvEnabled("BORKED3DS_V3DV_ENABLE_NULL_SOFTWARE_DRAW_PROBE");
 }
 
 [[nodiscard]] bool IsTexturedNullSoftwareDrawProbeAllowed() {
-    // v79: v78 proved that the first controlled *textured* null-descriptor software draw
+    // v80: v78 proved that the first controlled *textured* null-descriptor software draw
     // is still crash-prone on Pi5/V3DV. Keep textured real draws blocked by default and
     // only allow them via explicit opt-in once the untextured path is proven safe.
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_TEXTURED_NULL_SOFTWARE_DRAW_PROBE");
@@ -119,10 +123,10 @@ struct DrawParams {
         return false;
     }
 
-    // v79: keep the visible/stable tile-clear bridge, but test only the safest possible
-    // real software path: tiny untextured/no-depth batches. v78 crashed after allowing a
-    // textured null-descriptor draw at clear_index=96, so textured probes are now vetoed
-    // unless BORKED3DS_V3DV_ALLOW_TEXTURED_NULL_SOFTWARE_DRAW_PROBE=1 is set.
+    // v80: keep the visible/stable tile-clear bridge as the default. The real
+    // software path is now fully opt-in because v79 showed that even an untextured
+    // null-descriptor draw can close the emulator. When explicitly enabled, only
+    // tiny untextured/no-depth batches are considered first.
     if (vertex_count == 0 || vertex_count > 6 || depth_active) {
         return false;
     }
@@ -142,8 +146,9 @@ struct DrawParams {
     static std::atomic<u64> untextured_probe_counter{0};
     eligible_probe_index = ++untextured_probe_counter;
 
-    // Do one early untextured probe, then keep later probes sparse.
-    return eligible_probe_index == 1 || ((eligible_probe_index % 32) == 0);
+    // v80 opt-in: do only one early untextured probe. If that survives, a later
+    // pass can make this sparse instead of one-shot.
+    return eligible_probe_index == 1;
 }
 
 [[nodiscard]] bool IsStartupSoftwareQuarantineDisabled() {
@@ -306,7 +311,7 @@ void RememberStrictPresentDisplay(PAddr framebuffer_addr, u32 width, u32 height,
         return false;
     }
 
-    // v79: v67 reused the external cached view, v69/v70 reused the renderer-owned
+    // v80: v67 reused the external cached view, v69/v70 reused the renderer-owned
     // per-slot view, and both variants still died immediately after the duplicate
     // top/right-eye AccelerateDisplay call. In strict Pi5/V3DV mode, the safest
     // next step is to stop presenting any duplicate right-eye view by default.
@@ -337,7 +342,7 @@ void RememberStrictPresentDisplay(PAddr framebuffer_addr, u32 width, u32 height,
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v79 duplicate AccelerateDisplay {} addr=0x{:08x} width={} height={} stride={} pixel_format={} generation={} view_valid={} owned_valid={}; duplicate view suppressed by default to avoid Pi5/V3DV right-eye crash",
+                    "TRACE_DRAW strict_compat v80 duplicate AccelerateDisplay {} addr=0x{:08x} width={} height={} stride={} pixel_format={} generation={} view_valid={} owned_valid={}; duplicate view suppressed by default to avoid Pi5/V3DV right-eye crash",
                     duplicate_mode, framebuffer_addr, width, height, stride,
                     static_cast<u32>(pixel_format), cached.generation,
                     static_cast<u32>(static_cast<bool>(screen_info.image_view)),
@@ -355,7 +360,7 @@ void RecordStrictOwnedPresentTextureClear(Scheduler& scheduler, RenderManager& r
     if (!static_cast<bool>(image)) {
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v79 owned-present texture clear skipped invalid_image clear_index={} addr=0x{:08x}",
+                        "TRACE_DRAW strict_compat v80 owned-present texture clear skipped invalid_image clear_index={} addr=0x{:08x}",
                         clear_index, framebuffer_addr);
         }
         return;
@@ -416,7 +421,7 @@ void RecordStrictOwnedPresentTextureClear(Scheduler& scheduler, RenderManager& r
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v79 owned-present texture clear submitted clear_index={} addr=0x{:08x} width={} height={} stride={} pixel_format={}",
+                    "TRACE_DRAW strict_compat v80 owned-present texture clear submitted clear_index={} addr=0x{:08x} width={} height={} stride={} pixel_format={}",
                     clear_index, framebuffer_addr, width, height, stride,
                     static_cast<u32>(pixel_format));
     }
@@ -431,7 +436,7 @@ void RecordStrictPresentDebugClear(Scheduler& scheduler, RenderManager& renderpa
     if (!static_cast<bool>(image) || !static_cast<bool>(aspect & vk::ImageAspectFlagBits::eColor)) {
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v79 present-path debug clear skipped invalid_surface clear_index={} addr=0x{:08x} image_valid={}",
+                        "TRACE_DRAW strict_compat v80 present-path debug clear skipped invalid_surface clear_index={} addr=0x{:08x} image_valid={}",
                         clear_index, framebuffer_addr, static_cast<u32>(static_cast<bool>(image)));
         }
         return;
@@ -456,7 +461,7 @@ void RecordStrictPresentDebugClear(Scheduler& scheduler, RenderManager& renderpa
             1.0f,
         };
 
-        // v79: keep the present-source image in eGeneral. V3DV is more stable here than
+        // v80: keep the present-source image in eGeneral. V3DV is more stable here than
         // bouncing an already-presentable/cache-owned image through eTransferDstOptimal on
         // every AccelerateDisplay call. The post barrier is enough for the present fragment
         // shader to sample the cleared image later in the same command stream.
@@ -480,7 +485,7 @@ void RecordStrictPresentDebugClear(Scheduler& scheduler, RenderManager& renderpa
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v79 present-path debug clear submitted clear_index={} addr=0x{:08x} width={} height={} stride={} pixel_format={}",
+                    "TRACE_DRAW strict_compat v80 present-path debug clear submitted clear_index={} addr=0x{:08x} width={} height={} stride={} pixel_format={}",
                     clear_index, framebuffer_addr, width, height, stride,
                     static_cast<u32>(pixel_format));
     }
@@ -823,7 +828,7 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v79 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
+                    "TRACE_DRAW strict_compat v80 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
                     static_cast<u32>(IsStrictCompatEnabled()),
                     static_cast<u32>(IsSoftwareTexturesAllowed()),
                     static_cast<u32>(IsStartupSoftwareQuarantineDisabled()));
@@ -1236,9 +1241,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         return true;
     }
 
-    // v79: hard descriptorless proof path for Pi5/V3DV strict software fallback.
+    // v80: hard descriptorless proof path for Pi5/V3DV strict software fallback.
     // v77 proved that small descriptorless tiles can keep the render target/present path
-    // alive and visible. v79 keeps that stable bridge, but periodically lets one very
+    // alive and visible. v80 keeps that stable bridge, but periodically lets one very
     // small null-texture software draw continue into the real shader/pipeline/vkCmdDraw path.
     // This is the next controlled step: prove whether the wall is still descriptor/pipeline
     // submit, without enabling real PICA texture surfaces yet.
@@ -1263,7 +1268,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (strict_software_null_draw_probe) {
             if (IsDrawTraceEnabled()) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v79 allowing controlled untextured null-software draw probe clear_index={} eligible_index={} vertex_count={} draw_w={} draw_h={} enabled_textures={} textures_disabled={} depth_active={} textured_candidate={} color_addr=0x{:08x}; bypassing tile clear with textures disabled and strict fixed-null descriptors",
+                            "TRACE_DRAW strict_compat v80 allowing controlled untextured null-software draw probe clear_index={} eligible_index={} vertex_count={} draw_w={} draw_h={} enabled_textures={} textures_disabled={} depth_active={} textured_candidate={} color_addr=0x{:08x}; bypassing tile clear with textures disabled and strict fixed-null descriptors",
                             clear_index, eligible_null_probe_index, vertex_count,
                             draw_rect.GetWidth(), draw_rect.GetHeight(), enabled_primary_textures,
                             static_cast<u32>(primary_textures_disabled),
@@ -1275,7 +1280,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             if (textured_null_probe_candidate && IsDrawTraceEnabled() &&
                 clear_index >= 96 && (clear_index % 96) == 0) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v79 textured null-software draw probe vetoed clear_index={} vertex_count={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x}; v78 crashed here, keeping descriptorless tile clear unless BORKED3DS_V3DV_ALLOW_TEXTURED_NULL_SOFTWARE_DRAW_PROBE=1",
+                            "TRACE_DRAW strict_compat v80 textured null-software draw probe vetoed clear_index={} vertex_count={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x}; v78/v79 crashed when real software probes were allowed, keeping descriptorless tile clear unless explicitly opted in",
                             clear_index, vertex_count, enabled_primary_textures,
                             static_cast<u32>(primary_textures_disabled),
                             static_cast<u32>(depth_active),
@@ -1283,7 +1288,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
             if (IsDrawTraceEnabled()) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v79 early descriptorless render-target tile clear clear_index={} vertex_count={} draw_w={} draw_h={} enabled_textures={} textures_disabled={} depth_active={} full_clear={} color_addr=0x{:08x}; bypassing quarantine, SyncTextureUnits, descriptors, shaders, pipeline and vkCmdDraw",
+                            "TRACE_DRAW strict_compat v80 early descriptorless render-target tile clear clear_index={} vertex_count={} draw_w={} draw_h={} enabled_textures={} textures_disabled={} depth_active={} full_clear={} color_addr=0x{:08x}; bypassing quarantine, SyncTextureUnits, descriptors, shaders, pipeline and vkCmdDraw",
                             clear_index, vertex_count, draw_rect.GetWidth(), draw_rect.GetHeight(),
                             CountEnabledPrimaryTextures(regs),
                             static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
@@ -1333,7 +1338,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW strict_compat v79 early descriptorless clear submitted clear_index={} vertex_count={}",
+                         "TRACE_DRAW strict_compat v80 early descriptorless clear submitted clear_index={} vertex_count={}",
                          clear_index, vertex_count);
             }
             vertex_batch.clear();
@@ -1363,14 +1368,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             HasActiveDepthState(regs) || vertex_batch.size() <= 6 || vertex_batch.size() >= 512;
         if (strict_quarantine_candidate && strict_quarantine_fragile && !strict_software_null_draw_probe) {
             const u64 quarantine_index = ++g_vk_strict_software_quarantine_counter;
-            // v79: the v57 logs prove that the first real software draws now reach vk_rasterizer,
+            // v80: the v57 logs prove that the first real software draws now reach vk_rasterizer,
             // but they crash before the first Vulkan draw submit. Quarantine only the very first
             // startup batches so the emulator can progress to later, safer batches and so the next
             // log tells us whether the wall is still the first draw or a later render-target write.
             if (quarantine_index <= 32) {
                 if (IsDrawTraceEnabled()) {
                     LOG_WARNING(Render_Vulkan,
-                                "TRACE_DRAW strict_compat v79 quarantining startup software draw quarantine_index={} vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; set BORKED3DS_V3DV_DISABLE_SOFTWARE_QUARANTINE=1 only for diagnosis",
+                                "TRACE_DRAW strict_compat v80 quarantining startup software draw quarantine_index={} vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; set BORKED3DS_V3DV_DISABLE_SOFTWARE_QUARANTINE=1 only for diagnosis",
                                 quarantine_index, vertex_batch.size(), regs.pipeline.num_vertices,
                                 CountEnabledPrimaryTextures(regs),
                                 static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
@@ -1382,13 +1387,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 return true;
             } else if (IsDrawTraceEnabled() && quarantine_index == 33) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v79 startup software quarantine exhausted; allowing subsequent software draws");
+                            "TRACE_DRAW strict_compat v80 startup software quarantine exhausted; allowing subsequent software draws");
             }
         }
 
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v79 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v80 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1488,7 +1493,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             if (skip_index <= 128) {
                 if (IsDrawTraceEnabled()) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_DRAW strict_compat early_skip_indexed6_textured_late_startup_software_draw_v79_allowed_only skip_index={} vertex_batch_size={} num_vertices={}",
+                             "TRACE_DRAW strict_compat early_skip_indexed6_textured_late_startup_software_draw_v80_allowed_only skip_index={} vertex_batch_size={} num_vertices={}",
                              skip_index, vertex_batch.size(), regs.pipeline.num_vertices);
                 }
                 vertex_batch.clear();
@@ -1508,14 +1513,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (medium_textured_software_draw && IsDrawTraceEnabled()) {
             const u64 skip_index = ++g_vk_medium_textured_software_skip_counter;
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_medium_textured_software_draw_v79 trace_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={}",
+                     "TRACE_DRAW strict_compat allowing_medium_textured_software_draw_v80 trace_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={}",
                      skip_index, vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(HasActiveDepthState(regs)));
         }
 
         if (large_textured_software_draw && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw_v79 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat allowing_first_large_textured_software_draw_v80 large_index={} vertex_batch_size={} num_vertices={} enabled_textures={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      large_textured_software_draw_index, vertex_batch.size(),
                      regs.pipeline.num_vertices, CountEnabledPrimaryTextures(regs),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1564,7 +1569,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         !accelerate && IsStrictCompatEnabled() && !IsSoftwareTexturesAllowed();
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v79 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
+                    "TRACE_DRAW strict_compat v80 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
                     vertex_batch.size(), CountEnabledPrimaryTextures(regs),
                     static_cast<u32>(ArePrimaryTexturesDisabled(regs)));
     }
@@ -1572,13 +1577,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncTextureUnits(framebuffer);
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW strict_compat v79 after SyncTextureUnits before utility/shader path vertex_batch_size={}",
+                 "TRACE_DRAW strict_compat v80 after SyncTextureUnits before utility/shader path vertex_batch_size={}",
                  vertex_batch.size());
     }
     if (strict_software_null_texture_path) {
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v79 skipping SyncUtilityTextures on software null-texture path");
+                     "TRACE_DRAW strict_compat v80 skipping SyncUtilityTextures on software null-texture path");
         }
     } else {
         SyncUtilityTextures(framebuffer);
@@ -1586,7 +1591,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW strict_compat v79 before fragment shader path shader_dirty={}",
+                 "TRACE_DRAW strict_compat v80 before fragment shader path shader_dirty={}",
                  static_cast<u32>(shader_dirty));
     }
 
@@ -1605,7 +1610,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         pipeline_cache.UseFragmentShader(regs, user_config);
         if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v79 after UseFragmentShader");
+                     "TRACE_DRAW strict_compat v80 after UseFragmentShader");
         }
         shader_dirty = false;
     } else if (IsDrawTraceEnabled()) {
@@ -1614,14 +1619,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW strict_compat v79 before LUT/uniform upload");
+                 "TRACE_DRAW strict_compat v80 before LUT/uniform upload");
     }
     SyncAndUploadLUTs();
     SyncAndUploadLUTsLF();
     UploadUniforms(accelerate);
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW strict_compat v79 after LUT/uniform upload before descriptor flush");
+                 "TRACE_DRAW strict_compat v80 after LUT/uniform upload before descriptor flush");
     }
 
     update_queue.Flush();
@@ -1665,7 +1670,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         const bool full_clear_probe = IsFullSoftwareClearProbeEnabled();
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v79 descriptorless software debug tile-clear fallback clear_index={} vertex_count={} draw_w={} draw_h={} enabled_textures={} textures_disabled={} depth_active={} full_clear={} color_addr=0x{:08x}; bypassing texture descriptors, fragment shader, pipeline bind and vkCmdDraw",
+                        "TRACE_DRAW strict_compat v80 descriptorless software debug tile-clear fallback clear_index={} vertex_count={} draw_w={} draw_h={} enabled_textures={} textures_disabled={} depth_active={} full_clear={} color_addr=0x{:08x}; bypassing texture descriptors, fragment shader, pipeline bind and vkCmdDraw",
                         clear_index, vertex_count, draw_rect.GetWidth(), draw_rect.GetHeight(),
                         CountEnabledPrimaryTextures(regs),
                         static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
@@ -1713,7 +1718,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v79 descriptorless clear submitted clear_index={} vertex_count={}",
+                     "TRACE_DRAW strict_compat v80 descriptorless clear submitted clear_index={} vertex_count={}",
                      clear_index, vertex_count);
         }
         vertex_batch.clear();
@@ -1774,10 +1779,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 }
 
 void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
-    // v79 strict fallback: if the startup quarantine is exhausted and we still reach the
+    // v80 strict fallback: if the startup quarantine is exhausted and we still reach the
     // software path, populate the current texture descriptor set with fixed null resources.
     // v57 reused constructor descriptors, but the acquired per-draw texture set can still be
-    // a different set. Leaving it unwritten is risky on V3DV, so v79 writes only the three
+    // a different set. Leaving it unwritten is risky on V3DV, so v80 writes only the three
     // primary PICA units and never reads PICA texture state or creates texture surfaces here.
     if (IsStrictCompatEnabled() && !IsSoftwareTexturesAllowed()) {
         const auto texture_set = pipeline_cache.Acquire(DescriptorHeapType::Texture);
@@ -1788,7 +1793,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
 
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v79 binding fixed null texture descriptors framebuffer_valid={} null_view_valid={} null_sampler_valid={}",
+                        "TRACE_DRAW strict_compat v80 binding fixed null texture descriptors framebuffer_valid={} null_view_valid={} null_sampler_valid={}",
                         framebuffer != nullptr, static_cast<bool>(null_view),
                         static_cast<bool>(null_handle));
         }
@@ -1796,7 +1801,7 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         for (u32 texture_index = 0; texture_index < 3; ++texture_index) {
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_DRAW tex{} -> null reason=strict_compat_v79_fixed_null_descriptor",
+                         "TRACE_DRAW tex{} -> null reason=strict_compat_v80_fixed_null_descriptor",
                          texture_index);
             }
             update_queue.AddImageSampler(texture_set, texture_index, 0, null_view, null_handle);
@@ -1849,11 +1854,11 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
             IsStrictCompatFragileTextureFormat(texture_format)) {
             if (IsDrawTraceEnabled() && texture_index < 3) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v79 binding fragile texture to null before surface_create tex{} type={} format={} addr=0x{:08X}; set BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES=1 only for diagnosis",
+                            "TRACE_DRAW strict_compat v80 binding fragile texture to null before surface_create tex{} type={} format={} addr=0x{:08X}; set BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES=1 only for diagnosis",
                             texture_index, texture_type, texture_format,
                             texture.config.GetPhysicalAddress());
             }
-            bind_null("strict_compat_v79_fragile_texture_before_surface_create");
+            bind_null("strict_compat_v80_fragile_texture_before_surface_create");
             continue;
         }
 
@@ -2055,14 +2060,14 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         return false;
     }
 
-    // v79: keep AccelerateDisplay active by default and stop clearing the renderer-owned
+    // v80: keep AccelerateDisplay active by default and stop clearing the renderer-owned
     // present texture automatically. v65 proved that the owned-present clear is submitted
     // and the screen info remains valid, so the next diagnostic must move to the existing
     // renderer_vulkan.cpp present-probe path via emulators.cfg.
     if (IsStrictCompatEnabled() && IsForcedNonAcceleratedDisplay() && !IsAcceleratedDisplayAllowed()) {
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v79 opt-in non-accelerated display fallback addr=0x{:08x} width={} height={} stride={} pixel_stride={} format={}; remove BORKED3DS_V3DV_FORCE_NON_ACCELERATED_DISPLAY for normal testing",
+                        "TRACE_DRAW strict_compat v80 opt-in non-accelerated display fallback addr=0x{:08x} width={} height={} stride={} pixel_stride={} format={}; remove BORKED3DS_V3DV_FORCE_NON_ACCELERATED_DISPLAY for normal testing",
                         framebuffer_addr, config.width.Value(), static_cast<u32>(config.height.Value()),
                         config.stride, pixel_stride,
                         static_cast<u32>(config.color_format.Value()));
@@ -2077,7 +2082,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
     const u32 present_height = static_cast<u32>(config.height.Value());
     const u32 present_effective_width = std::min(present_width, pixel_stride);
 
-    // v79: the v79 mono duplicate-return-false path can still die before renderer_vulkan.cpp
+    // v80: the v80 mono duplicate-return-false path can still die before renderer_vulkan.cpp
     // finishes LoadFBToScreenInfo(right_eye=true). Do not present or reuse that duplicate by
     // default. Instead, deliberately fail only this duplicate AccelerateDisplay call. The
     // renderer keeps the permanent renderer-owned texture/view for slot 1, while slot 0 remains
@@ -2090,7 +2095,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v79 duplicate AccelerateDisplay mono_return_false_owned_texture addr=0x{:08x} width={} height={} stride={} pixel_format={} owned_valid={}; duplicate slot will be handled by renderer-owned texture and should not be drawn in mono mode",
+                        "TRACE_DRAW strict_compat v80 duplicate AccelerateDisplay mono_return_false_owned_texture addr=0x{:08x} width={} height={} stride={} pixel_format={} owned_valid={}; duplicate slot will be handled by renderer-owned texture and should not be drawn in mono mode",
                         framebuffer_addr, present_effective_width, present_height, pixel_stride,
                         static_cast<u32>(present_pixel_format),
                         static_cast<u32>(static_cast<bool>(screen_info.image_view)));
@@ -2121,7 +2126,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW accelerate_display v79 owned-present texture debug path addr=0x{:08x} width={} height={} stride={} pixel_format={} clear_index={} view_valid={}; set BORKED3DS_V3DV_DISABLE_OWNED_PRESENT_TEXTURE_CLEAR=1 only for diagnosis",
+                        "TRACE_DRAW accelerate_display v80 owned-present texture debug path addr=0x{:08x} width={} height={} stride={} pixel_format={} clear_index={} view_valid={}; set BORKED3DS_V3DV_DISABLE_OWNED_PRESENT_TEXTURE_CLEAR=1 only for diagnosis",
                         framebuffer_addr, config.width.Value(),
                         static_cast<u32>(config.height.Value()), pixel_stride,
                         static_cast<u32>(owned_pixel_format), owned_clear_index,
@@ -2148,7 +2153,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         res_cache.GetSurfaceSubRect(src_params, VideoCore::ScaleMatch::Ignore, true);
 
     if (!src_surface_id) {
-        // v79: Kid Icarus/Sonic can reach AccelerateDisplay with a valid renderer-owned
+        // v80: Kid Icarus/Sonic can reach AccelerateDisplay with a valid renderer-owned
         // screen texture while the cache lookup for the external framebuffer fails. Returning
         // false leaves renderer_vulkan.cpp with loaded=false even though view_valid=true, which
         // was the exact crash/flash pattern in the v69 logs. In strict Pi5/V3DV mode, keep the
@@ -2163,7 +2168,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
             if (IsDrawTraceEnabled()) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v79 src_surface_missing owned_present_fallback addr=0x{:08x} width={} height={} stride={} pixel_format={} owned_view_valid=1; keeping accelerated=1 to avoid loaded=false present path",
+                            "TRACE_DRAW strict_compat v80 src_surface_missing owned_present_fallback addr=0x{:08x} width={} height={} stride={} pixel_format={} owned_view_valid=1; keeping accelerated=1 to avoid loaded=false present path",
                             framebuffer_addr, present_effective_width, present_height, pixel_stride,
                             static_cast<u32>(present_pixel_format));
             }
@@ -2173,7 +2178,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v79 src_surface_missing no_owned_present_fallback addr=0x{:08x} width={} height={} stride={} pixel_format={} owned_view_valid=0",
+                        "TRACE_DRAW strict_compat v80 src_surface_missing no_owned_present_fallback addr=0x{:08x} width={} height={} stride={} pixel_format={} owned_view_valid=0",
                         framebuffer_addr, present_effective_width, present_height, pixel_stride,
                         static_cast<u32>(present_pixel_format));
         }
@@ -2188,7 +2193,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         strict_compat && IsPresentImageClearAllowed() && !IsPresentDebugClearDisabled();
     const vk::ImageView base_view = src_surface.ImageView();
     const vk::ImageView copy_view = src_surface.CopyImageView();
-    // v79: do not mutate the present source image by default. v61/v62 showed that
+    // v80: do not mutate the present source image by default. v61/v62 showed that
     // direct clears can crash/flash on V3DV. Instead, keep the accelerated image alive
     // and sample the base view directly in strict mode. This tests whether the copy view
     // was the stale/black image while avoiding transfer writes on the present source.
@@ -2198,7 +2203,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         const u64 present_clear_index = ++g_vk_strict_present_debug_clear_counter;
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v79 present-path debug clear begin clear_index={} addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {})",
+                        "TRACE_DRAW strict_compat v80 present-path debug clear begin clear_index={} addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {})",
                         present_clear_index, framebuffer_addr, src_params.width, src_params.height,
                         src_params.stride, static_cast<u32>(src_params.pixel_format),
                         src_rect.left, src_rect.bottom, src_rect.right, src_rect.top);
@@ -2223,7 +2228,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display v79 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
+                 "TRACE_DRAW accelerate_display v80 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
                  src_rect.right, src_rect.top, static_cast<bool>(base_view),
