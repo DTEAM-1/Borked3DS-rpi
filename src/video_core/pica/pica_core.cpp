@@ -64,6 +64,10 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_PICA_ACCEL");
 }
 
+[[nodiscard]] bool IsPicaAccelForcedOff() {
+    return IsEnvEnabled("BORKED3DS_V3DV_FORCE_PICA_SOFTWARE");
+}
+
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const RegsInternal& regs) {
     const auto& textures = regs.texturing.GetTextures();
     for (u32 i = 0; i < 3; ++i) {
@@ -677,23 +681,24 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     const u32 textures_disabled = ArePrimaryTexturesDisabled(regs.internal) ? 1u : 0u;
 
-    // v81: Pi 5/V3DV hard gate for the PICA accelerated batch path.
-    // The latest logs still show occasional strict runs reaching first_non_fragile_draw /
-    // AccelerateDrawBatch after startup skips. In strict mode we must keep every draw on
-    // the CPU/software vertex path unless the developer explicitly opts in with
-    // BORKED3DS_V3DV_ALLOW_PICA_ACCEL=1.
-    if (accelerate_draw && IsStrictCompatEnabled() && !IsPicaAccelAllowed()) {
+    // v82: v82 proved the final Vulkan target/present path with a fake software clear.
+    // To move toward real visuals, strict mode no longer forces every PICA batch onto the
+    // software fallback by default. Use BORKED3DS_V3DV_FORCE_PICA_SOFTWARE=1 to restore
+    // the old conservative path, or BORKED3DS_V3DV_ALLOW_PICA_ACCEL=1 to make the intent
+    // explicit in logs/config.
+    if (accelerate_draw && IsStrictCompatEnabled() && IsPicaAccelForcedOff() &&
+        !IsPicaAccelAllowed()) {
         if (trace_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat v81 forcing software path before any PICA acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} allow_pica_accel=0",
+                     "TRACE_DRAW_PICA strict_compat v82 forcing software path before any PICA acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} force_pica_software=1 allow_pica_accel=0",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty(), textures_disabled,
                      static_cast<u32>(primitive_assembler.GetTopology()));
-            LogPicaTextureState(regs.internal, "v81_force_software_before_accel");
+            LogPicaTextureState(regs.internal, "v82_force_software_before_accel");
         }
         if (!g_logged_strict_accel_gate.exchange(true)) {
             LOG_WARNING(HW_GPU,
-                        "Pi5/V3DV strict compatibility v81: PICA AccelerateDrawBatch hard-disabled by default; set BORKED3DS_V3DV_ALLOW_PICA_ACCEL=1 only for diagnosis");
+                        "Pi5/V3DV strict compatibility v82: PICA AccelerateDrawBatch forced off by BORKED3DS_V3DV_FORCE_PICA_SOFTWARE=1; remove it for the real-visual test");
         }
         accelerate_draw = false;
     }
@@ -707,16 +712,17 @@ void PicaCore::DrawArrays(bool is_indexed) {
                  static_cast<u32>(primitive_assembler.GetTopology()));
     }
 
-    // v81 last-chance guard: never allow the strict Pi5/V3DV path to slip into
-    // AccelerateDrawBatch unless explicitly requested. This catches later code paths
-    // or older patched blocks that may re-enable accelerate_draw after the first gate.
-    if (accelerate_draw && IsStrictCompatEnabled() && !IsPicaAccelAllowed()) {
+    // v82 last-chance guard: restore the old software-only behavior only when explicitly
+    // requested. Otherwise allow the real accelerated path so the next run can test actual
+    // game visuals instead of the v82 fake green clear.
+    if (accelerate_draw && IsStrictCompatEnabled() && IsPicaAccelForcedOff() &&
+        !IsPicaAccelAllowed()) {
         if (trace_draw) {
             LOG_WARNING(HW_GPU,
-                        "TRACE_DRAW_PICA strict_compat v81 late guard blocked AccelerateDrawBatch draw_index={} indexed={} num_vertices={} textures_disabled={} topology={}",
+                        "TRACE_DRAW_PICA strict_compat v82 late guard blocked AccelerateDrawBatch draw_index={} indexed={} num_vertices={} textures_disabled={} topology={} force_pica_software=1",
                         draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                         textures_disabled, static_cast<u32>(primitive_assembler.GetTopology()));
-            LogPicaTextureState(regs.internal, "v81_late_guard_force_software");
+            LogPicaTextureState(regs.internal, "v82_late_guard_force_software");
         }
         accelerate_draw = false;
     }
