@@ -1233,7 +1233,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     return result;
 }
 
-bool RasterizerVulkan::AccelerateDrawBatchInternalbool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
+bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool trace_accel = IsAccelStageTraceEnabled();
 
     const auto log_stage = [&](u32 stage, const char* name) {
@@ -1363,7 +1363,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternalbool RasterizerVulkan::Acceler
     return true;
 }
 
-void RasterizerVulkan::SetupIndexArrayvoid RasterizerVulkan::SetupIndexArray() {
+void RasterizerVulkan::SetupIndexArray() {
     const bool index_u8 = regs.pipeline.index_array.format == 0;
     const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
     const u32 source_index_size = regs.pipeline.num_vertices * (index_u8 ? 1u : 2u);
