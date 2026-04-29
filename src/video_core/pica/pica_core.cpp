@@ -681,21 +681,21 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
     const u32 textures_disabled = ArePrimaryTexturesDisabled(regs.internal) ? 1u : 0u;
 
-    // v83: v82 allowed PICA acceleration by default and Sonic now closes quickly after
+    // v84: v82 allowed PICA acceleration by default and Sonic now closes quickly after
     // the loading screen. Restore the conservative Pi5/V3DV rule: no AccelerateDrawBatch
     // in strict mode unless it is explicitly requested for a diagnosis run.
     if (accelerate_draw && IsStrictCompatEnabled() && !IsPicaAccelAllowed()) {
         if (trace_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat v83 forcing software path before any PICA acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} allow_pica_accel=0",
+                     "TRACE_DRAW_PICA strict_compat v84 forcing software path before any PICA acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} allow_pica_accel=0",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty(), textures_disabled,
                      static_cast<u32>(primitive_assembler.GetTopology()));
-            LogPicaTextureState(regs.internal, "v83_force_software_before_accel");
+            LogPicaTextureState(regs.internal, "v84_force_software_before_accel");
         }
         if (!g_logged_strict_accel_gate.exchange(true)) {
             LOG_WARNING(HW_GPU,
-                        "Pi5/V3DV strict compatibility v83: PICA AccelerateDrawBatch hard-disabled by default; set BORKED3DS_V3DV_ALLOW_PICA_ACCEL=1 only for diagnosis");
+                        "Pi5/V3DV strict compatibility v84: PICA AccelerateDrawBatch remains disabled by default; v84 reintroduces only safe untextured software draws in vk_rasterizer. Set BORKED3DS_V3DV_ALLOW_PICA_ACCEL=1 only for diagnosis");
         }
         accelerate_draw = false;
     }
@@ -709,15 +709,15 @@ void PicaCore::DrawArrays(bool is_indexed) {
                  static_cast<u32>(primitive_assembler.GetTopology()));
     }
 
-    // v83 last-chance guard: keep strict mode out of AccelerateDrawBatch unless
+    // v84 last-chance guard: keep strict mode out of AccelerateDrawBatch unless
     // BORKED3DS_V3DV_ALLOW_PICA_ACCEL=1 is explicitly provided.
     if (accelerate_draw && IsStrictCompatEnabled() && !IsPicaAccelAllowed()) {
         if (trace_draw) {
             LOG_WARNING(HW_GPU,
-                        "TRACE_DRAW_PICA strict_compat v83 late guard blocked AccelerateDrawBatch draw_index={} indexed={} num_vertices={} textures_disabled={} topology={}",
+                        "TRACE_DRAW_PICA strict_compat v84 late guard blocked AccelerateDrawBatch draw_index={} indexed={} num_vertices={} textures_disabled={} topology={}",
                         draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                         textures_disabled, static_cast<u32>(primitive_assembler.GetTopology()));
-            LogPicaTextureState(regs.internal, "v83_late_guard_force_software");
+            LogPicaTextureState(regs.internal, "v84_late_guard_force_software");
         }
         accelerate_draw = false;
     }
