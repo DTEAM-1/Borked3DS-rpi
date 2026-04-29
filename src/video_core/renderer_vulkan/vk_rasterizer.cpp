@@ -97,6 +97,17 @@ struct DrawParams {
     return IsEnvEnabled("BORKED3DS_V3DV_FULL_SOFTWARE_CLEAR_PROBE");
 }
 
+[[nodiscard]] bool IsStrictSoftwareNoopGuardDisabled() {
+    return IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SOFTWARE_NOOP_GUARD");
+}
+
+[[nodiscard]] bool IsStrictSoftwareRealDrawAllowed() {
+    // v83: v82 reached the real software draw path after the green clear was disabled,
+    // and Sonic now closes rapidly. Keep real software vkCmdDraw() disabled by default
+    // on Pi5/V3DV strict mode. Use this opt-in only after the no-op present path is stable.
+    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS");
+}
+
 [[nodiscard]] u32 GetEnvU32(const char* name, u32 fallback) {
     const char* value = std::getenv(name);
     if (value == nullptr || value[0] == '\0') {
@@ -858,7 +869,7 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v82 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
+                    "TRACE_DRAW strict_compat v83 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
                     static_cast<u32>(IsStrictCompatEnabled()),
                     static_cast<u32>(IsSoftwareTexturesAllowed()),
                     static_cast<u32>(IsStartupSoftwareQuarantineDisabled()));
@@ -1399,6 +1410,28 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             vertex_batch.clear();
             return true;
         }
+    }
+
+    // v83: safety net after disabling the visible green tile-clear probe.
+    // If strict Pi5/V3DV software fallback continues into SyncTextureUnits(), shader setup,
+    // pipeline bind, or vkCmdDraw(), Sonic can close before a useful crash trace is emitted.
+    // Consume these fallback draws as a safe no-op by default. This keeps the framebuffer /
+    // present path alive while the next pass reintroduces one class of real software draw
+    // at a time. The real path remains available only through an explicit diagnosis opt-in.
+    if (!accelerate && IsStrictCompatEnabled() && !IsStrictSoftwareNoopGuardDisabled() &&
+        !IsStrictSoftwareRealDrawAllowed() && !IsSoftwareTexturesAllowed() && using_color_fb) {
+        if (IsDrawTraceEnabled()) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_DRAW strict_compat v83 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for diagnosis",
+                        vertex_batch.size(), regs.pipeline.num_vertices,
+                        CountEnabledPrimaryTextures(regs),
+                        static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
+                        static_cast<u32>(HasActiveDepthState(regs)),
+                        regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                        regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        }
+        vertex_batch.clear();
+        return true;
     }
 
     const bool tiny_textured_software_draw =
@@ -2248,12 +2281,14 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         strict_compat && IsPresentImageClearAllowed() && !IsPresentDebugClearDisabled();
     const vk::ImageView base_view = src_surface.ImageView();
     const vk::ImageView copy_view = src_surface.CopyImageView();
-    // v82: v82 forced the base view while the log shows both base_valid and copy_valid.
-    // Prefer the copy view in strict mode because it is the safe shader-readable view for
-    // final presentation. Keep the old base-view behavior as an explicit comparison knob.
+    // v83: v82 switched strict mode to the copy view by default and Sonic now closes quickly
+    // after the loading screen. Return to the older, more stable base-view behavior by
+    // default. The copy view is kept as an explicit comparison knob only.
+    const bool use_copy_present_view =
+        strict_compat && IsEnvEnabled("BORKED3DS_V3DV_USE_COPY_PRESENT_VIEW") &&
+        IsValidImageView(copy_view);
     const bool force_base_present_view =
-        strict_compat && IsEnvEnabled("BORKED3DS_V3DV_FORCE_BASE_PRESENT_VIEW") &&
-        IsValidImageView(base_view);
+        strict_compat && !use_copy_present_view && IsValidImageView(base_view);
 
     if (strict_present_debug_clear) {
         const u64 present_clear_index = ++g_vk_strict_present_debug_clear_counter;
@@ -2274,8 +2309,8 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         (float)src_rect.top / (float)scaled_height, (float)src_rect.right / (float)scaled_width);
 
     screen_info.image_view =
-        (strict_compat && !force_base_present_view && IsValidImageView(copy_view)) ? copy_view
-                                                                                  : base_view;
+        (use_copy_present_view && IsValidImageView(copy_view)) ? copy_view
+                                                              : (IsValidImageView(base_view) ? base_view : copy_view);
 
     RememberStrictPresentDisplay(framebuffer_addr, src_params.width, src_params.height,
                                  src_params.stride, src_params.pixel_format, screen_info.texcoords,
@@ -2283,7 +2318,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display v82 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
+                 "TRACE_DRAW accelerate_display v83 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
                  src_rect.right, src_rect.top, static_cast<bool>(base_view),
