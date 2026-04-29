@@ -27,6 +27,7 @@
 namespace Vulkan {
 
 std::atomic<u64> g_vk_draw_counter{0};
+std::atomic<u64> g_vk_accel_draw_counter{0};
 
 namespace {
 
@@ -74,6 +75,20 @@ struct DrawParams {
     return IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
 }
 
+[[nodiscard]] bool IsAccelStageTraceEnabled() {
+    return IsDrawTraceEnabled() || IsEnvEnabled("BORKED3DS_V3DV_TRACE_ACCEL_STAGE");
+}
+
+[[nodiscard]] bool IsStrictAccelInternalDryRunEnabled() {
+    // v87: plan de travail 1 says the next step is to instrument AccelerateDrawBatch
+    // internally before widening the draw allowlist. In strict Pi5/V3DV mode, enter the
+    // accelerated path but stop before recording vkCmdDraw/vkCmdDrawIndexed unless this
+    // is explicitly disabled for a crash-risk diagnostic run.
+    return IsStrictCompatEnabled() &&
+           !IsEnvEnabled("BORKED3DS_V3DV_EXECUTE_ACCEL_INTERNAL_CMDS") &&
+           !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_ACCEL_INTERNAL_DRY_RUN");
+}
+
 [[nodiscard]] bool IsSoftwareSkipAllowed() {
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_SKIP");
 }
@@ -116,7 +131,7 @@ struct DrawParams {
     // This keeps the normal v86 test focused on controlled PICA/HW acceleration while still
     // preserving a manual escape hatch for comparing against v84.
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_UNTEXTURED_SOFTWARE_DRAWS") &&
-           IsEnvEnabled("BORKED3DS_V3DV_ALLOW_V86_REAL_SOFTWARE_DRAWS") &&
+           IsEnvEnabled("BORKED3DS_V3DV_ALLOW_V87_REAL_SOFTWARE_DRAWS") &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_UNTEXTURED_SOFTWARE_DRAWS");
 }
 
@@ -134,6 +149,18 @@ struct DrawParams {
 
     constexpr unsigned long max_u32 = 0xFFFFFFFFul;
     return parsed > max_u32 ? 0xFFFFFFFFu : static_cast<u32>(parsed);
+}
+
+[[nodiscard]] u32 GetAccelStageStopAfter() {
+    // 0 means no stage-limit stop. Use this only to bisect a crash inside
+    // AccelerateDrawBatch, for example:
+    //   BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER=6
+    return GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0);
+}
+
+[[nodiscard]] bool ShouldStopAfterAccelStage(u32 stage) {
+    const u32 stop_after = GetAccelStageStopAfter();
+    return stop_after != 0 && stage >= stop_after;
 }
 
 [[nodiscard]] u32 GetStrictSafeUntexturedSoftwareDrawBudget() {
@@ -888,7 +915,7 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v84 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
+                    "TRACE_DRAW strict_compat v87 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
                     static_cast<u32>(IsStrictCompatEnabled()),
                     static_cast<u32>(IsSoftwareTexturesAllowed()),
                     static_cast<u32>(IsStartupSoftwareQuarantineDisabled()));
@@ -1086,47 +1113,165 @@ bool RasterizerVulkan::SetupGeometryShader() {
 }
 
 bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
+    const u64 accel_id = ++g_vk_accel_draw_counter;
+    const bool trace_accel = IsAccelStageTraceEnabled();
+
+    const auto log_stage = [&](u32 stage, const char* name) {
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v87 accel_id={} stage={} name={} indexed={} num_vertices={} topology={} use_gs={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                        accel_id, stage, name, is_indexed, regs.pipeline.num_vertices,
+                        static_cast<u32>(regs.pipeline.triangle_topology.Value()),
+                        static_cast<u32>(regs.pipeline.use_gs.Value()),
+                        regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                        regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        }
+    };
+
+    const auto consume_if_stage_limited = [&](u32 stage, const char* name) {
+        log_stage(stage, name);
+        if (ShouldStopAfterAccelStage(stage)) {
+            if (trace_accel) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_ACCEL_STAGE v87 stage_limit consumed accel_id={} stage={} name={} stop_after={} before_vulkan_command=1",
+                            accel_id, stage, name, GetAccelStageStopAfter());
+            }
+            return true;
+        }
+        return false;
+    };
+
+    if (consume_if_stage_limited(1, "enter_accelerate_draw_batch")) {
+        return true;
+    }
+
     if (regs.pipeline.use_gs != Pica::PipelineRegs::UseGS::No) {
         if (regs.pipeline.gs_config.mode != Pica::PipelineRegs::GSMode::Point) {
+            if (trace_accel) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_ACCEL_STAGE v87 rejected_gs_mode accel_id={} gs_mode={}",
+                            accel_id, static_cast<u32>(regs.pipeline.gs_config.mode.Value()));
+            }
             return false;
         }
         if (regs.pipeline.triangle_topology != Pica::PipelineRegs::TriangleTopology::Shader) {
+            if (trace_accel) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_ACCEL_STAGE v87 rejected_gs_topology accel_id={} topology={}",
+                            accel_id, static_cast<u32>(regs.pipeline.triangle_topology.Value()));
+            }
             return false;
         }
     }
 
+    if (consume_if_stage_limited(2, "geometry_shader_gate_ok")) {
+        return true;
+    }
+
     pipeline_info.rasterization.topology.Assign(regs.pipeline.triangle_topology);
+    if (consume_if_stage_limited(3, "topology_assigned")) {
+        return true;
+    }
+
     if (regs.pipeline.triangle_topology == TriangleTopology::Fan &&
         !instance.IsTriangleFanSupported()) {
         LOG_DEBUG(Render_Vulkan,
                   "Skipping accelerated draw with unsupported triangle fan topology");
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v87 rejected_triangle_fan accel_id={}", accel_id);
+        }
         return false;
+    }
+
+    if (consume_if_stage_limited(4, "topology_supported")) {
+        return true;
     }
 
     vertex_info = AnalyzeVertexArray(is_indexed, instance.GetMinVertexStrideAlignment());
+    if (consume_if_stage_limited(5, "vertex_array_analyzed")) {
+        return true;
+    }
+
     SetupVertexArray();
+    if (consume_if_stage_limited(6, "vertex_array_setup_done")) {
+        return true;
+    }
 
     if (!SetupVertexShader()) {
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v87 vertex_shader_setup_failed accel_id={}", accel_id);
+        }
         return false;
     }
-    if (!SetupGeometryShader()) {
-        return false;
+    if (consume_if_stage_limited(7, "vertex_shader_setup_ok")) {
+        return true;
     }
 
-    return Draw(true, is_indexed);
+    if (!SetupGeometryShader()) {
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v87 geometry_shader_setup_failed accel_id={}", accel_id);
+        }
+        return false;
+    }
+    if (consume_if_stage_limited(8, "geometry_shader_setup_ok")) {
+        return true;
+    }
+
+    if (consume_if_stage_limited(9, "before_draw_wrapper")) {
+        return true;
+    }
+
+    const bool result = Draw(true, is_indexed);
+    if (trace_accel) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_ACCEL_STAGE v87 accel_id={} stage=18 name=after_draw_wrapper result={}",
+                    accel_id, result);
+    }
+    return result;
 }
 
-bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
-    if (IsDrawTraceEnabled()) {
-        LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accel_internal indexed={} vertex_count={} binding_count={}",
-                 is_indexed, regs.pipeline.num_vertices, pipeline_info.vertex_layout.binding_count);
+bool RasterizerVulkan::AccelerateDrawBatchInternalbool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
+    const bool trace_accel = IsAccelStageTraceEnabled();
+
+    const auto log_stage = [&](u32 stage, const char* name) {
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v87 internal stage={} name={} indexed={} vertex_count={} binding_count={} dry_run={} stop_after={}",
+                        stage, name, is_indexed, regs.pipeline.num_vertices,
+                        pipeline_info.vertex_layout.binding_count,
+                        static_cast<u32>(IsStrictAccelInternalDryRunEnabled()),
+                        GetAccelStageStopAfter());
+        }
+    };
+
+    const auto consume_if_stage_limited = [&](u32 stage, const char* name) {
+        log_stage(stage, name);
+        if (ShouldStopAfterAccelStage(stage)) {
+            if (trace_accel) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_ACCEL_STAGE v87 internal stage_limit consumed stage={} name={} before_vulkan_command=1",
+                            stage, name);
+            }
+            return true;
+        }
+        return false;
+    };
+
+    if (consume_if_stage_limited(10, "internal_enter")) {
+        return true;
     }
 
     if (regs.pipeline.num_vertices == 0) {
-        if (IsDrawTraceEnabled()) {
-            LOG_INFO(Render_Vulkan, "TRACE_DRAW accel_internal skipped empty draw");
+        if (trace_accel) {
+            LOG_INFO(Render_Vulkan, "TRACE_ACCEL_STAGE v87 internal skipped empty draw");
         }
+        return true;
+    }
+
+    if (consume_if_stage_limited(11, "vertex_count_ok")) {
         return true;
     }
 
@@ -1134,22 +1279,45 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (binding_count == 0 || binding_count > vertex_buffers.size()) {
         LOG_ERROR(Render_Vulkan, "Accelerated draw has invalid binding_count={} (max={})",
                   binding_count, vertex_buffers.size());
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v87 internal invalid_binding_count binding_count={} max={}",
+                        binding_count, vertex_buffers.size());
+        }
         return false;
+    }
+
+    if (consume_if_stage_limited(12, "binding_count_ok")) {
+        return true;
     }
 
     if (is_indexed) {
         SetupIndexArray();
+        if (consume_if_stage_limited(13, "index_array_setup_done")) {
+            return true;
+        }
+    } else if (consume_if_stage_limited(13, "nonindexed_no_index_setup")) {
+        return true;
     }
 
     const bool wait_built = IsStrictCompatEnabled() ? true
                                                     : (!async_shaders || regs.pipeline.num_vertices <= 6);
+
+    if (consume_if_stage_limited(14, "before_bind_pipeline")) {
+        return true;
+    }
+
     if (!pipeline_cache.BindPipeline(pipeline_info, wait_built)) {
-        if (IsDrawTraceEnabled()) {
+        if (trace_accel) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW pipeline not ready wait_built={} strict_compat={}",
+                     "TRACE_ACCEL_STAGE v87 pipeline_not_ready wait_built={} strict_compat={}",
                      wait_built, static_cast<u32>(IsStrictCompatEnabled()));
         }
         return false;
+    }
+
+    if (consume_if_stage_limited(15, "pipeline_bound")) {
+        return true;
     }
 
     const DrawParams params = {
@@ -1159,6 +1327,20 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         .bindings = binding_offsets,
         .is_indexed = is_indexed,
     };
+
+    if (IsStrictAccelInternalDryRunEnabled()) {
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v87 internal dry-run consumed before vkCmdDraw stage=16 indexed={} vertex_count={} vertex_offset={} binding_count={} wait_built={}",
+                        params.is_indexed, params.vertex_count, params.vertex_offset,
+                        params.binding_count, wait_built);
+        }
+        return true;
+    }
+
+    if (consume_if_stage_limited(16, "before_record_vkcmd")) {
+        return true;
+    }
 
     scheduler.Record([this, params](vk::CommandBuffer cmdbuf) {
         std::array<vk::DeviceSize, 16> offsets{};
@@ -1172,10 +1354,16 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
     });
 
+    if (trace_accel) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_ACCEL_STAGE v87 internal stage=17 name=vkcmd_recorded indexed={} vertex_count={} binding_count={}",
+                    params.is_indexed, params.vertex_count, params.binding_count);
+    }
+
     return true;
 }
 
-void RasterizerVulkan::SetupIndexArray() {
+void RasterizerVulkan::SetupIndexArrayvoid RasterizerVulkan::SetupIndexArray() {
     const bool index_u8 = regs.pipeline.index_array.format == 0;
     const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
     const u32 source_index_size = regs.pipeline.num_vertices * (index_u8 ? 1u : 2u);
@@ -1451,7 +1639,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     if (strict_safe_untextured_real_draw && IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v86 allowing safe untextured real software draw safe_index={} budget={} vertex_batch_size={} num_vertices={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                    "TRACE_DRAW strict_compat v87 allowing safe untextured real software draw safe_index={} budget={} vertex_batch_size={} num_vertices={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                     strict_safe_untextured_real_draw_index,
                     GetStrictSafeUntexturedSoftwareDrawBudget(), vertex_batch.size(),
                     regs.pipeline.num_vertices,
@@ -1464,7 +1652,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         !IsSoftwareTexturesAllowed() && using_color_fb) {
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v86 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; allow_safe_untextured={} safe_candidate={} set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for full diagnosis",
+                        "TRACE_DRAW strict_compat v87 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; allow_safe_untextured={} safe_candidate={} set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for full diagnosis",
                         vertex_batch.size(), regs.pipeline.num_vertices,
                         CountEnabledPrimaryTextures(regs),
                         static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
@@ -1525,7 +1713,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v86 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v87 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1701,7 +1889,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         !accelerate && IsStrictCompatEnabled() && !IsSoftwareTexturesAllowed();
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v86 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
+                    "TRACE_DRAW strict_compat v87 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
                     vertex_batch.size(), CountEnabledPrimaryTextures(regs),
                     static_cast<u32>(ArePrimaryTexturesDisabled(regs)));
     }
@@ -2362,7 +2550,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display v84 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
+                 "TRACE_DRAW accelerate_display v87 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
                  src_rect.right, src_rect.top, static_cast<bool>(base_view),
