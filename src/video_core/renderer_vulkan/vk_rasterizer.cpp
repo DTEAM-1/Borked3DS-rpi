@@ -102,10 +102,18 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsStrictSoftwareRealDrawAllowed() {
-    // v83: v82 reached the real software draw path after the green clear was disabled,
-    // and Sonic now closes rapidly. Keep real software vkCmdDraw() disabled by default
-    // on Pi5/V3DV strict mode. Use this opt-in only after the no-op present path is stable.
+    // v84: broad emergency opt-in. It allows every strict software vkCmdDraw() and should
+    // stay off for normal Pi5/V3DV tests. The safer v84 path below opens only untextured,
+    // no-depth software draws first.
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS");
+}
+
+[[nodiscard]] bool IsStrictSafeUntexturedSoftwareDrawAllowed() {
+    // v84: v83 proved that the present path is alive but black because every real software
+    // fallback draw is consumed as a no-op. Reintroduce only the least risky class first:
+    // untextured, no-depth software draws. Textured draws and depth draws remain blocked.
+    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_UNTEXTURED_SOFTWARE_DRAWS") &&
+           !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_UNTEXTURED_SOFTWARE_DRAWS");
 }
 
 [[nodiscard]] u32 GetEnvU32(const char* name, u32 fallback) {
@@ -122,6 +130,12 @@ struct DrawParams {
 
     constexpr unsigned long max_u32 = 0xFFFFFFFFul;
     return parsed > max_u32 ? 0xFFFFFFFFu : static_cast<u32>(parsed);
+}
+
+[[nodiscard]] u32 GetStrictSafeUntexturedSoftwareDrawBudget() {
+    // Keep this bounded so a bad untextured path cannot flood V3DV with commands.
+    // 256 is enough to prove whether the loading screen can receive real color writes.
+    return GetEnvU32("BORKED3DS_V3DV_SAFE_UNTEXTURED_DRAW_BUDGET", 256);
 }
 
 [[nodiscard]] u32 GetSoftwareClearTileBudget() {
@@ -271,6 +285,7 @@ std::atomic<u64> g_vk_medium_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_startup_textured_software_skip_counter{0};
 std::atomic<u64> g_vk_strict_software_quarantine_counter{0};
 std::atomic<u64> g_vk_strict_software_debug_clear_counter{0};
+std::atomic<u64> g_vk_strict_safe_untextured_real_draw_counter{0};
 std::atomic<u64> g_vk_strict_present_debug_clear_counter{0};
 std::atomic<u64> g_vk_strict_owned_present_clear_counter{0};
 
@@ -869,7 +884,7 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v83 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
+                    "TRACE_DRAW strict_compat v84 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
                     static_cast<u32>(IsStrictCompatEnabled()),
                     static_cast<u32>(IsSoftwareTexturesAllowed()),
                     static_cast<u32>(IsStartupSoftwareQuarantineDisabled()));
@@ -1412,23 +1427,48 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
     }
 
-    // v83: safety net after disabling the visible green tile-clear probe.
-    // If strict Pi5/V3DV software fallback continues into SyncTextureUnits(), shader setup,
-    // pipeline bind, or vkCmdDraw(), Sonic can close before a useful crash trace is emitted.
-    // Consume these fallback draws as a safe no-op by default. This keeps the framebuffer /
-    // present path alive while the next pass reintroduces one class of real software draw
-    // at a time. The real path remains available only through an explicit diagnosis opt-in.
+    // v84: v83 stabilized Sonic but kept the framebuffer black because every fallback draw
+    // was consumed. Reintroduce only the least fragile real software draws: untextured,
+    // no-depth batches, bounded by an explicit budget. Textured and depth draws stay no-op
+    // unless the broad BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS diagnosis switch is enabled.
+    const bool strict_safe_untextured_real_draw_candidate =
+        !accelerate && IsStrictCompatEnabled() && IsStrictSafeUntexturedSoftwareDrawAllowed() &&
+        using_color_fb && ArePrimaryTexturesDisabled(regs) && !HasActiveDepthState(regs) &&
+        vertex_batch.size() > 0 && vertex_batch.size() <= 96;
+    u64 strict_safe_untextured_real_draw_index = 0;
+    const bool strict_safe_untextured_real_draw = [&] {
+        if (!strict_safe_untextured_real_draw_candidate) {
+            return false;
+        }
+        strict_safe_untextured_real_draw_index = ++g_vk_strict_safe_untextured_real_draw_counter;
+        const u32 budget = GetStrictSafeUntexturedSoftwareDrawBudget();
+        return budget != 0 && strict_safe_untextured_real_draw_index <= budget;
+    }();
+
+    if (strict_safe_untextured_real_draw && IsDrawTraceEnabled()) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v84 allowing safe untextured real software draw safe_index={} budget={} vertex_batch_size={} num_vertices={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                    strict_safe_untextured_real_draw_index,
+                    GetStrictSafeUntexturedSoftwareDrawBudget(), vertex_batch.size(),
+                    regs.pipeline.num_vertices,
+                    regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                    regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+    }
+
     if (!accelerate && IsStrictCompatEnabled() && !IsStrictSoftwareNoopGuardDisabled() &&
-        !IsStrictSoftwareRealDrawAllowed() && !IsSoftwareTexturesAllowed() && using_color_fb) {
+        !IsStrictSoftwareRealDrawAllowed() && !strict_safe_untextured_real_draw &&
+        !IsSoftwareTexturesAllowed() && using_color_fb) {
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v83 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for diagnosis",
+                        "TRACE_DRAW strict_compat v84 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; allow_safe_untextured={} safe_candidate={} set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for full diagnosis",
                         vertex_batch.size(), regs.pipeline.num_vertices,
                         CountEnabledPrimaryTextures(regs),
                         static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                         static_cast<u32>(HasActiveDepthState(regs)),
                         regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
-                        regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+                        regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                        static_cast<u32>(IsStrictSafeUntexturedSoftwareDrawAllowed()),
+                        static_cast<u32>(strict_safe_untextured_real_draw_candidate));
         }
         vertex_batch.clear();
         return true;
@@ -1449,7 +1489,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     if (!accelerate) {
         const bool strict_quarantine_candidate =
-            IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() &&
+            IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && !strict_safe_untextured_real_draw &&
             !IsStartupSoftwareQuarantineDisabled() && !IsStartupSoftwareQuarantineForcedOff();
         const bool strict_quarantine_fragile =
             HasPrimaryTexturesEnabled(regs) || ArePrimaryTexturesDisabled(regs) ||
@@ -1481,7 +1521,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v82 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v84 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1657,7 +1697,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         !accelerate && IsStrictCompatEnabled() && !IsSoftwareTexturesAllowed();
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v82 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
+                    "TRACE_DRAW strict_compat v84 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
                     vertex_batch.size(), CountEnabledPrimaryTextures(regs),
                     static_cast<u32>(ArePrimaryTexturesDisabled(regs)));
     }
@@ -2281,7 +2321,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         strict_compat && IsPresentImageClearAllowed() && !IsPresentDebugClearDisabled();
     const vk::ImageView base_view = src_surface.ImageView();
     const vk::ImageView copy_view = src_surface.CopyImageView();
-    // v83: v82 switched strict mode to the copy view by default and Sonic now closes quickly
+    // v84: keep the v83 stable base-view default; use copy view only for diagnosis
     // after the loading screen. Return to the older, more stable base-view behavior by
     // default. The copy view is kept as an explicit comparison knob only.
     const bool use_copy_present_view =
@@ -2318,7 +2358,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display v83 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
+                 "TRACE_DRAW accelerate_display v84 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
                  src_rect.right, src_rect.top, static_cast<bool>(base_view),

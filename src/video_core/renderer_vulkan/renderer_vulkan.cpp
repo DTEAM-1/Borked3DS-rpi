@@ -344,7 +344,7 @@ void RendererVulkan::PrepareRendertarget() {
             screen_infos[i].texcoords = {0.f, 0.f, 1.f, 1.f};
             if (IsPresentTraceEnabled()) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_PRESENT strict_compat v83 skipping right-eye screen_info before LoadFBToScreenInfo index={} owned_valid={} render_3d_off=1",
+                            "TRACE_PRESENT strict_compat v84 skipping right-eye screen_info before LoadFBToScreenInfo index={} owned_valid={} render_3d_off=1",
                             i, static_cast<bool>(screen_infos[i].image_view));
             }
         } else {
@@ -377,12 +377,12 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
             image_view = owned_view;
             if (IsPresentTraceEnabled() || IsRenderTargetTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_PRESENT prepare_draw force_owned_present_view_v83 index={} external_valid={} owned_valid={}",
+                         "TRACE_PRESENT prepare_draw force_owned_present_view_v84 index={} external_valid={} owned_valid={}",
                          index, static_cast<bool>(external_view), static_cast<bool>(owned_view));
             }
         } else if (external_view && (IsPresentTraceEnabled() || IsRenderTargetTraceEnabled())) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT prepare_draw prefer_external_present_view_v83 index={} external_valid={} owned_valid={} prefer_owned={} strict_compat={}",
+                     "TRACE_PRESENT prepare_draw prefer_external_present_view_v84 index={} external_valid={} owned_valid={} prefer_owned={} strict_compat={}",
                      index, static_cast<bool>(external_view), static_cast<bool>(owned_view),
                      static_cast<u32>(prefer_owned_present),
                      static_cast<u32>(IsStrictCompatEnabled()));
@@ -562,7 +562,7 @@ void main() {
     if (IsStrictCompatEnabled()) {
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT strict_compat present_probe_disabled_v83 using_normal_present_frag=1 prefer_owned_present_default=0");
+                     "TRACE_PRESENT strict_compat present_probe_disabled_v84 using_normal_present_frag=1 prefer_owned_present_default=0 safe_untextured_draws_expected=1");
         }
         present_shaders[0] = Compile(HostShaders::VULKAN_PRESENT_FRAG,
                                      vk::ShaderStageFlagBits::eFragment, device, preamble);
@@ -975,7 +975,7 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
         update_queue.Flush();
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT strict_compat bind_single_screen_v83 screen_id={} bind_view_valid={} external_valid={} owned_valid={} prefer_owned={} duplicated_slots=3",
+                     "TRACE_PRESENT strict_compat bind_single_screen_v84 screen_id={} bind_view_valid={} external_valid={} owned_valid={} prefer_owned={} duplicated_slots=3",
                      screen_id, static_cast<u32>(static_cast<bool>(bind_view)),
                      static_cast<u32>(static_cast<bool>(external_view)),
                      static_cast<u32>(static_cast<bool>(owned_view)),
@@ -996,7 +996,7 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
                  static_cast<int>(h));
     } else if (IsPresentTraceEnabled() && IsStrictCompatEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_PRESENT strict_compat normal_present_draw_v83 screen_id={} rect=({}, {}, {}, {})",
+                 "TRACE_PRESENT strict_compat normal_present_draw_v84 screen_id={} rect=({}, {}, {}, {})",
                  screen_id, static_cast<int>(x), static_cast<int>(y), static_cast<int>(w),
                  static_cast<int>(h));
     } else if (UseColorPresentPipelineProbe() && IsPresentTraceEnabled()) {
@@ -1137,7 +1137,7 @@ void RendererVulkan::DrawSingleScreenStereo(u32 screen_id_l, u32 screen_id_r, fl
                  static_cast<int>(w), static_cast<int>(h));
     } else if (IsPresentTraceEnabled() && IsStrictCompatEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_PRESENT strict_compat normal_present_draw_stereo_v83 left={} right={} rect=({}, {}, {}, {})",
+                 "TRACE_PRESENT strict_compat normal_present_draw_stereo_v84 left={} right={} rect=({}, {}, {}, {})",
                  screen_id_l, screen_id_r, static_cast<int>(x), static_cast<int>(y),
                  static_cast<int>(w), static_cast<int>(h));
     } else if (UseColorPresentPipelineProbe() && IsPresentTraceEnabled()) {
