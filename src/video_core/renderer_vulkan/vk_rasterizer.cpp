@@ -102,17 +102,21 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsStrictSoftwareRealDrawAllowed() {
-    // v84: broad emergency opt-in. It allows every strict software vkCmdDraw() and should
-    // stay off for normal Pi5/V3DV tests. The safer v84 path below opens only untextured,
+    // v85: broad emergency opt-in. It allows every strict software vkCmdDraw() and should
+    // stay off for normal Pi5/V3DV tests. The safer v85 path below opens only untextured,
     // no-depth software draws first.
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS");
 }
 
 [[nodiscard]] bool IsStrictSafeUntexturedSoftwareDrawAllowed() {
-    // v84: v83 proved that the present path is alive but black because every real software
-    // fallback draw is consumed as a no-op. Reintroduce only the least risky class first:
-    // untextured, no-depth software draws. Textured draws and depth draws remain blocked.
+    // v86: keep real software draws disabled while the PICA HW candidate is dry-run probed, but that still enters
+    // SyncTextureUnits(), shader setup and the software vkCmdDraw path. For the next pass,
+    // keep real software draws disabled unless a new explicit v85 diagnostic switch is set.
+    //
+    // This keeps the normal v86 test focused on controlled PICA/HW acceleration while still
+    // preserving a manual escape hatch for comparing against v84.
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_UNTEXTURED_SOFTWARE_DRAWS") &&
+           IsEnvEnabled("BORKED3DS_V3DV_ALLOW_V86_REAL_SOFTWARE_DRAWS") &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_UNTEXTURED_SOFTWARE_DRAWS");
 }
 
@@ -1447,7 +1451,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     if (strict_safe_untextured_real_draw && IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v84 allowing safe untextured real software draw safe_index={} budget={} vertex_batch_size={} num_vertices={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                    "TRACE_DRAW strict_compat v86 allowing safe untextured real software draw safe_index={} budget={} vertex_batch_size={} num_vertices={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                     strict_safe_untextured_real_draw_index,
                     GetStrictSafeUntexturedSoftwareDrawBudget(), vertex_batch.size(),
                     regs.pipeline.num_vertices,
@@ -1460,7 +1464,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         !IsSoftwareTexturesAllowed() && using_color_fb) {
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v84 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; allow_safe_untextured={} safe_candidate={} set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for full diagnosis",
+                        "TRACE_DRAW strict_compat v86 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; allow_safe_untextured={} safe_candidate={} set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for full diagnosis",
                         vertex_batch.size(), regs.pipeline.num_vertices,
                         CountEnabledPrimaryTextures(regs),
                         static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
@@ -1521,7 +1525,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v84 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v86 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -1697,7 +1701,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         !accelerate && IsStrictCompatEnabled() && !IsSoftwareTexturesAllowed();
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v84 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
+                    "TRACE_DRAW strict_compat v86 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
                     vertex_batch.size(), CountEnabledPrimaryTextures(regs),
                     static_cast<u32>(ArePrimaryTexturesDisabled(regs)));
     }
