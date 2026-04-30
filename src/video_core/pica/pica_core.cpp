@@ -85,20 +85,32 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
 }
 
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
-    // v103 follows plan de travail 1, with the result from the v102 runtime log:
-    // v102 proved the pica_core -> AccelerateDrawBatch path can pass raw_enter_noargs,
-    // raw_enter_simple, stage=1, consume the stage limit, and return true. Therefore v103
-    // regroups the already-proven stages 2 through 6, but still stops before shader setup.
+    // v104 follows plan de travail 1, with the result from the v103 runtime log:
+    // v103 did not actually enter AccelerateDrawBatch because the safe micro candidate
+    // had safe_hw_enter=0. Therefore v104 keeps the grouped stage-6 target but makes
+    // ACCEL_STAGE_STOP_AFTER imply safe micro-HW entry for this diagnostic path.
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_PICA_HW_DRAWS") &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_PICA_HW_DRAWS");
 }
 
 [[nodiscard]] bool IsSafePicaHwEnterAllowed() {
-    // Regrouping TRACE_ACCEL_STAGE stages 1 through 6 with BORKED3DS_V3DV_ACCEL_ENTRY_ONLY_PROBE=0 and BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER=6 is the v103 diagnostic step, still not a real draw
-    // runtime. The backend still dry-runs internally before vkCmdDraw/vkCmdDrawIndexed
-    // unless BORKED3DS_V3DV_EXECUTE_ACCEL_INTERNAL_CMDS=1 is set.
-    return (IsEnvEnabled("BORKED3DS_V3DV_ENTER_SAFE_PICA_HW_DRAWS") ||
-            IsEnvEnabled("BORKED3DS_V3DV_EXECUTE_SAFE_PICA_HW_DRAWS")) &&
+    // v104 diagnostic guard:
+    // v103 proved that the build/config can reach the safe micro candidate, but the log showed
+    // safe_hw_candidate=1 and safe_hw_enter=0, so the grouped stage-6 preflight never entered
+    // AccelerateDrawBatch. To avoid losing a pass to a missing launcher env var, treat an
+    // explicit staged preflight request as permission to enter the safe micro-HW path.
+    //
+    // This still does NOT enable broad PICA acceleration:
+    //   - the caller must already have strict_safe_pica_hw_draw=true;
+    //   - the per-run budget and max-vertex filters still apply;
+    //   - the backend must still stop at BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER before stage=7.
+    const bool explicit_enter = IsEnvEnabled("BORKED3DS_V3DV_ENTER_SAFE_PICA_HW_DRAWS") ||
+                                IsEnvEnabled("BORKED3DS_V3DV_EXECUTE_SAFE_PICA_HW_DRAWS");
+    const bool staged_preflight_enter =
+        IsEnvEnabled("BORKED3DS_V3DV_FORCE_ACCEL_STAGE_TRACE") &&
+        GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) > 0;
+
+    return (explicit_enter || staged_preflight_enter) &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_PICA_HW_ENTER");
 }
 
@@ -761,7 +773,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
     const bool strict_safe_pica_hw_dry_run =
         strict_safe_pica_hw_draw && IsSafePicaHwDryRunEnabled();
 
-    // v103: do not copy GVX64's final software-style behavior. Keep broad PICA acceleration
+    // v104: do not copy GVX64's final software-style behavior. Keep broad PICA acceleration
     // blocked. A tiny HW-shader candidate may enter AccelerateDrawBatch only as a grouped
     // stage-6 preflight. The backend may pass geometry-shader gate, topology, vertex analysis,
     // and SetupVertexArray(), but must return before shader setup, pipeline binding,
@@ -770,7 +782,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
         !strict_safe_pica_hw_draw) {
         if (trace_draw) {
             LOG_INFO(HW_GPU,
-                     "TRACE_DRAW_PICA strict_compat v103 forcing software path before broad PICA acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} allow_pica_accel=0 safe_hw_candidate={} safe_hw_allowed={} safe_hw_enter={} safe_hw_dry_run={} safe_hw_index={} safe_hw_budget={}",
+                     "TRACE_DRAW_PICA strict_compat v104 forcing software path before broad PICA acceleration draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} allow_pica_accel=0 safe_hw_candidate={} safe_hw_allowed={} safe_hw_enter={} safe_hw_dry_run={} safe_hw_index={} safe_hw_budget={}",
                      draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                      primitive_assembler.IsEmpty(), textures_disabled,
                      static_cast<u32>(primitive_assembler.GetTopology()),
@@ -779,16 +791,16 @@ void PicaCore::DrawArrays(bool is_indexed) {
                      static_cast<u32>(strict_safe_pica_hw_enter),
                      static_cast<u32>(strict_safe_pica_hw_dry_run), strict_safe_pica_hw_index,
                      GetSafePicaHwDrawBudget());
-            LogPicaTextureState(regs.internal, "v103_force_software_before_broad_accel");
+            LogPicaTextureState(regs.internal, "v104_force_software_before_broad_accel");
         }
         if (!g_logged_strict_accel_gate.exchange(true)) {
             LOG_WARNING(HW_GPU,
-                        "Pi5/V3DV strict compatibility v103: broad PICA AccelerateDrawBatch remains disabled by default; tiny untextured HW candidates may enter AccelerateDrawBatch only with the v103 grouped stage-6 preflight enabled. Keep BORKED3DS_V3DV_ACCEL_ENTRY_ONLY_PROBE=0, BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER=6, BORKED3DS_V3DV_FORCE_ACCEL_STAGE_TRACE=1, BORKED3DS_V3DV_USE_TRIVIAL_VERTEX_SHADER_PROBE=0, BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_CONFIG_ONLY=0, BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_ONLY=0, and BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY=0 for normal v103 tests");
+                        "Pi5/V3DV strict compatibility v104: broad PICA AccelerateDrawBatch remains disabled by default; tiny untextured HW candidates may enter AccelerateDrawBatch only with the v104 grouped stage-6 preflight enabled. Keep BORKED3DS_V3DV_ACCEL_ENTRY_ONLY_PROBE=0, BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER=6, BORKED3DS_V3DV_FORCE_ACCEL_STAGE_TRACE=1, BORKED3DS_V3DV_ENTER_SAFE_PICA_HW_DRAWS=1, BORKED3DS_V3DV_USE_TRIVIAL_VERTEX_SHADER_PROBE=0, BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_CONFIG_ONLY=0, BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_ONLY=0, and BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY=0 for normal v104 tests");
         }
         accelerate_draw = false;
     } else if (strict_safe_pica_hw_draw && trace_draw) {
         LOG_WARNING(HW_GPU,
-                    "TRACE_DRAW_PICA strict_compat v103 safe micro PICA HW candidate hw_index={} budget={} draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} use_hw_shader={} enter={} dry_run={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                    "TRACE_DRAW_PICA strict_compat v104 safe micro PICA HW candidate hw_index={} budget={} draw_index={} indexed={} num_vertices={} primitive_empty={} textures_disabled={} topology={} use_hw_shader={} enter={} dry_run={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                     strict_safe_pica_hw_index, GetSafePicaHwDrawBudget(), draw_index, is_indexed,
                     regs.internal.pipeline.num_vertices, primitive_assembler.IsEmpty(),
                     textures_disabled, static_cast<u32>(primitive_assembler.GetTopology()),
@@ -798,7 +810,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                     regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                     regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
         if (IsVerbosePicaMicroTextureTraceEnabled()) {
-            LogPicaTextureState(regs.internal, "v103_safe_micro_hw_candidate");
+            LogPicaTextureState(regs.internal, "v104_safe_micro_hw_candidate");
         }
     }
 
@@ -814,32 +826,32 @@ void PicaCore::DrawArrays(bool is_indexed) {
     if (strict_safe_pica_hw_dry_run) {
         if (trace_draw) {
             LOG_WARNING(HW_GPU,
-                        "TRACE_DRAW_PICA strict_compat v103 handoff dry-run consumed safe micro PICA HW candidate before AccelerateDrawBatch draw_index={} indexed={} num_vertices={} hw_index={} budget={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                        "TRACE_DRAW_PICA strict_compat v104 handoff dry-run consumed safe micro PICA HW candidate before AccelerateDrawBatch draw_index={} indexed={} num_vertices={} hw_index={} budget={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                         draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                         strict_safe_pica_hw_index, GetSafePicaHwDrawBudget(),
                         regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                         regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
             if (IsVerbosePicaMicroTextureTraceEnabled()) {
-                LogPicaTextureState(regs.internal, "v103_safe_micro_hw_dry_run_consumed");
+                LogPicaTextureState(regs.internal, "v104_safe_micro_hw_dry_run_consumed");
             }
         }
         return;
     }
 
-    // v103 last-chance guard: only explicit full diagnosis or explicitly executed tiny HW
+    // v104 last-chance guard: only explicit full diagnosis or explicitly executed tiny HW
     // probes may enter AccelerateDrawBatch in strict mode.
     if (accelerate_draw && IsStrictCompatEnabled() && !IsPicaAccelAllowed() &&
         !strict_safe_pica_hw_enter) {
         if (trace_draw) {
             LOG_WARNING(HW_GPU,
-                        "TRACE_DRAW_PICA strict_compat v103 late guard blocked AccelerateDrawBatch draw_index={} indexed={} num_vertices={} textures_disabled={} topology={} safe_hw_candidate={} safe_hw_allowed={} safe_hw_enter={} safe_hw_dry_run={}",
+                        "TRACE_DRAW_PICA strict_compat v104 late guard blocked AccelerateDrawBatch draw_index={} indexed={} num_vertices={} textures_disabled={} topology={} safe_hw_candidate={} safe_hw_allowed={} safe_hw_enter={} safe_hw_dry_run={}",
                         draw_index, is_indexed, regs.internal.pipeline.num_vertices,
                         textures_disabled, static_cast<u32>(primitive_assembler.GetTopology()),
                         static_cast<u32>(strict_safe_pica_hw_candidate),
                         static_cast<u32>(IsSafePicaHwDrawAllowed()),
                         static_cast<u32>(strict_safe_pica_hw_enter),
                         static_cast<u32>(strict_safe_pica_hw_dry_run));
-            LogPicaTextureState(regs.internal, "v103_late_guard_force_software");
+            LogPicaTextureState(regs.internal, "v104_late_guard_force_software");
         }
         accelerate_draw = false;
     }
@@ -847,7 +859,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
     if (accelerate_draw) {
         if (trace_draw) {
             LOG_WARNING(HW_GPU,
-                        "TRACE_DRAW_PICA v103 pre_call AccelerateDrawBatch indexed={} draw_index={} num_vertices={} hw_index={} stop_after={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                        "TRACE_DRAW_PICA v104 pre_call AccelerateDrawBatch indexed={} draw_index={} num_vertices={} hw_index={} stop_after={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                         is_indexed, draw_index, regs.internal.pipeline.num_vertices,
                         strict_safe_pica_hw_index, GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0),
                         regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
@@ -859,7 +871,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
         }
         if (trace_draw) {
             LOG_WARNING(HW_GPU,
-                     "TRACE_DRAW_PICA v103 post_call AccelerateDrawBatch returned {} indexed={} draw_index={} num_vertices={} hw_index={}",
+                     "TRACE_DRAW_PICA v104 post_call AccelerateDrawBatch returned {} indexed={} draw_index={} num_vertices={} hw_index={}",
                      accelerated, is_indexed, draw_index, regs.internal.pipeline.num_vertices,
                      strict_safe_pica_hw_index);
         }
