@@ -562,7 +562,7 @@ void main() {
     if (IsStrictCompatEnabled()) {
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT strict_compat present_probe_disabled_v114 using_normal_present_frag=1 prefer_owned_present_default=0 pica_accel_shader_multiplex_entrysafe_direct_handoff_expected=1");
+                     "TRACE_PRESENT strict_compat present_probe_disabled_v114 using_normal_present_frag=1 prefer_owned_present_default=0 pica_accel_shader_multiplex_silentstages_direct_handoff_expected=1");
         }
         present_shaders[0] = Compile(HostShaders::VULKAN_PRESENT_FRAG,
                                      vk::ShaderStageFlagBits::eFragment, device, preamble);

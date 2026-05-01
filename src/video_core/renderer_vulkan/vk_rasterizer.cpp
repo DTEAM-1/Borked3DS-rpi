@@ -121,7 +121,7 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsV114ShaderMultiplexEntrySafeEnabled() {
-    // v114-C corrective probe:
+    // v114-C/v114-C2 corrective probe:
     // A/B passed, but the first C attempt cut the log immediately after the safe micro-HW
     // candidate while starting a Render.Vulkan line, before any completed TRACE_ACCEL_STAGE
     // marker. Keep the shader probe selected, but suppress early backend entry logs and avoid
@@ -129,6 +129,17 @@ struct DrawParams {
     // blocked by GLSL::GenerateVertexShader() or by the entry logging path.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_SHADER_MULTIPLEX_ENTRY_SAFE");
+}
+
+[[nodiscard]] bool IsV114ShaderMultiplexSilentStagesEnabled() {
+    // v114-C2 corrective probe:
+    // The entry-safe retry proved the rebuilt v114-C2 marker reaches the first safe micro-HW
+    // candidate, but the log still cut at the first backend Render.Vulkan line. Keep the
+    // generate-guarded shader probe selected, but silence the stage 1..6 TRACE_ACCEL_STAGE
+    // logs. Those stages were already proven by v113/v114-A/v114-B; this retest isolates
+    // SetupVertexShader + GLSL::GenerateVertexShader() without another noisy entry/stage log.
+    return IsV114ShaderMultiplexEntrySafeEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_SHADER_MULTIPLEX_SILENT_STAGES");
 }
 
 [[nodiscard]] bool IsAccelStageTraceEnabled() {
@@ -1568,6 +1579,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     }
 
     const bool v114_entry_safe = IsV114ShaderMultiplexEntrySafeEnabled();
+    const bool v114_silent_stages = IsV114ShaderMultiplexSilentStagesEnabled();
 
     if (!v114_entry_safe) {
         LOG_WARNING(Render_Vulkan, "TRACE_ACCEL_STAGE v114 raw_enter_noargs");
@@ -1603,6 +1615,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const bool trace_accel = IsAccelStageTraceEnabled();
 
     const auto log_stage = [&](u32 stage, const char* name) {
+        if (v114_silent_stages && stage <= 6) {
+            return;
+        }
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
                         "TRACE_ACCEL_STAGE v114 accel_id={} stage={} name={} indexed={} num_vertices={} topology={} use_gs={} preflight_expected={} color_addr=0x{:08x} depth_addr=0x{:08x}",
@@ -1618,7 +1633,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const auto consume_if_stage_limited = [&](u32 stage, const char* name) {
         log_stage(stage, name);
         if (ShouldStopAfterAccelStage(stage)) {
-            if (trace_accel) {
+            if (trace_accel && !(v114_silent_stages && stage <= 6)) {
                 LOG_WARNING(Render_Vulkan,
                             "TRACE_ACCEL_STAGE v114 stage_limit consumed accel_id={} stage={} name={} stop_after={} before_vulkan_command=1",
                             accel_id, stage, name, GetAccelStageStopAfter());
