@@ -11,8 +11,10 @@
 #include <cstring>
 #include <cstdlib>
 #include <exception>
+#include <span>
 #include <string>
 #include <tuple>
+#include <vector>
 
 #include "common/literals.h"
 #include "common/logging/log.h"
@@ -25,6 +27,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/shader/generator/glsl_shader_gen.h"
 #include "video_core/texture/texture_decode.h"
 
@@ -80,37 +83,37 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsForceAccelStageTraceEnabled() {
-    // v100/v113 diagnostic:
+    // v100/v114 diagnostic:
     // Keep forced stage tracing available. v100 still stopped after the PICA pre_call before
-    // the raw-enter marker, so v113 adds an even earlier no-argument entry-only probe.
+    // the raw-enter marker, so v114 adds an even earlier no-argument entry-only probe.
     // This does not execute any extra Vulkan work by itself.
     return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_FORCE_ACCEL_STAGE_TRACE");
 }
 
 [[nodiscard]] bool IsAccelEntryOnlyProbeEnabled() {
-    // v113 diagnostic:
-    // Keep entry-only mode available for fallback diagnostics, but normal v113 testing must
+    // v114 diagnostic:
+    // Keep entry-only mode available for fallback diagnostics, but normal v114 testing must
     // leave it disabled so the silent call-boundary probe can isolate the crash.
     return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_ENTRY_ONLY_PROBE");
 }
 
 [[nodiscard]] bool IsAccelSilentEntryReturnEnabled() {
-    // v113 diagnostic fallback:
+    // v114 diagnostic fallback:
     // v109 proved the silent pica_core -> RasterizerVulkan::AccelerateDrawBatch call boundary
-    // survives until hotkey exit. Keep this as a rollback switch, but normal v113 tests must
+    // survives until hotkey exit. Keep this as a rollback switch, but normal v114 tests must
     // disable it so the first backend marker can be re-enabled.
     return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_SILENT_ENTRY_RETURN");
 }
 
 [[nodiscard]] bool IsAccelRawEnterReturnEnabled() {
-    // v113 diagnostic fallback:
-    // v110 proved raw_enter_noargs is safe. Keep this as a rollback switch, but normal v113
+    // v114 diagnostic fallback:
+    // v110 proved raw_enter_noargs is safe. Keep this as a rollback switch, but normal v114
     // testing disables it so raw_enter_simple can be reached next.
     return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_RAW_ENTER_RETURN");
 }
 
 [[nodiscard]] bool IsAccelRawEnterSimpleReturnEnabled() {
-    // v113 diagnostic:
+    // v114 diagnostic:
     // Emit raw_enter_noargs and raw_enter_simple, then return true before stage=1.
     // This verifies the minimal backend metadata path (accel_id, indexed, env flags) without
     // entering stage logging, shader setup, SPIR-V, pipeline, descriptors, Draw(), or vkCmdDraw.
@@ -126,36 +129,57 @@ struct DrawParams {
     // v96 diagnostic only:
     // v95 reached TRACE_DRAW_PICA pre_call with stop_after=7, but the log did not show
     // stage=7/post_call. v96 used a trivial vertex shader to prove the generic VS bind
-    // path is stable. Keep this switch as an explicit fallback, but v113 should normally
+    // path is stable. Keep this switch as an explicit fallback, but v114 should normally
     // leave it disabled.
     return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_USE_TRIVIAL_VERTEX_SHADER_PROBE");
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
-    // v97 diagnostic:
-    // v96 proved the generic/trivial vertex-shader path reaches stage=7 and returns true.
-    // v97 attempted to run GLSL::GenerateVertexShader() only. Keep this switch available,
-    // but v113 should normally leave it disabled.
+    // v114 diagnostic fallback:
+    // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
+    // tests should prefer the guarded probe first.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_ONLY");
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderConfigProbeEnabled() {
-    // v113 diagnostic fallback:
-    // v106 already proved PicaVSConfig/load_flags + trivial VS bind. Keep this switch as a
-    // rollback path, but normal v113 testing must leave CONFIG_ONLY disabled so the guarded
-    // GLSL::GenerateVertexShader() probe can run.
+    // v114-A:
+    // Validate SetupVertexShader config/load_flags + trivial VS bind on the rebuilt direct
+    // handoff route, with ACCEL_STAGE_STOP_AFTER=7. No GLSL/SPIR-V/module work.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_CONFIG_ONLY");
 }
 
+[[nodiscard]] bool IsProgrammableVertexShaderBeforeGenerateOnlyProbeEnabled() {
+    // v114-B:
+    // Enter SetupVertexShader, build PicaVSConfig/load_flags, log before_generate_call, then
+    // return before calling GLSL::GenerateVertexShader().
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_BEFORE_GENERATE_ONLY");
+}
+
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateGuardedProbeEnabled() {
-    // v113 diagnostic:
-    // v106 proved the programmable VS config/load_flags path. v113 now runs only the guarded
-    // GLSL::GenerateVertexShader() call, then binds the trivial VS and returns at stage=7.
-    // It still must not compile PICA SPIR-V or create a VkShaderModule.
+    // v114-C:
+    // Run GLSL::GenerateVertexShader() in a guarded probe, then bind the trivial VS and return
+    // at stage=7. No SPIR-V, no VkShaderModule, no pipeline/descriptors/draw.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY");
+}
+
+[[nodiscard]] bool IsProgrammableVertexShaderSpirvOnlyProbeEnabled() {
+    // v114-D:
+    // Generate GLSL, compile it to SPIR-V with CompileGLSLtoSPIRV(), then bind the trivial VS
+    // and return at stage=7. No VkShaderModule, no pipeline/descriptors/draw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_SPIRV_ONLY");
+}
+
+[[nodiscard]] bool IsProgrammableVertexShaderModuleOnlyProbeEnabled() {
+    // v114-E:
+    // Generate GLSL, compile GLSL->SPIR-V, create and immediately destroy a VkShaderModule,
+    // then bind the trivial VS and return at stage=7. No pipeline/descriptors/draw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_SHADER_MODULE_ONLY");
 }
 
 [[nodiscard]] AttribLoadFlags MakeAccelAttribLoadFlag(Pica::PipelineRegs::VertexAttributeFormat format) {
@@ -171,8 +195,8 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsStrictAccelInternalDryRunEnabled() {
-    // v113: plan de travail 1 does not advance beyond function entry. v100 reached the
-    // PICA pre_call but no raw-enter marker appeared. The recommended v113 emulators.cfg keeps
+    // v114: plan de travail 1 does not advance beyond function entry. v100 reached the
+    // PICA pre_call but no raw-enter marker appeared. The recommended v114 emulators.cfg keeps
     // BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER=1 for continuity but enables
     // BORKED3DS_V3DV_ACCEL_ENTRY_ONLY_PROBE=1 and disables the GLSL generation probe. This
     // proves the call boundary before touching regs, shader setup, pipeline, descriptors, Draw(),
@@ -226,7 +250,7 @@ struct DrawParams {
     // This keeps the normal v86 test focused on controlled PICA/HW acceleration while still
     // preserving a manual escape hatch for comparing against v84.
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_UNTEXTURED_SOFTWARE_DRAWS") &&
-           IsEnvEnabled("BORKED3DS_V3DV_ALLOW_V113_REAL_SOFTWARE_DRAWS") &&
+           IsEnvEnabled("BORKED3DS_V3DV_ALLOW_V114_REAL_SOFTWARE_DRAWS") &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_UNTEXTURED_SOFTWARE_DRAWS");
 }
 
@@ -259,8 +283,8 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsAccelEntryPreflightExpected() {
-    // v113 raw-enter-simple handoff test: v110 proved raw_enter_noargs survives.
-    // v113 keeps the guarded GLSL target available for later, but the normal test uses
+    // v114 raw-enter-simple handoff test: v110 proved raw_enter_noargs survives.
+    // v114 keeps the guarded GLSL target available for later, but the normal test uses
     // BORKED3DS_V3DV_ACCEL_RAW_ENTER_SIMPLE_RETURN=0 with RAW_ENTER_RETURN=0.
     // This emits raw_enter_noargs + raw_enter_simple and performs no stage=1, no shader
     // generation, no PICA SPIR-V, no VkShaderModule creation, no pipeline state,
@@ -1020,7 +1044,7 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v113 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
+                    "TRACE_DRAW strict_compat v114 RasterizerVulkan constructor marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
                     static_cast<u32>(IsStrictCompatEnabled()),
                     static_cast<u32>(IsSoftwareTexturesAllowed()),
                     static_cast<u32>(IsStartupSoftwareQuarantineDisabled()));
@@ -1201,16 +1225,23 @@ bool RasterizerVulkan::SetupVertexShader() {
     const bool trace_accel = IsAccelStageTraceEnabled();
     const bool trivial_vs_probe = IsTrivialVertexShaderProbeEnabled();
     const bool programmable_config_probe = IsProgrammableVertexShaderConfigProbeEnabled();
+    const bool programmable_before_generate_probe =
+        IsProgrammableVertexShaderBeforeGenerateOnlyProbeEnabled();
     const bool programmable_generate_guarded_probe =
         IsProgrammableVertexShaderGenerateGuardedProbeEnabled();
+    const bool programmable_spirv_probe = IsProgrammableVertexShaderSpirvOnlyProbeEnabled();
+    const bool programmable_module_probe = IsProgrammableVertexShaderModuleOnlyProbeEnabled();
     const bool programmable_generate_probe = IsProgrammableVertexShaderGenerateProbeEnabled();
 
     if (trace_accel) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_ACCEL_STAGE v113 vertex_shader_setup_begin trivial_probe={} programmable_config_probe={} programmable_generate_guarded_probe={} programmable_generate_probe={} binding_count={} attribute_count={} accurate_mul={} strict_compat={}",
+                    "TRACE_ACCEL_STAGE v114 vertex_shader_setup_begin trivial_probe={} programmable_config_probe={} programmable_before_generate_probe={} programmable_generate_guarded_probe={} programmable_spirv_probe={} programmable_module_probe={} programmable_generate_probe={} binding_count={} attribute_count={} accurate_mul={} strict_compat={}",
                     static_cast<u32>(trivial_vs_probe),
                     static_cast<u32>(programmable_config_probe),
+                    static_cast<u32>(programmable_before_generate_probe),
                     static_cast<u32>(programmable_generate_guarded_probe),
+                    static_cast<u32>(programmable_spirv_probe),
+                    static_cast<u32>(programmable_module_probe),
                     static_cast<u32>(programmable_generate_probe),
                     pipeline_info.vertex_layout.binding_count,
                     pipeline_info.vertex_layout.attribute_count, static_cast<u32>(accurate_mul),
@@ -1221,7 +1252,7 @@ bool RasterizerVulkan::SetupVertexShader() {
         pipeline_cache.UseTrivialVertexShader();
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_trivial_probe_used result=1");
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_trivial_probe_used result=1");
         }
         return true;
     }
@@ -1255,10 +1286,10 @@ bool RasterizerVulkan::SetupVertexShader() {
             config, use_geometry_shader, converted_attribs, zero_w_attribs};
     };
 
-    if (programmable_config_probe) {
+    if (programmable_before_generate_probe) {
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_programmable_config_only_begin");
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_before_generate_only_begin");
         }
 
         auto [config, use_geometry_shader, converted_attribs, zero_w_attribs] =
@@ -1266,7 +1297,35 @@ bool RasterizerVulkan::SetupVertexShader() {
 
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_programmable_config_only_end use_geometry_shader={} converted_attribs={} zero_w_attribs={} config_hash={}",
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_before_generate_only_config use_geometry_shader={} converted_attribs={} zero_w_attribs={} config_hash={}",
+                        static_cast<u32>(use_geometry_shader), converted_attribs, zero_w_attribs,
+                        config.Hash());
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_before_generate_only_before_generate_call skipped=1");
+        }
+
+        pipeline_cache.UseTrivialVertexShader();
+
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_before_generate_only_trivial_bind result=1");
+        }
+
+        return true;
+    }
+
+    if (programmable_config_probe) {
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_config_only_begin");
+        }
+
+        auto [config, use_geometry_shader, converted_attribs, zero_w_attribs] =
+            build_programmable_vs_config();
+
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_config_only_end use_geometry_shader={} converted_attribs={} zero_w_attribs={} config_hash={}",
                         static_cast<u32>(use_geometry_shader), converted_attribs, zero_w_attribs,
                         config.Hash());
         }
@@ -1275,16 +1334,17 @@ bool RasterizerVulkan::SetupVertexShader() {
 
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_programmable_config_only_trivial_bind result=1");
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_config_only_trivial_bind result=1");
         }
 
         return true;
     }
 
-    auto run_generate_only_probe = [&](const char* mode_name) -> bool {
+    auto run_shader_multiplex_probe = [&](const char* mode_name, bool compile_spirv,
+                                           bool create_module) -> bool {
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_{}_begin", mode_name);
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_begin", mode_name);
         }
 
         auto [config, use_geometry_shader, converted_attribs, zero_w_attribs] =
@@ -1292,62 +1352,134 @@ bool RasterizerVulkan::SetupVertexShader() {
 
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_{}_config use_geometry_shader={} converted_attribs={} zero_w_attribs={} config_hash={}",
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_config use_geometry_shader={} converted_attribs={} zero_w_attribs={} config_hash={}",
                         mode_name, static_cast<u32>(use_geometry_shader), converted_attribs,
                         zero_w_attribs, config.Hash());
         }
 
         std::string program;
 
-        if (programmable_generate_guarded_probe) {
-            try {
-                if (trace_accel) {
-                    LOG_WARNING(Render_Vulkan,
-                                "TRACE_ACCEL_STAGE v113 vertex_shader_setup_{}_before_generate_call",
-                                mode_name);
-                }
-
-                program = GLSL::GenerateVertexShader(pica.vs_setup, config, true);
-
-                if (trace_accel) {
-                    LOG_WARNING(Render_Vulkan,
-                                "TRACE_ACCEL_STAGE v113 vertex_shader_setup_{}_after_generate_call",
-                                mode_name);
-                }
-            } catch (const std::exception& e) {
-                LOG_ERROR(Render_Vulkan,
-                          "TRACE_ACCEL_STAGE v113 programmable VS GLSL generation threw std::exception: {}",
-                          e.what());
-                return false;
-            } catch (...) {
-                LOG_ERROR(Render_Vulkan,
-                          "TRACE_ACCEL_STAGE v113 programmable VS GLSL generation threw unknown exception");
-                return false;
+        try {
+            if (trace_accel) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_before_generate_call",
+                            mode_name);
             }
-        } else {
+
             program = GLSL::GenerateVertexShader(pica.vs_setup, config, true);
+
+            if (trace_accel) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_after_generate_call",
+                            mode_name);
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR(Render_Vulkan,
+                      "TRACE_ACCEL_STAGE v114 programmable VS GLSL generation threw std::exception: {}",
+                      e.what());
+            return false;
+        } catch (...) {
+            LOG_ERROR(Render_Vulkan,
+                      "TRACE_ACCEL_STAGE v114 programmable VS GLSL generation threw unknown exception");
+            return false;
         }
 
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_{}_end program_bytes={} empty={}",
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_glsl_end program_bytes={} empty={}",
                         mode_name, program.size(), static_cast<u32>(program.empty()));
         }
 
         if (program.empty()) {
             LOG_ERROR(Render_Vulkan,
-                      "TRACE_ACCEL_STAGE v113 programmable VS GLSL generation returned empty program");
+                      "TRACE_ACCEL_STAGE v114 programmable VS GLSL generation returned empty program");
             return false;
         }
 
-        // Diagnostic only: GLSL generation succeeded, but do not compile SPIR-V, do not create a
-        // VkShaderModule, and do not bind the programmable shader yet. Keep the trivial VS bound
-        // so stage=7 can still be consumed safely.
+        std::vector<u32> spirv;
+        if (compile_spirv || create_module) {
+            try {
+                if (trace_accel) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_before_spirv_compile program_bytes={}",
+                                mode_name, program.size());
+                }
+
+                spirv = CompileGLSLtoSPIRV(program, vk::ShaderStageFlagBits::eVertex,
+                                           instance.GetDevice());
+
+                if (trace_accel) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_after_spirv_compile words={} bytes={} empty={}",
+                                mode_name, spirv.size(), spirv.size() * sizeof(u32),
+                                static_cast<u32>(spirv.empty()));
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR(Render_Vulkan,
+                          "TRACE_ACCEL_STAGE v114 programmable VS GLSL->SPIR-V threw std::exception: {}",
+                          e.what());
+                return false;
+            } catch (...) {
+                LOG_ERROR(Render_Vulkan,
+                          "TRACE_ACCEL_STAGE v114 programmable VS GLSL->SPIR-V threw unknown exception");
+                return false;
+            }
+
+            if (spirv.empty()) {
+                LOG_ERROR(Render_Vulkan,
+                          "TRACE_ACCEL_STAGE v114 programmable VS GLSL->SPIR-V returned empty code");
+                return false;
+            }
+        }
+
+        if (create_module) {
+            try {
+                if (trace_accel) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_before_shader_module words={}",
+                                mode_name, spirv.size());
+                }
+
+                vk::ShaderModule module =
+                    CompileSPV(std::span<const u32>{spirv.data(), spirv.size()}, instance.GetDevice());
+
+                const bool module_valid = static_cast<bool>(module);
+
+                if (trace_accel) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_after_shader_module module_valid={}",
+                                mode_name, static_cast<u32>(module_valid));
+                }
+
+                if (module_valid) {
+                    instance.GetDevice().destroyShaderModule(module);
+                    if (trace_accel) {
+                        LOG_WARNING(Render_Vulkan,
+                                    "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_destroyed_shader_module result=1",
+                                    mode_name);
+                    }
+                }
+
+                if (!module_valid) {
+                    return false;
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR(Render_Vulkan,
+                          "TRACE_ACCEL_STAGE v114 programmable VS VkShaderModule probe threw std::exception: {}",
+                          e.what());
+                return false;
+            } catch (...) {
+                LOG_ERROR(Render_Vulkan,
+                          "TRACE_ACCEL_STAGE v114 programmable VS VkShaderModule probe threw unknown exception");
+                return false;
+            }
+        }
+
         pipeline_cache.UseTrivialVertexShader();
 
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_{}_trivial_bind result=1",
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_trivial_bind result=1",
                         mode_name);
         }
 
@@ -1357,18 +1489,34 @@ bool RasterizerVulkan::SetupVertexShader() {
     if (programmable_generate_guarded_probe) {
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_programmable_generate_guarded_probe_selected");
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_generate_guarded_probe_selected");
         }
-        return run_generate_only_probe("programmable_generate_guarded_only");
+        return run_shader_multiplex_probe("programmable_generate_guarded_only", false, false);
+    }
+
+    if (programmable_spirv_probe) {
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_spirv_only_probe_selected");
+        }
+        return run_shader_multiplex_probe("programmable_spirv_only", true, false);
+    }
+
+    if (programmable_module_probe) {
+        if (trace_accel) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_shader_module_only_probe_selected");
+        }
+        return run_shader_multiplex_probe("programmable_shader_module_only", true, true);
     }
 
     if (programmable_generate_probe) {
-        return run_generate_only_probe("programmable_generate_only");
+        return run_shader_multiplex_probe("programmable_generate_only", false, false);
     }
 
     if (trace_accel) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_ACCEL_STAGE v113 vertex_shader_setup_programmable_begin");
+                    "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_begin");
     }
 
     const bool result = pipeline_cache.UseProgrammableVertexShader(
@@ -1376,7 +1524,7 @@ bool RasterizerVulkan::SetupVertexShader() {
 
     if (trace_accel) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_ACCEL_STAGE v113 vertex_shader_setup_programmable_end result={}",
+                    "TRACE_ACCEL_STAGE v114 vertex_shader_setup_programmable_end result={}",
                     static_cast<u32>(result));
     }
 
@@ -1400,7 +1548,7 @@ bool RasterizerVulkan::SetupGeometryShader() {
 }
 
 bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
-    // v113 diagnostic:
+    // v114 diagnostic:
     // v110 proved raw_enter_noargs is safe. Now emit raw_enter_noargs plus raw_enter_simple,
     // then return before stage=1. No shader setup, no SPIR-V, no pipeline, no descriptors,
     // and no Vulkan draw command are reached.
@@ -1408,7 +1556,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         return true;
     }
 
-    LOG_WARNING(Render_Vulkan, "TRACE_ACCEL_STAGE v113 raw_enter_noargs");
+    LOG_WARNING(Render_Vulkan, "TRACE_ACCEL_STAGE v114 raw_enter_noargs");
 
     if (IsAccelRawEnterReturnEnabled()) {
         return true;
@@ -1417,7 +1565,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const u64 accel_id = ++g_vk_accel_draw_counter;
 
     LOG_WARNING(Render_Vulkan,
-                "TRACE_ACCEL_STAGE v113 raw_enter_simple accel_id={} indexed={} stop_after={} force_stage_trace={} entry_only_probe={} generate_guarded_probe={}",
+                "TRACE_ACCEL_STAGE v114 raw_enter_simple accel_id={} indexed={} stop_after={} force_stage_trace={} entry_only_probe={} generate_guarded_probe={}",
                 accel_id, is_indexed, GetAccelStageStopAfter(),
                 static_cast<u32>(IsForceAccelStageTraceEnabled()),
                 static_cast<u32>(IsAccelEntryOnlyProbeEnabled()),
@@ -1431,7 +1579,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         // Entry-only probe: prove the call boundary and return before stage=1. Keep this log
         // deliberately simple: no regs, no shader state, no framebuffer addresses.
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_ACCEL_STAGE v113 entry_only_probe_consumed before_stage1 indexed={} result=1",
+                    "TRACE_ACCEL_STAGE v114 entry_only_probe_consumed before_stage1 indexed={} result=1",
                     is_indexed);
         return true;
     }
@@ -1441,7 +1589,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const auto log_stage = [&](u32 stage, const char* name) {
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 accel_id={} stage={} name={} indexed={} num_vertices={} topology={} use_gs={} preflight_expected={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                        "TRACE_ACCEL_STAGE v114 accel_id={} stage={} name={} indexed={} num_vertices={} topology={} use_gs={} preflight_expected={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                         accel_id, stage, name, is_indexed, regs.pipeline.num_vertices,
                         static_cast<u32>(regs.pipeline.triangle_topology.Value()),
                         static_cast<u32>(regs.pipeline.use_gs.Value()),
@@ -1456,7 +1604,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         if (ShouldStopAfterAccelStage(stage)) {
             if (trace_accel) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_ACCEL_STAGE v113 stage_limit consumed accel_id={} stage={} name={} stop_after={} before_vulkan_command=1",
+                            "TRACE_ACCEL_STAGE v114 stage_limit consumed accel_id={} stage={} name={} stop_after={} before_vulkan_command=1",
                             accel_id, stage, name, GetAccelStageStopAfter());
             }
             return true;
@@ -1472,7 +1620,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         if (regs.pipeline.gs_config.mode != Pica::PipelineRegs::GSMode::Point) {
             if (trace_accel) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_ACCEL_STAGE v113 rejected_gs_mode accel_id={} gs_mode={}",
+                            "TRACE_ACCEL_STAGE v114 rejected_gs_mode accel_id={} gs_mode={}",
                             accel_id, static_cast<u32>(regs.pipeline.gs_config.mode.Value()));
             }
             return false;
@@ -1480,7 +1628,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         if (regs.pipeline.triangle_topology != Pica::PipelineRegs::TriangleTopology::Shader) {
             if (trace_accel) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_ACCEL_STAGE v113 rejected_gs_topology accel_id={} topology={}",
+                            "TRACE_ACCEL_STAGE v114 rejected_gs_topology accel_id={} topology={}",
                             accel_id, static_cast<u32>(regs.pipeline.triangle_topology.Value()));
             }
             return false;
@@ -1502,7 +1650,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
                   "Skipping accelerated draw with unsupported triangle fan topology");
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 rejected_triangle_fan accel_id={}", accel_id);
+                        "TRACE_ACCEL_STAGE v114 rejected_triangle_fan accel_id={}", accel_id);
         }
         return false;
     }
@@ -1524,23 +1672,43 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     if (!SetupVertexShader()) {
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 vertex_shader_setup_failed accel_id={} trivial_probe={} programmable_config_probe={} programmable_generate_guarded_probe={} programmable_generate_probe={} force_stage_trace={}",
+                        "TRACE_ACCEL_STAGE v114 vertex_shader_setup_failed accel_id={} trivial_probe={} programmable_config_probe={} programmable_before_generate_probe={} programmable_generate_guarded_probe={} programmable_spirv_probe={} programmable_module_probe={} programmable_generate_probe={} force_stage_trace={}",
                         accel_id, static_cast<u32>(IsTrivialVertexShaderProbeEnabled()),
                         static_cast<u32>(IsProgrammableVertexShaderConfigProbeEnabled()),
+                        static_cast<u32>(IsProgrammableVertexShaderBeforeGenerateOnlyProbeEnabled()),
                         static_cast<u32>(IsProgrammableVertexShaderGenerateGuardedProbeEnabled()),
+                        static_cast<u32>(IsProgrammableVertexShaderSpirvOnlyProbeEnabled()),
+                        static_cast<u32>(IsProgrammableVertexShaderModuleOnlyProbeEnabled()),
                         static_cast<u32>(IsProgrammableVertexShaderGenerateProbeEnabled()),
                         static_cast<u32>(IsForceAccelStageTraceEnabled()));
         }
         return false;
     }
-    if (consume_if_stage_limited(7, IsTrivialVertexShaderProbeEnabled() ? "vertex_shader_setup_ok_trivial_probe" : (IsProgrammableVertexShaderConfigProbeEnabled() ? "vertex_shader_setup_ok_programmable_config_only" : (IsProgrammableVertexShaderGenerateGuardedProbeEnabled() ? "vertex_shader_setup_ok_programmable_generate_guarded_only" : (IsProgrammableVertexShaderGenerateProbeEnabled() ? "vertex_shader_setup_ok_programmable_generate_only" : "vertex_shader_setup_ok"))))) {
+    const char* stage7_name = "vertex_shader_setup_ok";
+    if (IsTrivialVertexShaderProbeEnabled()) {
+        stage7_name = "vertex_shader_setup_ok_trivial_probe";
+    } else if (IsProgrammableVertexShaderConfigProbeEnabled()) {
+        stage7_name = "vertex_shader_setup_ok_programmable_config_only";
+    } else if (IsProgrammableVertexShaderBeforeGenerateOnlyProbeEnabled()) {
+        stage7_name = "vertex_shader_setup_ok_programmable_before_generate_only";
+    } else if (IsProgrammableVertexShaderGenerateGuardedProbeEnabled()) {
+        stage7_name = "vertex_shader_setup_ok_programmable_generate_guarded_only";
+    } else if (IsProgrammableVertexShaderSpirvOnlyProbeEnabled()) {
+        stage7_name = "vertex_shader_setup_ok_programmable_spirv_only";
+    } else if (IsProgrammableVertexShaderModuleOnlyProbeEnabled()) {
+        stage7_name = "vertex_shader_setup_ok_programmable_shader_module_only";
+    } else if (IsProgrammableVertexShaderGenerateProbeEnabled()) {
+        stage7_name = "vertex_shader_setup_ok_programmable_generate_only";
+    }
+
+    if (consume_if_stage_limited(7, stage7_name)) {
         return true;
     }
 
     if (!SetupGeometryShader()) {
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 geometry_shader_setup_failed accel_id={}", accel_id);
+                        "TRACE_ACCEL_STAGE v114 geometry_shader_setup_failed accel_id={}", accel_id);
         }
         return false;
     }
@@ -1555,7 +1723,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const bool result = Draw(true, is_indexed);
     if (trace_accel) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_ACCEL_STAGE v113 accel_id={} stage=18 name=after_draw_wrapper result={}",
+                    "TRACE_ACCEL_STAGE v114 accel_id={} stage=18 name=after_draw_wrapper result={}",
                     accel_id, result);
     }
     return result;
@@ -1567,7 +1735,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const auto log_stage = [&](u32 stage, const char* name) {
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 internal stage={} name={} indexed={} vertex_count={} binding_count={} dry_run={} stop_after={}",
+                        "TRACE_ACCEL_STAGE v114 internal stage={} name={} indexed={} vertex_count={} binding_count={} dry_run={} stop_after={}",
                         stage, name, is_indexed, regs.pipeline.num_vertices,
                         pipeline_info.vertex_layout.binding_count,
                         static_cast<u32>(IsStrictAccelInternalDryRunEnabled()),
@@ -1580,7 +1748,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (ShouldStopAfterAccelStage(stage)) {
             if (trace_accel) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_ACCEL_STAGE v113 internal stage_limit consumed stage={} name={} before_vulkan_command=1",
+                            "TRACE_ACCEL_STAGE v114 internal stage_limit consumed stage={} name={} before_vulkan_command=1",
                             stage, name);
             }
             return true;
@@ -1594,7 +1762,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
     if (regs.pipeline.num_vertices == 0) {
         if (trace_accel) {
-            LOG_INFO(Render_Vulkan, "TRACE_ACCEL_STAGE v113 internal skipped empty draw");
+            LOG_INFO(Render_Vulkan, "TRACE_ACCEL_STAGE v114 internal skipped empty draw");
         }
         return true;
     }
@@ -1609,7 +1777,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                   binding_count, vertex_buffers.size());
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 internal invalid_binding_count binding_count={} max={}",
+                        "TRACE_ACCEL_STAGE v114 internal invalid_binding_count binding_count={} max={}",
                         binding_count, vertex_buffers.size());
         }
         return false;
@@ -1638,7 +1806,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (!pipeline_cache.BindPipeline(pipeline_info, wait_built)) {
         if (trace_accel) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_ACCEL_STAGE v113 pipeline_not_ready wait_built={} strict_compat={}",
+                     "TRACE_ACCEL_STAGE v114 pipeline_not_ready wait_built={} strict_compat={}",
                      wait_built, static_cast<u32>(IsStrictCompatEnabled()));
         }
         return false;
@@ -1659,7 +1827,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (IsStrictAccelInternalDryRunEnabled()) {
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_ACCEL_STAGE v113 internal dry-run consumed before vkCmdDraw stage=16 indexed={} vertex_count={} vertex_offset={} binding_count={} wait_built={}",
+                        "TRACE_ACCEL_STAGE v114 internal dry-run consumed before vkCmdDraw stage=16 indexed={} vertex_count={} vertex_offset={} binding_count={} wait_built={}",
                         params.is_indexed, params.vertex_count, params.vertex_offset,
                         params.binding_count, wait_built);
         }
@@ -1684,7 +1852,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
     if (trace_accel) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_ACCEL_STAGE v113 internal stage=17 name=vkcmd_recorded indexed={} vertex_count={} binding_count={}",
+                    "TRACE_ACCEL_STAGE v114 internal stage=17 name=vkcmd_recorded indexed={} vertex_count={} binding_count={}",
                     params.is_indexed, params.vertex_count, params.binding_count);
     }
 
@@ -1967,7 +2135,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     if (strict_safe_untextured_real_draw && IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v113 allowing safe untextured real software draw safe_index={} budget={} vertex_batch_size={} num_vertices={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                    "TRACE_DRAW strict_compat v114 allowing safe untextured real software draw safe_index={} budget={} vertex_batch_size={} num_vertices={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                     strict_safe_untextured_real_draw_index,
                     GetStrictSafeUntexturedSoftwareDrawBudget(), vertex_batch.size(),
                     regs.pipeline.num_vertices,
@@ -1980,7 +2148,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         !IsSoftwareTexturesAllowed() && using_color_fb) {
         if (IsDrawTraceEnabled()) {
             LOG_WARNING(Render_Vulkan,
-                        "TRACE_DRAW strict_compat v113 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; allow_safe_untextured={} safe_candidate={} set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for full diagnosis",
+                        "TRACE_DRAW strict_compat v114 software fallback consumed as safe no-op vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}; allow_safe_untextured={} safe_candidate={} set BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS=1 only for full diagnosis",
                         vertex_batch.size(), regs.pipeline.num_vertices,
                         CountEnabledPrimaryTextures(regs),
                         static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
@@ -2041,7 +2209,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         if (IsStrictCompatEnabled() && !IsSoftwareSkipAllowed() && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat v113 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     "TRACE_DRAW strict_compat v114 software skip disabled; drawing software batch vertex_batch_size={} num_vertices={} enabled_textures={} textures_disabled={} depth_active={} color_addr=0x{:08x} depth_addr=0x{:08x}",
                      vertex_batch.size(), regs.pipeline.num_vertices,
                      CountEnabledPrimaryTextures(regs), static_cast<u32>(ArePrimaryTexturesDisabled(regs)),
                      static_cast<u32>(HasActiveDepthState(regs)),
@@ -2217,7 +2385,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         !accelerate && IsStrictCompatEnabled() && !IsSoftwareTexturesAllowed();
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v113 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
+                    "TRACE_DRAW strict_compat v114 using forced-null texture path before shader/pipeline setup vertex_batch_size={} enabled_textures={} textures_disabled={}",
                     vertex_batch.size(), CountEnabledPrimaryTextures(regs),
                     static_cast<u32>(ArePrimaryTexturesDisabled(regs)));
     }
@@ -2878,7 +3046,7 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
-                 "TRACE_DRAW accelerate_display v113 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
+                 "TRACE_DRAW accelerate_display v114 addr=0x{:08x} width={} height={} stride={} pixel_format={} src_rect=({}, {}, {}, {}) base_valid={} copy_valid={} chosen={} strict_compat={} forced_base_present_view={}",
                  framebuffer_addr, src_params.width, src_params.height, src_params.stride,
                  static_cast<u32>(src_params.pixel_format), src_rect.left, src_rect.bottom,
                  src_rect.right, src_rect.top, static_cast<bool>(base_view),
