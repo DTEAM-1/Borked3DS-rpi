@@ -120,6 +120,17 @@ struct DrawParams {
     return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_RAW_ENTER_SIMPLE_RETURN");
 }
 
+[[nodiscard]] bool IsV114ShaderMultiplexEntrySafeEnabled() {
+    // v114-C corrective probe:
+    // A/B passed, but the first C attempt cut the log immediately after the safe micro-HW
+    // candidate while starting a Render.Vulkan line, before any completed TRACE_ACCEL_STAGE
+    // marker. Keep the shader probe selected, but suppress early backend entry logs and avoid
+    // probe-helper evaluation before SetupVertexShader. This isolates whether C is really
+    // blocked by GLSL::GenerateVertexShader() or by the entry logging path.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_SHADER_MULTIPLEX_ENTRY_SAFE");
+}
+
 [[nodiscard]] bool IsAccelStageTraceEnabled() {
     return IsDrawTraceEnabled() || IsEnvEnabled("BORKED3DS_V3DV_TRACE_ACCEL_STAGE") ||
            IsForceAccelStageTraceEnabled();
@@ -1556,7 +1567,11 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         return true;
     }
 
-    LOG_WARNING(Render_Vulkan, "TRACE_ACCEL_STAGE v114 raw_enter_noargs");
+    const bool v114_entry_safe = IsV114ShaderMultiplexEntrySafeEnabled();
+
+    if (!v114_entry_safe) {
+        LOG_WARNING(Render_Vulkan, "TRACE_ACCEL_STAGE v114 raw_enter_noargs");
+    }
 
     if (IsAccelRawEnterReturnEnabled()) {
         return true;
@@ -1564,12 +1579,13 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
 
     const u64 accel_id = ++g_vk_accel_draw_counter;
 
-    LOG_WARNING(Render_Vulkan,
-                "TRACE_ACCEL_STAGE v114 raw_enter_simple accel_id={} indexed={} stop_after={} force_stage_trace={} entry_only_probe={} generate_guarded_probe={}",
-                accel_id, is_indexed, GetAccelStageStopAfter(),
-                static_cast<u32>(IsForceAccelStageTraceEnabled()),
-                static_cast<u32>(IsAccelEntryOnlyProbeEnabled()),
-                static_cast<u32>(IsProgrammableVertexShaderGenerateGuardedProbeEnabled()));
+    if (!v114_entry_safe) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_ACCEL_STAGE v114 raw_enter_simple accel_id={} indexed={} stop_after={} force_stage_trace={} entry_only_probe={}",
+                    accel_id, is_indexed, GetAccelStageStopAfter(),
+                    static_cast<u32>(IsForceAccelStageTraceEnabled()),
+                    static_cast<u32>(IsAccelEntryOnlyProbeEnabled()));
+    }
 
     if (IsAccelRawEnterSimpleReturnEnabled()) {
         return true;
