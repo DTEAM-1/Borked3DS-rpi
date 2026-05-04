@@ -32,7 +32,23 @@ namespace Vulkan {
 
 namespace {
 
+[[nodiscard]] bool IsEnvEnabledLocal(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+[[nodiscard]] bool IsPresentTraceForceQuietEnabled() {
+    return IsEnvEnabledLocal("BORKED3DS_V3DV_FORCE_QUIET_PRESENT");
+}
+
 [[nodiscard]] bool IsPresentTraceEnabled() {
+    // v114-C11: make the measurement robust even if an old emulators.cfg entry still
+    // contains BORKED3DS_V3DV_TRACE_PRESENT=1. FORCE_QUIET_PRESENT has priority and
+    // lets us keep PICA/shader traces readable without rebuilding again.
+    if (IsPresentTraceForceQuietEnabled()) {
+        return false;
+    }
+
     const char* value = std::getenv("BORKED3DS_V3DV_TRACE_PRESENT");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
@@ -562,7 +578,7 @@ void main() {
     if (IsStrictCompatEnabled()) {
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT strict_compat present_probe_disabled_v114 using_normal_present_frag=1 prefer_owned_present_default=0 pica_accel_shader_multiplex_v114c10_direct_accel_expected=1");
+                     "TRACE_PRESENT strict_compat present_probe_disabled_v114 using_normal_present_frag=1 prefer_owned_present_default=0 pica_accel_shader_multiplex_v114c11_quietpresent_direct_accel_expected=1");
         }
         present_shaders[0] = Compile(HostShaders::VULKAN_PRESENT_FRAG,
                                      vk::ShaderStageFlagBits::eFragment, device, preamble);
