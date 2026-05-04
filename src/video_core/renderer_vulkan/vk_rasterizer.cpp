@@ -80,7 +80,7 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsForceQuietDisplayEnabled() {
-    // v114-C12: present tracing is now quiet, but AccelerateDisplay still floods TRACE_DRAW.
+    // v115-A: present tracing is now quiet, but AccelerateDisplay still floods TRACE_DRAW.
     // This suppresses display-path TRACE_DRAW while keeping PICA/backend TRACE_DRAW and
     // TRACE_ACCEL_STAGE visible for the current GenerateVertexShader gate.
     return IsEnvEnabled("BORKED3DS_V3DV_FORCE_QUIET_DISPLAY");
@@ -163,7 +163,7 @@ void V114ShaderMultiplexFileTraceRaw(const char* message) {
     if (!IsV114ShaderMultiplexFileTraceEnabled()) {
         return;
     }
-    std::FILE* fp = std::fopen("/tmp/borked3ds_v114c12_shader_probe.log", "a");
+    std::FILE* fp = std::fopen("/tmp/borked3ds_v115a_shader_probe.log", "a");
     if (fp == nullptr) {
         return;
     }
@@ -176,11 +176,11 @@ void V114ShaderMultiplexFileTraceReset() {
     if (!IsV114ShaderMultiplexFileTraceEnabled()) {
         return;
     }
-    std::FILE* fp = std::fopen("/tmp/borked3ds_v114c12_shader_probe.log", "w");
+    std::FILE* fp = std::fopen("/tmp/borked3ds_v115a_shader_probe.log", "w");
     if (fp == nullptr) {
         return;
     }
-    std::fputs("v114c12 file_trace_reset\n", fp);
+    std::fputs("v115a file_trace_reset\n", fp);
     std::fclose(fp);
 }
 
@@ -254,6 +254,15 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // then bind the trivial VS and return at stage=7. No pipeline/descriptors/draw.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_SHADER_MODULE_ONLY");
+}
+
+[[nodiscard]] bool IsPipelineBindProbeOnlyEnabled() {
+    // v115-A:
+    // Advance one step beyond the v114-E VkShaderModule probe. This path reaches the
+    // accelerated Draw() wrapper and calls BindPipeline(), then returns before vertex/index
+    // buffer binding and before vkCmdDraw/vkCmdDrawIndexed. It is still a probe, not a
+    // real hardware draw.
+    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_PROBE_PIPELINE_BIND_ONLY");
 }
 
 [[nodiscard]] AttribLoadFlags MakeAccelAttribLoadFlag(Pica::PipelineRegs::VertexAttributeFormat format) {
@@ -1118,19 +1127,22 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 
     if (IsV114ShaderMultiplexFileTraceEnabled()) {
         V114ShaderMultiplexFileTraceReset();
-        V114ShaderMultiplexFileTraceRaw("v114c12 rasterizer_constructor_quietdisplay_marker");
-        V114ShaderMultiplexFileTraceNumber("v114c12 constructor_generate_guarded_probe",
+        V114ShaderMultiplexFileTraceRaw("v115a rasterizer_constructor_pipeline_bind_marker");
+        V114ShaderMultiplexFileTraceNumber("v115a constructor_generate_guarded_probe",
                                            static_cast<u64>(IsProgrammableVertexShaderGenerateGuardedProbeEnabled()));
-        V114ShaderMultiplexFileTraceNumber("v114c12 constructor_stage_stop_after",
+        V114ShaderMultiplexFileTraceNumber("v115a constructor_stage_stop_after",
                                            GetAccelStageStopAfter());
+        V114ShaderMultiplexFileTraceNumber("v115a constructor_pipeline_bind_probe",
+                                           static_cast<u64>(IsPipelineBindProbeOnlyEnabled()));
     }
 
     if (IsDrawTraceEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v114c12 RasterizerVulkan constructor quietdisplay-pica-gate marker strict_compat={} allow_software_textures={} quarantine_disabled={}",
+                    "TRACE_DRAW strict_compat v115a RasterizerVulkan constructor pipeline-bind-probe marker strict_compat={} allow_software_textures={} quarantine_disabled={} pipeline_bind_probe={}",
                     static_cast<u32>(IsStrictCompatEnabled()),
                     static_cast<u32>(IsSoftwareTexturesAllowed()),
-                    static_cast<u32>(IsStartupSoftwareQuarantineDisabled()));
+                    static_cast<u32>(IsStartupSoftwareQuarantineDisabled()),
+                    static_cast<u32>(IsPipelineBindProbeOnlyEnabled()));
     }
 }
 
@@ -1318,25 +1330,25 @@ bool RasterizerVulkan::SetupVertexShader() {
     const bool programmable_generate_probe = IsProgrammableVertexShaderGenerateProbeEnabled();
 
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 setup_vs_begin");
+        V114ShaderMultiplexFileTraceRaw("v115a setup_vs_begin");
         if (programmable_config_probe) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 setup_vs_probe=config_only");
+            V114ShaderMultiplexFileTraceRaw("v115a setup_vs_probe=config_only");
         }
         if (programmable_before_generate_probe) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 setup_vs_probe=before_generate_only");
+            V114ShaderMultiplexFileTraceRaw("v115a setup_vs_probe=before_generate_only");
         }
         if (programmable_generate_guarded_probe) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 setup_vs_probe=generate_guarded_only");
+            V114ShaderMultiplexFileTraceRaw("v115a setup_vs_probe=generate_guarded_only");
         }
         if (programmable_spirv_probe) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 setup_vs_probe=spirv_only");
+            V114ShaderMultiplexFileTraceRaw("v115a setup_vs_probe=spirv_only");
         }
         if (programmable_module_probe) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 setup_vs_probe=shader_module_only");
+            V114ShaderMultiplexFileTraceRaw("v115a setup_vs_probe=shader_module_only");
         }
-        V114ShaderMultiplexFileTraceNumber("v114c12 setup_vs_binding_count",
+        V114ShaderMultiplexFileTraceNumber("v115a setup_vs_binding_count",
                                            pipeline_info.vertex_layout.binding_count);
-        V114ShaderMultiplexFileTraceNumber("v114c12 setup_vs_attribute_count",
+        V114ShaderMultiplexFileTraceNumber("v115a setup_vs_attribute_count",
                                            pipeline_info.vertex_layout.attribute_count);
     }
 
@@ -1403,11 +1415,11 @@ bool RasterizerVulkan::SetupVertexShader() {
             build_programmable_vs_config();
 
         if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 shader_probe_config_built");
-            V114ShaderMultiplexFileTraceNumber("v114c12 shader_probe_config_hash", config.Hash());
-            V114ShaderMultiplexFileTraceNumber("v114c12 shader_probe_converted_attribs",
+            V114ShaderMultiplexFileTraceRaw("v115a shader_probe_config_built");
+            V114ShaderMultiplexFileTraceNumber("v115a shader_probe_config_hash", config.Hash());
+            V114ShaderMultiplexFileTraceNumber("v115a shader_probe_converted_attribs",
                                                converted_attribs);
-            V114ShaderMultiplexFileTraceNumber("v114c12 shader_probe_zero_w_attribs",
+            V114ShaderMultiplexFileTraceNumber("v115a shader_probe_zero_w_attribs",
                                                zero_w_attribs);
         }
 
@@ -1459,7 +1471,7 @@ bool RasterizerVulkan::SetupVertexShader() {
     auto run_shader_multiplex_probe = [&](const char* mode_name, bool compile_spirv,
                                            bool create_module) -> bool {
         if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 shader_probe_begin");
+            V114ShaderMultiplexFileTraceRaw("v115a shader_probe_begin");
             V114ShaderMultiplexFileTraceRaw(mode_name);
         }
         if (trace_accel) {
@@ -1481,7 +1493,7 @@ bool RasterizerVulkan::SetupVertexShader() {
 
         try {
             if (v114_file_trace) {
-                V114ShaderMultiplexFileTraceRaw("v114c12 shader_probe_before_generate_call");
+                V114ShaderMultiplexFileTraceRaw("v115a shader_probe_before_generate_call");
             }
             if (trace_accel) {
                 LOG_WARNING(Render_Vulkan,
@@ -1492,7 +1504,7 @@ bool RasterizerVulkan::SetupVertexShader() {
             program = GLSL::GenerateVertexShader(pica.vs_setup, config, true);
 
             if (v114_file_trace) {
-                V114ShaderMultiplexFileTraceRaw("v114c12 shader_probe_after_generate_call");
+                V114ShaderMultiplexFileTraceRaw("v115a shader_probe_after_generate_call");
             }
             if (trace_accel) {
                 LOG_WARNING(Render_Vulkan,
@@ -1511,9 +1523,9 @@ bool RasterizerVulkan::SetupVertexShader() {
         }
 
         if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 shader_probe_glsl_end");
-            V114ShaderMultiplexFileTraceNumber("v114c12 shader_probe_program_bytes", program.size());
-            V114ShaderMultiplexFileTraceNumber("v114c12 shader_probe_program_empty",
+            V114ShaderMultiplexFileTraceRaw("v115a shader_probe_glsl_end");
+            V114ShaderMultiplexFileTraceNumber("v115a shader_probe_program_bytes", program.size());
+            V114ShaderMultiplexFileTraceNumber("v115a shader_probe_program_empty",
                                                static_cast<u64>(program.empty()));
         }
         if (trace_accel) {
@@ -1620,7 +1632,7 @@ bool RasterizerVulkan::SetupVertexShader() {
 
     if (programmable_generate_guarded_probe) {
         if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 shader_probe_generate_guarded_selected");
+            V114ShaderMultiplexFileTraceRaw("v115a shader_probe_generate_guarded_selected");
         }
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
@@ -1709,12 +1721,12 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceReset();
     }
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 accel_enter");
-        V114ShaderMultiplexFileTraceNumber("v114c12 accel_id", accel_id);
-        V114ShaderMultiplexFileTraceNumber("v114c12 accel_indexed", static_cast<u64>(is_indexed));
-        V114ShaderMultiplexFileTraceNumber("v114c12 accel_num_vertices",
+        V114ShaderMultiplexFileTraceRaw("v115a accel_enter");
+        V114ShaderMultiplexFileTraceNumber("v115a accel_id", accel_id);
+        V114ShaderMultiplexFileTraceNumber("v115a accel_indexed", static_cast<u64>(is_indexed));
+        V114ShaderMultiplexFileTraceNumber("v115a accel_num_vertices",
                                            regs.pipeline.num_vertices);
-        V114ShaderMultiplexFileTraceNumber("v114c12 accel_topology",
+        V114ShaderMultiplexFileTraceNumber("v115a accel_topology",
                                            static_cast<u64>(regs.pipeline.triangle_topology.Value()));
     }
 
@@ -1818,33 +1830,33 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     }
 
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 before_analyze_vertex_array");
+        V114ShaderMultiplexFileTraceRaw("v115a before_analyze_vertex_array");
     }
     vertex_info = AnalyzeVertexArray(is_indexed, instance.GetMinVertexStrideAlignment());
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 after_analyze_vertex_array");
+        V114ShaderMultiplexFileTraceRaw("v115a after_analyze_vertex_array");
     }
     if (consume_if_stage_limited(5, "vertex_array_analyzed")) {
         return true;
     }
 
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 before_setup_vertex_array");
+        V114ShaderMultiplexFileTraceRaw("v115a before_setup_vertex_array");
     }
     SetupVertexArray();
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 after_setup_vertex_array");
+        V114ShaderMultiplexFileTraceRaw("v115a after_setup_vertex_array");
     }
     if (consume_if_stage_limited(6, "vertex_array_setup_done")) {
         return true;
     }
 
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 before_setup_vertex_shader");
+        V114ShaderMultiplexFileTraceRaw("v115a before_setup_vertex_shader");
     }
     if (!SetupVertexShader()) {
         if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 setup_vertex_shader_result=0");
+            V114ShaderMultiplexFileTraceRaw("v115a setup_vertex_shader_result=0");
         }
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
@@ -1861,7 +1873,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         return false;
     }
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 setup_vertex_shader_result=1");
+        V114ShaderMultiplexFileTraceRaw("v115a setup_vertex_shader_result=1");
     }
     const char* stage7_name = "vertex_shader_setup_ok";
     if (IsTrivialVertexShaderProbeEnabled()) {
@@ -1881,11 +1893,11 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     }
 
     if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v114c12 before_stage7_consume");
+        V114ShaderMultiplexFileTraceRaw("v115a before_stage7_consume");
     }
     if (consume_if_stage_limited(7, stage7_name)) {
         if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw("v114c12 stage7_consumed_return_true");
+            V114ShaderMultiplexFileTraceRaw("v115a stage7_consumed_return_true");
         }
         return true;
     }
@@ -1970,6 +1982,44 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
     if (consume_if_stage_limited(12, "binding_count_ok")) {
         return true;
+    }
+
+    if (IsPipelineBindProbeOnlyEnabled()) {
+        const bool wait_built = true;
+        if (IsV114ShaderMultiplexFileTraceEnabled()) {
+            V114ShaderMultiplexFileTraceRaw("v115a pipeline_bind_probe_begin");
+            V114ShaderMultiplexFileTraceNumber("v115a pipeline_bind_probe_indexed",
+                                            static_cast<u32>(is_indexed));
+            V114ShaderMultiplexFileTraceNumber("v115a pipeline_bind_probe_num_vertices",
+                                            regs.pipeline.num_vertices);
+            V114ShaderMultiplexFileTraceNumber("v115a pipeline_bind_probe_binding_count",
+                                            binding_count);
+            V114ShaderMultiplexFileTraceRaw("v115a before_pipeline_bind");
+        }
+        if (trace_accel || IsDrawTraceEnabled()) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_DRAW strict_compat v115a pipeline_bind_probe before_bind indexed={} num_vertices={} binding_count={} wait_built={} color_addr=0x{:08x} depth_addr=0x{:08x}",
+                        is_indexed, regs.pipeline.num_vertices, binding_count,
+                        static_cast<u32>(wait_built),
+                        regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                        regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        }
+
+        const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
+
+        if (IsV114ShaderMultiplexFileTraceEnabled()) {
+            V114ShaderMultiplexFileTraceRaw("v115a after_pipeline_bind");
+            V114ShaderMultiplexFileTraceNumber("v115a pipeline_bind_ready",
+                                            static_cast<u32>(pipeline_ready));
+            V114ShaderMultiplexFileTraceRaw("v115a stage8_pipeline_bind_consumed_return_true");
+        }
+        if (trace_accel || IsDrawTraceEnabled()) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_DRAW strict_compat v115a pipeline_bind_probe after_bind result={} before_vertex_or_index_bind=1 before_vkcmd_draw=1",
+                        static_cast<u32>(pipeline_ready));
+        }
+
+        return pipeline_ready;
     }
 
     if (is_indexed) {
@@ -2728,6 +2778,16 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     bool succeeded = true;
     if (accelerate) {
+        if (IsPipelineBindProbeOnlyEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115a draw_wrapper_before_pipeline_bind_probe");
+            }
+            if (IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115a draw_wrapper entering pipeline_bind_probe indexed={} num_vertices={} before_vkcmd_draw=1",
+                            is_indexed, regs.pipeline.num_vertices);
+            }
+        }
         succeeded = AccelerateDrawBatchInternal(is_indexed);
     } else {
         if (IsDrawTraceEnabled()) {
