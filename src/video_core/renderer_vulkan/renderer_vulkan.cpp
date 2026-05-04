@@ -578,15 +578,15 @@ void main() {
         Compile(HostShaders::VULKAN_PRESENT_VERT, vk::ShaderStageFlagBits::eVertex, device);
     if (IsStrictCompatEnabled()) {
         LOG_WARNING(Render_Vulkan,
-                    "TRACE_DRAW strict_compat v115b renderer_descriptor_bind_probe_marker force_quiet_present={} force_quiet_display={} shader_module_probe={} pipeline_bind_probe={} descriptor_bind_probe={} pica_accel_descriptor_bind_v115b_expected=1",
+                    "TRACE_DRAW strict_compat v115b2 renderer_vertex_bind_nopost_marker force_quiet_present={} force_quiet_display={} shader_module_probe={} pipeline_bind_probe={} vertex_bind_nopost_probe={} pica_accel_vertex_bind_nopost_v115b2_expected=1",
                     static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_FORCE_QUIET_PRESENT")),
                     static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_FORCE_QUIET_DISPLAY")),
                     static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_SHADER_MODULE_ONLY")),
                     static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_PIPELINE_BIND_ONLY")),
-                    static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_DESCRIPTOR_BIND_ONLY")));
+                    static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_VERTEX_BIND_NOPOST_ONLY")));
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_PRESENT strict_compat present_probe_disabled_v114 using_normal_present_frag=1 prefer_owned_present_default=0 pica_accel_descriptor_bind_v115b_expected=1");
+                     "TRACE_PRESENT strict_compat present_probe_disabled_v114 using_normal_present_frag=1 prefer_owned_present_default=0 pica_accel_vertex_bind_nopost_v115b2_expected=1");
         }
         present_shaders[0] = Compile(HostShaders::VULKAN_PRESENT_FRAG,
                                      vk::ShaderStageFlagBits::eFragment, device, preamble);
