@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
 #include <sstream>
 #include <string_view>
 #include <fmt/format.h>
@@ -21,6 +22,36 @@
 using VSOutputAttributes = Pica::RasterizerRegs::VSOutputAttributes;
 
 namespace Pica::Shader::Generator::GLSL {
+
+namespace {
+
+bool IsEnabledEnv(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+bool ShouldSkipGLSLGLVersionQuery() {
+    return IsEnabledEnv("BORKED3DS_V3DV_SKIP_GLSL_GL_VERSION_QUERY");
+}
+
+bool ShouldEmitLegacyGLESSeparableShaderOutputs() {
+#ifndef __APPLE__
+    if (ShouldSkipGLSLGLVersionQuery()) {
+        return false;
+    }
+
+    GLint majorVersion = 0;
+    GLint minorVersion = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+    glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
+
+    return OpenGL::GLES && majorVersion == 3 && minorVersion < 2;
+#else
+    return false;
+#endif
+}
+
+} // Anonymous namespace
 
 constexpr std::string_view VSPicaUniformBlockDef = R"(
 struct pica_uniforms {
@@ -106,12 +137,7 @@ std::string GenerateTrivialVertexShader(bool use_clip_planes, bool separable_sha
     if (separable_shader) {
         out += "#extension GL_ARB_separate_shader_objects : enable\n";
 
-#ifndef __APPLE__
-        GLint majorVersion = 0, minorVersion = 0;
-        glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
-        glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
-
-        if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+        if (ShouldEmitLegacyGLESSeparableShaderOutputs()) {
             out += R"(
 #extension GL_ARB_separate_shader_objects : enable
 layout(location = ATTRIBUTE_COLOR) out vec4 primary_color;
@@ -123,7 +149,6 @@ layout(location = ATTRIBUTE_NORMQUAT) out vec4 normquat;
 layout(location = ATTRIBUTE_VIEW) out vec3 view;
 )";
         }
-#endif
     }
 
     out +=
@@ -186,12 +211,7 @@ std::string GenerateVertexShader(const ShaderSetup& setup, const PicaVSConfig& c
     if (separable_shader) {
         out += "#extension GL_ARB_separate_shader_objects : enable\n";
 
-#ifndef __APPLE__
-        GLint majorVersion = 0, minorVersion = 0;
-        glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
-        glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
-
-        if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+        if (ShouldEmitLegacyGLESSeparableShaderOutputs()) {
             out += R"(
 #extension GL_ARB_separate_shader_objects : enable
 layout(location = ATTRIBUTE_COLOR) out vec4 primary_color;
@@ -203,7 +223,6 @@ layout(location = ATTRIBUTE_NORMQUAT) out vec4 normquat;
 layout(location = ATTRIBUTE_VIEW) out vec3 view;
 )";
         }
-#endif
     }
 
     out += VSPicaUniformBlockDef;
@@ -435,12 +454,7 @@ std::string GenerateFixedGeometryShader(const PicaFixedGSConfig& config, bool se
     if (separable_shader) {
         out << "#extension GL_ARB_separate_shader_objects : enable\n";
 
-#ifndef __APPLE__
-        GLint majorVersion = 0, minorVersion = 0;
-        glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
-        glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
-
-        if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+        if (ShouldEmitLegacyGLESSeparableShaderOutputs()) {
             out << R"(
 #extension GL_ARB_separate_shader_objects : enable
 layout(location = ATTRIBUTE_COLOR) out vec4 primary_color;
@@ -452,7 +466,6 @@ layout(location = ATTRIBUTE_NORMQUAT) out vec4 normquat;
 layout(location = ATTRIBUTE_VIEW) out vec3 view;
 )";
         }
-#endif
     }
 
     out << R"(
