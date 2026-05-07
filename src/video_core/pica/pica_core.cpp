@@ -127,8 +127,37 @@ void V114C6PicaGateFileTraceReset() {
     }
     if (std::FILE* fp = std::fopen("/tmp/borked3ds_v115d_mux_pica_gate.log", "w")) {
         std::fputs("v115d_mux pica_gate_file_trace_reset\n", fp);
+        std::fputs("v115d_a7x pica_gate_file_trace_reset\n", fp);
         std::fclose(fp);
     }
+}
+
+[[nodiscard]] bool IsV115DA7XTraceExpected() {
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
+           IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY") &&
+           GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) == 7;
+}
+
+void V115DA7XPicaTraceRaw(const char* message) {
+    if (!IsV115DA7XTraceExpected()) {
+        return;
+    }
+    V114C6PicaGateFileTraceRaw(message);
+}
+
+void V115DA7XPicaTraceU32(const char* key, u32 value) {
+    if (!IsV115DA7XTraceExpected()) {
+        return;
+    }
+    V114C6PicaGateFileTraceU32(key, value);
+}
+
+void V115DA7XPicaTraceU64(const char* key, u64 value) {
+    if (!IsV115DA7XTraceExpected()) {
+        return;
+    }
+    V114C6PicaGateFileTraceU64(key, value);
 }
 
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
@@ -286,6 +315,13 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
                                 static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_D_INDEXED_SETUP_DRAWINDEXED_ZEROCOUNT")));
     V114C6PicaGateFileTraceU32("v115d_mux constructor_d_e_drawindexed3_probe",
                                 static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_E_INDEXED_SETUP_DRAWINDEXED_3")));
+    V115DA7XPicaTraceRaw("v115d_a7x pica_core_constructor_marker");
+    V115DA7XPicaTraceU32("v115d_a7x constructor_d_a_draw0",
+                         static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT")));
+    V115DA7XPicaTraceU32("v115d_a7x constructor_generate_guarded",
+                         static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY")));
+    V115DA7XPicaTraceU32("v115d_a7x constructor_stage_stop_after",
+                         GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0));
 
     if (IsStrictCompatEnabled()) {
         LOG_WARNING(HW_GPU,
@@ -305,6 +341,13 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
                     static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_D_INDEXED_SETUP_DRAWINDEXED_ZEROCOUNT")),
                     static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_E_INDEXED_SETUP_DRAWINDEXED_3")),
                     GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0));
+        if (IsV115DA7XTraceExpected()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7x pica_core_constructor_marker d_a_draw0={} generate_guarded={} stage_stop_after={}",
+                        static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT")),
+                        static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY")),
+                        GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0));
+        }
     }
 
     const auto submit_vertex = [this](const AttributeBuffer& buffer) {
@@ -524,6 +567,13 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_pre_predraw_topology", static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()));
         V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_pre_predraw_color_addr", regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress());
         V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_pre_predraw_depth_addr", regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        V115DA7XPicaTraceRaw("v115d_a7x pica_trigger_pre_predraw_trace");
+        V115DA7XPicaTraceU32("v115d_a7x trigger_draw_id", id);
+        V115DA7XPicaTraceU32("v115d_a7x trigger_draw_indexed", static_cast<u32>(is_indexed));
+        V115DA7XPicaTraceU32("v115d_a7x trigger_draw_num_vertices", regs.internal.pipeline.num_vertices);
+        V115DA7XPicaTraceU32("v115d_a7x trigger_draw_topology", static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()));
+        V115DA7XPicaTraceU32("v115d_a7x trigger_draw_color_addr", regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress());
+        V115DA7XPicaTraceU32("v115d_a7x trigger_draw_depth_addr", regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
 
         if (IsStrictCompatEnabled()) {
             static std::atomic<u64> trigger_pre_predraw_console_counter{0};
@@ -579,7 +629,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
             }
         }
 
+        V115DA7XPicaTraceRaw("v115d_a7x pica_trigger_before_drawarrays");
         DrawArrays(is_indexed);
+        V115DA7XPicaTraceRaw("v115d_a7x pica_trigger_after_drawarrays");
         V114C6PicaGateFileTraceRaw("v115d_mux trigger_draw_after_drawarrays");
 
         if (IsStrictCompatEnabled()) {
@@ -896,6 +948,12 @@ void PicaCore::DrawArrays(bool is_indexed) {
     V114C6PicaGateFileTraceU32("v115d_mux draw_topology", static_cast<u32>(primitive_assembler.GetTopology()));
     V114C6PicaGateFileTraceU32("v115d_mux draw_use_gs", static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
     V114C6PicaGateFileTraceU32("v115d_mux draw_primitive_empty", static_cast<u32>(primitive_assembler.IsEmpty()));
+    V115DA7XPicaTraceRaw("v115d_a7x drawarrays_enter");
+    V115DA7XPicaTraceU64("v115d_a7x draw_index", draw_index);
+    V115DA7XPicaTraceU32("v115d_a7x draw_indexed", static_cast<u32>(is_indexed));
+    V115DA7XPicaTraceU32("v115d_a7x draw_num_vertices", regs.internal.pipeline.num_vertices);
+    V115DA7XPicaTraceU32("v115d_a7x draw_topology", static_cast<u32>(primitive_assembler.GetTopology()));
+    V115DA7XPicaTraceU32("v115d_a7x draw_primitive_empty", static_cast<u32>(primitive_assembler.IsEmpty()));
 
     if (IsStrictCompatEnabled()) {
         static std::atomic<u64> drawarrays_console_counter{0};
@@ -923,6 +981,8 @@ void PicaCore::DrawArrays(bool is_indexed) {
         IsDirectSafePicaHwHandoffEnabled() && !IsPicaAccelAllowed() && !IsPicaAccelForcedOff()) {
         V114C6PicaGateFileTraceRaw("v115d_mux early_direct_accel_begin");
         V114C6PicaGateFileTraceRaw("v115d_mux early_predecision_begin");
+        V115DA7XPicaTraceRaw("v115d_a7x early_direct_accel_begin");
+        V115DA7XPicaTraceRaw("v115d_a7x early_predecision_begin");
         const bool v115d_mux_early_hw_shader = Settings::values.use_hw_shader.GetValue();
         const bool v115d_mux_early_primitive_empty = primitive_assembler.IsEmpty();
         const u32 v115d_mux_early_topology = static_cast<u32>(primitive_assembler.GetTopology());
@@ -947,6 +1007,9 @@ void PicaCore::DrawArrays(bool is_indexed) {
         V114C6PicaGateFileTraceU32("v115d_mux early_use_gs", v115d_mux_early_use_gs);
         V114C6PicaGateFileTraceU32("v115d_mux early_textures_disabled", v115d_mux_early_textures_disabled);
         V114C6PicaGateFileTraceU32("v115d_mux early_safe_candidate", static_cast<u32>(v115d_mux_early_safe_candidate));
+        V115DA7XPicaTraceU32("v115d_a7x early_hw_shader", static_cast<u32>(v115d_mux_early_hw_shader));
+        V115DA7XPicaTraceU32("v115d_a7x early_textures_disabled", v115d_mux_early_textures_disabled);
+        V115DA7XPicaTraceU32("v115d_a7x early_safe_candidate", static_cast<u32>(v115d_mux_early_safe_candidate));
 
         static std::atomic<u64> v115d_mux_predecision_console_counter{0};
         const u64 v115d_mux_predecision_console_index = ++v115d_mux_predecision_console_counter;
@@ -975,6 +1038,8 @@ void PicaCore::DrawArrays(bool is_indexed) {
             if (v115d_mux_early_budget_ok) {
                 V114C6PicaGateFileTraceU64("v115d_mux early_direct_safe_hw_index", v115d_mux_early_hw_index);
                 V114C6PicaGateFileTraceRaw("v115d_mux early_direct_before_accelerate_draw_batch");
+                V115DA7XPicaTraceU64("v115d_a7x early_direct_safe_hw_index", v115d_mux_early_hw_index);
+                V115DA7XPicaTraceRaw("v115d_a7x early_direct_before_accelerate_draw_batch");
 
                 if (IsSafePicaHwDryRunEnabled()) {
                     V114C6PicaGateFileTraceRaw("v115d_mux early_direct_dry_run_consumed");
@@ -993,6 +1058,9 @@ void PicaCore::DrawArrays(bool is_indexed) {
                 V114C6PicaGateFileTraceRaw("v115d_mux early_direct_after_accelerate_draw_batch");
                 V114C6PicaGateFileTraceU32("v115d_mux early_direct_accelerate_draw_batch_result",
                                            static_cast<u32>(v115d_mux_early_accelerated));
+                V115DA7XPicaTraceRaw("v115d_a7x early_direct_after_accelerate_draw_batch");
+                V115DA7XPicaTraceU32("v115d_a7x early_direct_accelerate_draw_batch_result",
+                                     static_cast<u32>(v115d_mux_early_accelerated));
                 LOG_WARNING(HW_GPU,
                             "TRACE_DRAW_PICA strict_compat v115d_mux early_direct_after_accelerate_draw_batch draw_index={} result={}",
                             draw_index, static_cast<u32>(v115d_mux_early_accelerated));
