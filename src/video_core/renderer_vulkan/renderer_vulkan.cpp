@@ -37,6 +37,22 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+[[nodiscard]] u32 GetEnvU32Local(const char* name, u32 fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+    if (end == value) {
+        return fallback;
+    }
+
+    constexpr unsigned long max_u32 = 0xFFFFFFFFul;
+    return parsed > max_u32 ? 0xFFFFFFFFu : static_cast<u32>(parsed);
+}
+
 [[nodiscard]] bool IsPresentTraceForceQuietEnabled() {
     return IsEnvEnabledLocal("BORKED3DS_V3DV_FORCE_QUIET_PRESENT") ||
            IsEnvEnabledLocal("BORKED3DS_V3DV_FORCE_QUIET_DISPLAY");
@@ -591,6 +607,14 @@ void main() {
                     static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_V115_D_C_REAL_VERTEX_BIND_DRAWCMD_6")),
                     static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_V115_D_D_INDEXED_SETUP_DRAWINDEXED_ZEROCOUNT")),
                     static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_V115_D_E_INDEXED_SETUP_DRAWINDEXED_3")));
+        if (IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
+            IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY")) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_DRAW strict_compat v115d_a7x renderer_marker d_a_draw0={} generate_guarded={} stage_stop_after={}",
+                        static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT")),
+                        static_cast<u32>(IsEnvEnabledLocal("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY")),
+                        GetEnvU32Local("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0));
+        }
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
                      "TRACE_PRESENT strict_compat present_probe_disabled_v114 using_normal_present_frag=1 prefer_owned_present_default=0 pica_accel_draw_command_mux_v115d_expected=1");
