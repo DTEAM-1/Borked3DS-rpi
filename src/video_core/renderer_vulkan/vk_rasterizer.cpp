@@ -666,6 +666,23 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z7_DESCRIPTOR_MINIMAL_VERTEX_BIND_RECORD");
 }
 
+[[nodiscard]] bool IsV115DA7Z8DescriptorReturnAfterDrawParamsEnabled() {
+    // v115-D-A7Z8: the A7Z7 sidecar cuts immediately after params_binding_count=3,
+    // before params_vertex_count and before the A7Z7 minimal branch can run. This opt-in
+    // returns immediately after DrawParams are built, before all parameter-count traces
+    // and before scheduler.Record. It verifies whether the crash is caused by the
+    // post-DrawParams trace cluster rather than by DrawParams itself.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z8_DESCRIPTOR_RETURN_AFTER_DRAWPARAMS");
+}
+
+[[nodiscard]] bool IsV115DA7Z8DescriptorMinimalVertexBindEarlyEnabled() {
+    // v115-D-A7Z8: if returning after DrawParams is safe, this second opt-in queues a
+    // minimal bindVertexBuffers record before the noisy params_* trace cluster. It keeps
+    // the test multiplexed so the next step can be tried from emulators.cfg without
+    // another rebuild.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z8_DESCRIPTOR_MINIMAL_VERTEX_BIND_EARLY");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2836,6 +2853,48 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         };
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux after_draw_params_build");
+        }
+
+        if (IsV115DA7Z8DescriptorReturnAfterDrawParamsEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z8 descriptor_return_after_drawparams_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z8 stage9_descriptor_after_drawparams_return_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z8 descriptor return after DrawParams result=1");
+            }
+            return true;
+        }
+
+        if (IsV115DA7Z8DescriptorMinimalVertexBindEarlyEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z8 minimal_vertex_bind_early_begin");
+            }
+            scheduler.Record([this, params](vk::CommandBuffer cmdbuf) {
+                std::array<vk::DeviceSize, 16> offsets{};
+                std::transform(params.bindings.begin(), params.bindings.end(), offsets.begin(),
+                               [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
+                cmdbuf.bindVertexBuffers(0, params.binding_count, vertex_buffers.data(),
+                                         offsets.data());
+            });
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z8 minimal_vertex_bind_early_after_scheduler_record");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z8 stage9_descriptor_minimal_vertex_bind_early_return_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z8 descriptor minimal vertex bind early result=1");
+            }
+            return true;
+        }
+
+        if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux params_binding_count", params.binding_count);
             V114ShaderMultiplexFileTraceNumber("v115d_mux params_vertex_count", params.vertex_count);
             V114ShaderMultiplexFileTraceNumber("v115d_mux params_indexed",
