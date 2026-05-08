@@ -646,6 +646,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
            IsV115DA7Z5DescriptorReturnBeforeVertexBindEnabled();
 }
 
+[[nodiscard]] bool IsV115DA7Z6DescriptorReturnAfterVertexBindRecordEnabled() {
+    // v115-D-A7Z6: A7Z5 proved scheduler.Record for the vertex/index binding is reached
+    // and that the outer code reaches after_scheduler_record_vertex_bind. The log then cut
+    // before the descriptor-bind-only return marker. This switch returns immediately after
+    // the vertex-bind record has been queued, before the older stage9 descriptor return
+    // trace/log cluster. It isolates whether the remaining cut is in the post-record trace/log
+    // tail rather than in the vertex/index bind record itself.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z6_DESCRIPTOR_RETURN_AFTER_VERTEX_BIND_RECORD");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2943,6 +2953,27 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (IsV114ShaderMultiplexFileTraceEnabled() &&
             IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_a7z5 after_scheduler_record_vertex_bind");
+        }
+
+        if (IsV114ShaderMultiplexFileTraceEnabled()) {
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z6 return_after_vertex_bind_record_env",
+                static_cast<u32>(IsV115DA7Z6DescriptorReturnAfterVertexBindRecordEnabled()));
+        }
+
+        if (IsV115DA7Z6DescriptorReturnAfterVertexBindRecordEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z6 descriptor_return_after_vertex_bind_record");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z6 stage9_descriptor_post_vertex_bind_return_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z6 descriptor probe return after vertex bind record indexed={} vertex_count={} binding_count={} result=1",
+                            params.is_indexed, params.vertex_count, params.binding_count);
+            }
+            return true;
         }
 
         if (v115d_mux_first_vkcmd_draw) {
