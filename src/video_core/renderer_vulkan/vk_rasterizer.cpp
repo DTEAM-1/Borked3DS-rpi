@@ -683,6 +683,23 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z8_DESCRIPTOR_MINIMAL_VERTEX_BIND_EARLY");
 }
 
+[[nodiscard]] bool IsV115DA7Z9DescriptorReturnAfterPipelineBindRawEnabled() {
+    // v115-D-A7Z9: A7Z8 now cuts after the raw after_descriptor_pipeline_bind
+    // breadcrumb but before descriptor_pipeline_bind_ready is written. Return immediately
+    // after BindPipeline() and the raw breadcrumb, before the numeric ready trace and
+    // before DrawParams. This isolates whether the next crash is caused by the
+    // pipeline-ready numeric trace/tail rather than BindPipeline itself.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z9_DESCRIPTOR_RETURN_AFTER_PIPELINE_BIND_RAW");
+}
+
+[[nodiscard]] bool IsV115DA7Z9DescriptorSkipPipelineReadyNumberEnabled() {
+    // Secondary A7Z9 mux step: keep going past BindPipeline but skip the numeric
+    // descriptor_pipeline_bind_ready trace that appears to be the next cut point.
+    // This allows the already-present A7Z8 return-after-DrawParams test to be retried
+    // without another rebuild.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z9_DESCRIPTOR_SKIP_PIPELINE_READY_NUMBER");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2819,8 +2836,28 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux after_descriptor_pipeline_bind");
+        }
+        if (IsV115DA7Z9DescriptorReturnAfterPipelineBindRawEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z9 descriptor_return_after_pipeline_bind_raw_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z9 stage9_descriptor_after_pipeline_bind_raw_return_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z9 descriptor return after raw pipeline bind result=1 pipeline_ready={}",
+                            static_cast<u32>(pipeline_ready));
+            }
+            return true;
+        }
+        if (IsV114ShaderMultiplexFileTraceEnabled() &&
+            !IsV115DA7Z9DescriptorSkipPipelineReadyNumberEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux descriptor_pipeline_bind_ready",
                                                static_cast<u32>(pipeline_ready));
+        } else if (IsV114ShaderMultiplexFileTraceEnabled()) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z9 descriptor_pipeline_bind_ready_number_skipped");
         }
         if (!pipeline_ready) {
             if (trace_accel || IsDrawTraceEnabled()) {
