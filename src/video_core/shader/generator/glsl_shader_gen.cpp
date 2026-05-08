@@ -37,19 +37,44 @@ bool ShouldSkipGLSLGLVersionQuery() {
     return IsEnabledEnv("BORKED3DS_V3DV_SKIP_GLSL_GL_VERSION_QUERY");
 }
 
+bool ShouldForceSkipLegacyGLESQueryForVulkan() {
+    // v115-D-A7Z4: this GLSL generator is also used by the Vulkan/SPIR-V path.
+    // On Pi5/V3DV there is no active OpenGL context at this point, so querying
+    // GL_MAJOR_VERSION / GL_MINOR_VERSION via glGetIntegerv can terminate before
+    // GenerateVertexShader() returns. Treat strict V3DV mode as a hard signal to
+    // skip the legacy GLES separable-output workaround.
+    return IsEnabledEnv("BORKED3DS_V3DV_STRICT_COMPAT") ||
+           IsEnabledEnv("BORKED3DS_V3DV_A7Z4_FORCE_SKIP_LEGACY_GLES_QUERY");
+}
+
 bool ShouldEmitLegacyGLESSeparableShaderOutputs() {
 #ifndef __APPLE__
+    V115DA7Z3GLSLTraceRaw("v115d_a7z4 legacy_gles_query_enter");
+
     if (ShouldSkipGLSLGLVersionQuery()) {
+        V115DA7Z3GLSLTraceRaw("v115d_a7z4 legacy_gles_query_skip_env");
+        return false;
+    }
+
+    if (ShouldForceSkipLegacyGLESQueryForVulkan()) {
+        V115DA7Z3GLSLTraceRaw("v115d_a7z4 legacy_gles_query_skip_vulkan_strict");
         return false;
     }
 
     GLint majorVersion = 0;
     GLint minorVersion = 0;
+    V115DA7Z3GLSLTraceRaw("v115d_a7z4 legacy_gles_before_glget_major");
     glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+    V115DA7Z3GLSLTraceNumber("v115d_a7z4 legacy_gles_major", static_cast<std::uint64_t>(majorVersion));
+    V115DA7Z3GLSLTraceRaw("v115d_a7z4 legacy_gles_before_glget_minor");
     glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
+    V115DA7Z3GLSLTraceNumber("v115d_a7z4 legacy_gles_minor", static_cast<std::uint64_t>(minorVersion));
 
-    return OpenGL::GLES && majorVersion == 3 && minorVersion < 2;
+    const bool result = OpenGL::GLES && majorVersion == 3 && minorVersion < 2;
+    V115DA7Z3GLSLTraceBool("v115d_a7z4 legacy_gles_result", result);
+    return result;
 #else
+    V115DA7Z3GLSLTraceRaw("v115d_a7z4 legacy_gles_query_skip_apple");
     return false;
 #endif
 }
@@ -286,6 +311,7 @@ std::string GenerateVertexShader(const ShaderSetup& setup, const PicaVSConfig& c
                                  bool separable_shader) {
     V115DA7Z3GLSLTraceResetOnce();
     V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl generate_vertex_shader_enter");
+    V115DA7Z3GLSLTraceRaw("v115d_a7z4 glsl_generator_patch_active");
     V115DA7Z3GLSLTraceBool("v115d_a7z3_glsl separable_shader", separable_shader);
     V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl config_hash", config.Hash());
     V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl main_offset", config.state.main_offset);
@@ -302,7 +328,9 @@ std::string GenerateVertexShader(const ShaderSetup& setup, const PicaVSConfig& c
 
     if (ShouldA7Z3ReturnTrivialVSFromGLSLGenerator()) {
         V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl return_trivial_vs_begin");
+        V115DA7Z3GLSLTraceRaw("v115d_a7z4 return_trivial_before_generate_trivial");
         std::string trivial = GenerateTrivialVertexShader(config.state.use_clip_planes, separable_shader);
+        V115DA7Z3GLSLTraceRaw("v115d_a7z4 return_trivial_after_generate_trivial");
         V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl return_trivial_vs_size", trivial.size());
         V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl return_trivial_vs_end");
         return trivial;
@@ -314,6 +342,7 @@ std::string GenerateVertexShader(const ShaderSetup& setup, const PicaVSConfig& c
         out += "#extension GL_ARB_separate_shader_objects : enable\n";
 
         V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_legacy_gles_query");
+        V115DA7Z3GLSLTraceRaw("v115d_a7z4 before_safe_legacy_gles_query");
         if (ShouldEmitLegacyGLESSeparableShaderOutputs()) {
             V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl legacy_gles_outputs_enabled");
             out += R"(
