@@ -569,6 +569,67 @@ void V115DA7Z2ShaderTraceNumber(const char* label, u64 value) {
     V115DA7Z2ShaderTraceRaw(buffer);
 }
 
+[[nodiscard]] bool IsV115DA7Z3TraceExpected() {
+    // v115-D-A7Z3: last vk_rasterizer-side trace before entering GLSL::GenerateVertexShader().
+    // A7Z/A7Z2 proved that stage 6, SetupVertexShader(), PicaVSConfig construction and the
+    // generate call boundary are reached. A7Z3 dumps the exact config/vertex-layout state that
+    // is handed to the GLSL generator, then leaves a final flushed marker immediately before
+    // the crashing call. The next source file to patch is the generator itself.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
+           IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY") &&
+           GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) == 7;
+}
+
+[[nodiscard]] bool IsV115DA7Z3SkipGenerateWithTrivialVSEnabled() {
+    // Optional safety switch, off by default. It proves the crash is caused by entering
+    // GLSL::GenerateVertexShader() by dumping the same A7Z3 state and returning with the
+    // already-safe trivial VS bind instead of calling the generator.
+    return IsV115DA7Z3TraceExpected() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z3_SKIP_GENERATE_WITH_TRIVIAL_VS");
+}
+
+void V115DA7Z3ShaderTraceRaw(const char* message) {
+    if (!IsV115DA7Z3TraceExpected()) {
+        return;
+    }
+    std::FILE* fp = std::fopen("/tmp/borked3ds_v115d_a7z3_shader_probe.log", "a");
+    if (fp == nullptr) {
+        return;
+    }
+    std::fputs(message, fp);
+    std::fputc('\n', fp);
+    std::fflush(fp);
+    std::fclose(fp);
+}
+
+void V115DA7Z3ShaderTraceReset() {
+    if (!IsV115DA7Z3TraceExpected()) {
+        return;
+    }
+    std::FILE* fp = std::fopen("/tmp/borked3ds_v115d_a7z3_shader_probe.log", "w");
+    if (fp == nullptr) {
+        return;
+    }
+    std::fputs("v115d_a7z3 direct_file_trace_reset\n", fp);
+    std::fflush(fp);
+    std::fclose(fp);
+}
+
+void V115DA7Z3ShaderTraceNumber(const char* label, u64 value) {
+    if (!IsV115DA7Z3TraceExpected()) {
+        return;
+    }
+    char buffer[256] = {};
+    std::snprintf(buffer, sizeof(buffer), "%s=%llu", label,
+                  static_cast<unsigned long long>(value));
+    V115DA7Z3ShaderTraceRaw(buffer);
+}
+
+void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
+    V115DA7Z3ShaderTraceNumber(label, static_cast<u64>(value));
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -1368,6 +1429,25 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
                     GetAccelStageStopAfter());
     }
 
+    if (IsV115DA7Z3TraceExpected()) {
+        V115DA7Z3ShaderTraceReset();
+        V115DA7Z3ShaderTraceRaw("v115d_a7z3 rasterizer_constructor_marker");
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 constructor_d_a_draw0",
+                                   static_cast<u64>(IsV115DAMuxRealVertexBindDrawZeroEnabled()));
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 constructor_generate_guarded_probe",
+                                   static_cast<u64>(IsProgrammableVertexShaderGenerateGuardedProbeEnabled()));
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 constructor_stage_stop_after",
+                                   GetAccelStageStopAfter());
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 constructor_skip_generate_with_trivial_vs",
+                                   static_cast<u64>(IsV115DA7Z3SkipGenerateWithTrivialVSEnabled()));
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v115d_a7z3 RasterizerVulkan constructor marker d_a_draw0={} generate_guarded={} stage_stop_after={} skip_generate={}",
+                    static_cast<u32>(IsV115DAMuxRealVertexBindDrawZeroEnabled()),
+                    static_cast<u32>(IsProgrammableVertexShaderGenerateGuardedProbeEnabled()),
+                    GetAccelStageStopAfter(),
+                    static_cast<u32>(IsV115DA7Z3SkipGenerateWithTrivialVSEnabled()));
+    }
+
     if (IsV114ShaderMultiplexFileTraceEnabled()) {
         V114ShaderMultiplexFileTraceReset();
         V114ShaderMultiplexFileTraceRaw("v115d_mux rasterizer_constructor_descriptor_bind_marker");
@@ -1691,6 +1771,7 @@ bool RasterizerVulkan::SetupVertexShader() {
         V115DA7YShaderTraceRaw("v115d_a7y before_vs_config");
         V115DA7ZShaderTraceRaw("v115d_a7z before_vs_config");
         V115DA7Z2ShaderTraceRaw("v115d_a7z2 before_vs_config");
+        V115DA7Z3ShaderTraceRaw("v115d_a7z3 before_vs_config");
         V115DA7YShaderTraceNumber("v115d_a7y vs_config_attribute_count",
                                   pipeline_info.vertex_layout.attribute_count);
         V115DA7YShaderTraceNumber("v115d_a7y vs_config_binding_count",
@@ -1728,6 +1809,17 @@ bool RasterizerVulkan::SetupVertexShader() {
         V115DA7YShaderTraceRaw("v115d_a7y after_vs_config");
         V115DA7ZShaderTraceRaw("v115d_a7z after_vs_config");
         V115DA7Z2ShaderTraceRaw("v115d_a7z2 after_vs_config");
+        V115DA7Z3ShaderTraceRaw("v115d_a7z3 after_vs_config");
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 config_hash", config.Hash());
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 main_offset", config.state.main_offset);
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 num_outputs", config.state.num_outputs);
+        V115DA7Z3ShaderTraceBool("v115d_a7z3 use_geometry_shader", config.state.use_geometry_shader);
+        V115DA7Z3ShaderTraceBool("v115d_a7z3 use_clip_planes", config.state.use_clip_planes);
+        V115DA7Z3ShaderTraceBool("v115d_a7z3 sanitize_mul", config.state.sanitize_mul);
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 converted_attribs", converted_attribs);
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 zero_w_attribs", zero_w_attribs);
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 gs_output_attributes", config.state.gs_state.gs_output_attributes);
+        V115DA7Z3ShaderTraceNumber("v115d_a7z3 vs_output_attributes", config.state.gs_state.vs_output_attributes);
         V115DA7ZShaderTraceNumber("v115d_a7z config_hash", config.Hash());
         V115DA7ZShaderTraceNumber("v115d_a7z use_geometry_shader", static_cast<u32>(use_geometry_shader));
         V115DA7ZShaderTraceNumber("v115d_a7z converted_attribs", converted_attribs);
@@ -1818,6 +1910,9 @@ bool RasterizerVulkan::SetupVertexShader() {
             V115DA7ZShaderTraceRaw("v115d_a7z shader_probe_begin");
             V115DA7ZShaderTraceRaw(mode_name);
             V115DA7ZShaderTraceRaw("v115d_a7z before_vs_config_from_probe");
+            V115DA7Z3ShaderTraceRaw("v115d_a7z3 shader_probe_begin");
+            V115DA7Z3ShaderTraceRaw(mode_name);
+            V115DA7Z3ShaderTraceRaw("v115d_a7z3 before_vs_config_from_probe");
         }
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
@@ -1846,13 +1941,29 @@ bool RasterizerVulkan::SetupVertexShader() {
                 V115DA7YShaderTraceNumber("v115d_a7y generate_config_hash", config.Hash());
                 V115DA7ZShaderTraceRaw("v115d_a7z before_generate_vertex_shader");
                 V115DA7Z2ShaderTraceRaw("v115d_a7z2 before_generate_vertex_shader");
+                V115DA7Z3ShaderTraceRaw("v115d_a7z3 before_generate_vertex_shader");
+                V115DA7Z3ShaderTraceNumber("v115d_a7z3 before_generate_config_hash", config.Hash());
+                V115DA7Z3ShaderTraceNumber("v115d_a7z3 before_generate_main_offset", config.state.main_offset);
+                V115DA7Z3ShaderTraceNumber("v115d_a7z3 before_generate_num_outputs", config.state.num_outputs);
+                V115DA7Z3ShaderTraceNumber("v115d_a7z3 before_generate_binding_count",
+                                            pipeline_info.vertex_layout.binding_count);
+                V115DA7Z3ShaderTraceNumber("v115d_a7z3 before_generate_attribute_count",
+                                            pipeline_info.vertex_layout.attribute_count);
                 V115DA7ZShaderTraceRaw("v115d_a7z before_generate_call");
                 V115DA7ZShaderTraceNumber("v115d_a7z generate_config_hash", config.Hash());
+                V115DA7Z3ShaderTraceRaw("v115d_a7z3 immediately_before_generate_call_flushed");
             }
             if (trace_accel) {
                 LOG_WARNING(Render_Vulkan,
                             "TRACE_ACCEL_STAGE v114 vertex_shader_setup_{}_before_generate_call",
                             mode_name);
+            }
+
+            if (IsV115DA7Z3SkipGenerateWithTrivialVSEnabled()) {
+                V115DA7Z3ShaderTraceRaw("v115d_a7z3 skip_generate_with_trivial_vs_begin");
+                pipeline_cache.UseTrivialVertexShader();
+                V115DA7Z3ShaderTraceRaw("v115d_a7z3 skip_generate_with_trivial_vs_return_true");
+                return true;
             }
 
             program = GLSL::GenerateVertexShader(pica.vs_setup, config, true);
@@ -1865,6 +1976,8 @@ bool RasterizerVulkan::SetupVertexShader() {
                 V115DA7YShaderTraceRaw("v115d_a7y after_generate_call");
                 V115DA7ZShaderTraceRaw("v115d_a7z after_generate_vertex_shader");
                 V115DA7Z2ShaderTraceRaw("v115d_a7z2 after_generate_vertex_shader");
+                V115DA7Z3ShaderTraceRaw("v115d_a7z3 after_generate_vertex_shader");
+                V115DA7Z3ShaderTraceRaw("v115d_a7z3 after_generate_call");
                 V115DA7ZShaderTraceRaw("v115d_a7z after_generate_call");
             }
             if (trace_accel) {
@@ -1876,6 +1989,7 @@ bool RasterizerVulkan::SetupVertexShader() {
             V115DA7YShaderTraceRaw("v115d_a7y generate_vertex_shader_std_exception");
             V115DA7ZShaderTraceRaw("v115d_a7z generate_vertex_shader_std_exception");
             V115DA7Z2ShaderTraceRaw("v115d_a7z2 generate_vertex_shader_std_exception");
+            V115DA7Z3ShaderTraceRaw("v115d_a7z3 generate_vertex_shader_std_exception");
             LOG_ERROR(Render_Vulkan,
                       "TRACE_ACCEL_STAGE v114 programmable VS GLSL generation threw std::exception: {}",
                       e.what());
@@ -1884,6 +1998,7 @@ bool RasterizerVulkan::SetupVertexShader() {
             V115DA7YShaderTraceRaw("v115d_a7y generate_vertex_shader_unknown_exception");
             V115DA7ZShaderTraceRaw("v115d_a7z generate_vertex_shader_unknown_exception");
             V115DA7Z2ShaderTraceRaw("v115d_a7z2 generate_vertex_shader_unknown_exception");
+            V115DA7Z3ShaderTraceRaw("v115d_a7z3 generate_vertex_shader_unknown_exception");
             LOG_ERROR(Render_Vulkan,
                       "TRACE_ACCEL_STAGE v114 programmable VS GLSL generation threw unknown exception");
             return false;
@@ -1894,6 +2009,10 @@ bool RasterizerVulkan::SetupVertexShader() {
             V114ShaderMultiplexFileTraceNumber("v115d_mux shader_probe_program_bytes", program.size());
             V114ShaderMultiplexFileTraceNumber("v115d_mux shader_probe_program_empty",
                                                static_cast<u64>(program.empty()));
+            V115DA7Z3ShaderTraceRaw("v115d_a7z3 shader_probe_glsl_end");
+            V115DA7Z3ShaderTraceNumber("v115d_a7z3 shader_probe_program_bytes", program.size());
+            V115DA7Z3ShaderTraceNumber("v115d_a7z3 shader_probe_program_empty",
+                                        static_cast<u64>(program.empty()));
             V115DA7XShaderTraceRaw("v115d_a7x generate_vertex_shader_completed");
             V115DA7XShaderTraceNumber("v115d_a7x generated_program_bytes", program.size());
             V115DA7XShaderTraceNumber("v115d_a7x generated_program_empty",
@@ -2349,6 +2468,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V115DA7Z2ShaderTraceRaw("v115d_a7z2 stage7_return_true");
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux stage7_consumed_return_true");
+            V115DA7Z3ShaderTraceRaw("v115d_a7z3 stage7_return_true");
             V115DA7XShaderTraceRaw("v115d_a7x stage7_return_true");
             V115DA7YShaderTraceRaw("v115d_a7y stage7_return_true");
             V115DA7ZShaderTraceRaw("v115d_a7z stage7_return_true");
