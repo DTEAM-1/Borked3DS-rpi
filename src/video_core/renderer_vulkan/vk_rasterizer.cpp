@@ -630,6 +630,22 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     V115DA7Z3ShaderTraceNumber(label, static_cast<u64>(value));
 }
 
+
+[[nodiscard]] bool IsV115DA7Z5DescriptorReturnBeforeVertexBindEnabled() {
+    // v115-D-A7Z5: descriptor-bind-only clean reached pipeline bind and DrawParams, then cut
+    // while entering the vertex-buffer bind recording zone. This opt-in returns immediately
+    // after descriptor pipeline + DrawParams, before bindVertexBuffers(), so we can separate
+    // descriptor/pipeline validity from vertex/index binding command recording.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z5_DESCRIPTOR_RETURN_BEFORE_VERTEX_BIND");
+}
+
+[[nodiscard]] bool IsV115DA7Z5DescriptorVerboseRecordTraceEnabled() {
+    // Extra breadcrumbs around the narrow vertex-bind scheduler.Record section. Keep this
+    // separate from TRACE_DRAW so it can run in quiet sidecar-only tests.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z5_DESCRIPTOR_VERTEX_BIND_TRACE") ||
+           IsV115DA7Z5DescriptorReturnBeforeVertexBindEnabled();
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2838,32 +2854,96 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux vertex_bind_count", params.binding_count);
             V114ShaderMultiplexFileTraceNumber("v115d_mux vertex_count", params.vertex_count);
             V114ShaderMultiplexFileTraceNumber("v115d_mux indexed_path", static_cast<u32>(params.is_indexed));
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z5 before_zero_count_draw_trace");
             V114ShaderMultiplexFileTraceNumber("v115d_mux zero_count_draw",
                                                static_cast<u32>(v115d_mux_first_vkcmd_draw_zero_count));
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z5 after_zero_count_draw_trace");
             V114ShaderMultiplexFileTraceNumber("v115d_mux draw_vertex_count_requested",
                                                v115d_mux_first_vkcmd_draw_zero_count ? 0 : params.vertex_count);
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z5 after_draw_vertex_count_requested_trace");
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z5 return_before_vertex_bind_env",
+                static_cast<u32>(IsV115DA7Z5DescriptorReturnBeforeVertexBindEnabled()));
+        }
+
+        if (IsV115DA7Z5DescriptorReturnBeforeVertexBindEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z5 descriptor_return_before_vertex_bind_record");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z5 stage9_descriptor_pre_vertex_bind_return_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z5 descriptor probe return before vertex bind indexed={} vertex_count={} binding_count={} result=1",
+                            params.is_indexed, params.vertex_count, params.binding_count);
+            }
+            return true;
         }
 
         if (IsV114ShaderMultiplexFileTraceEnabled() && v115d_mux_first_vkcmd_draw) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux before_first_vkcmd_draw_record");
         }
 
+        if (IsV114ShaderMultiplexFileTraceEnabled() &&
+            IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z5 before_scheduler_record_vertex_bind");
+        }
+
         scheduler.Record([this, params, v115d_mux_first_vkcmd_draw, v115d_mux_first_vkcmd_draw_zero_count](vk::CommandBuffer cmdbuf) {
+            if (IsV114ShaderMultiplexFileTraceEnabled() &&
+                IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z5 record_lambda_enter");
+            }
             std::array<vk::DeviceSize, 16> offsets{};
             std::transform(params.bindings.begin(), params.bindings.end(), offsets.begin(),
                            [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
+            if (IsV114ShaderMultiplexFileTraceEnabled() &&
+                IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z5 record_after_offsets_build");
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z5 record_binding_count",
+                                                   params.binding_count);
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z5 record_vertex_count",
+                                                   params.vertex_count);
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z5 record_indexed",
+                                                   static_cast<u32>(params.is_indexed));
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z5 record_before_bind_vertex_buffers");
+            }
             cmdbuf.bindVertexBuffers(0, params.binding_count, vertex_buffers.data(), offsets.data());
+            if (IsV114ShaderMultiplexFileTraceEnabled() &&
+                IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z5 record_after_bind_vertex_buffers");
+            }
             if (v115d_mux_first_vkcmd_draw) {
                 const u32 draw_vertex_count = v115d_mux_first_vkcmd_draw_zero_count ? 0 : params.vertex_count;
+                if (IsV114ShaderMultiplexFileTraceEnabled() &&
+                    IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
+                    V114ShaderMultiplexFileTraceNumber("v115d_a7z5 record_draw_vertex_count",
+                                                       draw_vertex_count);
+                    V114ShaderMultiplexFileTraceRaw("v115d_a7z5 record_before_draw_command");
+                }
                 if (params.is_indexed) {
                     cmdbuf.drawIndexed(draw_vertex_count, 1, 0, params.vertex_offset, 0);
                 } else {
                     cmdbuf.draw(draw_vertex_count, 1, 0, 0);
                 }
+                if (IsV114ShaderMultiplexFileTraceEnabled() &&
+                    IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
+                    V114ShaderMultiplexFileTraceRaw("v115d_a7z5 record_after_draw_command");
+                }
+            }
+            if (IsV114ShaderMultiplexFileTraceEnabled() &&
+                IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z5 record_lambda_exit");
             }
             // v115-B rollback intentionally stops after bindVertexBuffers(). v115-D-MUX records the
             // same first guarded draw command but with vertex/index count optionally forced to 0.
         });
+
+        if (IsV114ShaderMultiplexFileTraceEnabled() &&
+            IsV115DA7Z5DescriptorVerboseRecordTraceEnabled()) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z5 after_scheduler_record_vertex_bind");
+        }
 
         if (v115d_mux_first_vkcmd_draw) {
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
