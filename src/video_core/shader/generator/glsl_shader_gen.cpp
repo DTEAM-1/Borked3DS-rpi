@@ -4,6 +4,9 @@
 // Refer to the license.txt file included.
 
 #include <cstdlib>
+#include <cstdint>
+#include <cstdio>
+#include <fstream>
 #include <sstream>
 #include <string_view>
 #include <fmt/format.h>
@@ -49,6 +52,80 @@ bool ShouldEmitLegacyGLESSeparableShaderOutputs() {
 #else
     return false;
 #endif
+}
+
+
+constexpr const char* V115DA7Z3GLSLTracePath = "/tmp/borked3ds_v115d_a7z3_glsl_gen.log";
+
+bool ShouldTraceV115DA7Z3GLSL() {
+    return IsEnabledEnv("BORKED3DS_V3DV_SHADER_MULTIPLEX_FILE_TRACE") ||
+           IsEnabledEnv("BORKED3DS_V3DV_A7Z3_GLSL_FILE_TRACE");
+}
+
+void V115DA7Z3GLSLTraceResetOnce() {
+    if (!ShouldTraceV115DA7Z3GLSL()) {
+        return;
+    }
+
+    static bool reset_done = false;
+    if (reset_done) {
+        return;
+    }
+    reset_done = true;
+
+    std::ofstream file(V115DA7Z3GLSLTracePath, std::ios::out | std::ios::trunc);
+    if (file) {
+        file << "v115d_a7z3_glsl glsl_trace_reset" << std::endl;
+    }
+}
+
+void V115DA7Z3GLSLTraceRaw(const char* message) {
+    if (!ShouldTraceV115DA7Z3GLSL()) {
+        return;
+    }
+
+    std::ofstream file(V115DA7Z3GLSLTracePath, std::ios::out | std::ios::app);
+    if (file) {
+        file << message << std::endl;
+    }
+}
+
+void V115DA7Z3GLSLTraceNumber(const char* label, std::uint64_t value) {
+    if (!ShouldTraceV115DA7Z3GLSL()) {
+        return;
+    }
+
+    std::ofstream file(V115DA7Z3GLSLTracePath, std::ios::out | std::ios::app);
+    if (file) {
+        file << label << "=" << value << std::endl;
+    }
+}
+
+void V115DA7Z3GLSLTraceBool(const char* label, bool value) {
+    V115DA7Z3GLSLTraceNumber(label, value ? 1U : 0U);
+}
+
+bool ShouldA7Z3ReturnTrivialVSFromGLSLGenerator() {
+    return ShouldTraceV115DA7Z3GLSL() &&
+           IsEnabledEnv("BORKED3DS_V3DV_A7Z3_GLSL_RETURN_TRIVIAL_VS");
+}
+
+bool ShouldA7Z3DumpGeneratedVertexShader() {
+    return ShouldTraceV115DA7Z3GLSL() &&
+           IsEnabledEnv("BORKED3DS_V3DV_A7Z3_DUMP_GENERATED_VS_GLSL");
+}
+
+void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
+    if (!ShouldA7Z3DumpGeneratedVertexShader()) {
+        return;
+    }
+
+    std::ofstream file("/tmp/borked3ds_v115d_a7z3_generated_vs.glsl",
+                       std::ios::out | std::ios::trunc);
+    if (file) {
+        file << source;
+        file.flush();
+    }
 }
 
 } // Anonymous namespace
@@ -207,11 +284,38 @@ std::string_view MakeLoadPrefix(AttribLoadFlags flag) {
 
 std::string GenerateVertexShader(const ShaderSetup& setup, const PicaVSConfig& config,
                                  bool separable_shader) {
+    V115DA7Z3GLSLTraceResetOnce();
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl generate_vertex_shader_enter");
+    V115DA7Z3GLSLTraceBool("v115d_a7z3_glsl separable_shader", separable_shader);
+    V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl config_hash", config.Hash());
+    V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl main_offset", config.state.main_offset);
+    V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl num_outputs", config.state.num_outputs);
+    V115DA7Z3GLSLTraceBool("v115d_a7z3_glsl use_geometry_shader", config.state.use_geometry_shader);
+    V115DA7Z3GLSLTraceBool("v115d_a7z3_glsl use_clip_planes", config.state.use_clip_planes);
+    V115DA7Z3GLSLTraceBool("v115d_a7z3_glsl sanitize_mul", config.state.sanitize_mul);
+    V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl gs_output_attributes",
+                             config.state.gs_state.gs_output_attributes);
+    V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl vs_output_attributes",
+                             config.state.gs_state.vs_output_attributes);
+    V115DA7Z3GLSLTraceBool("v115d_a7z3_glsl return_trivial_vs_env",
+                           ShouldA7Z3ReturnTrivialVSFromGLSLGenerator());
+
+    if (ShouldA7Z3ReturnTrivialVSFromGLSLGenerator()) {
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl return_trivial_vs_begin");
+        std::string trivial = GenerateTrivialVertexShader(config.state.use_clip_planes, separable_shader);
+        V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl return_trivial_vs_size", trivial.size());
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl return_trivial_vs_end");
+        return trivial;
+    }
+
     std::string out;
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_separable_extension_block");
     if (separable_shader) {
         out += "#extension GL_ARB_separate_shader_objects : enable\n";
 
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_legacy_gles_query");
         if (ShouldEmitLegacyGLESSeparableShaderOutputs()) {
+            V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl legacy_gles_outputs_enabled");
             out += R"(
 #extension GL_ARB_separate_shader_objects : enable
 layout(location = ATTRIBUTE_COLOR) out vec4 primary_color;
@@ -222,38 +326,51 @@ layout(location = ATTRIBUTE_TEXCOORD0_W) out float texcoord0_w;
 layout(location = ATTRIBUTE_NORMQUAT) out vec4 normquat;
 layout(location = ATTRIBUTE_VIEW) out vec3 view;
 )";
+        } else {
+            V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl legacy_gles_outputs_disabled");
         }
     }
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl after_separable_extension_block");
 
     out += VSPicaUniformBlockDef;
     out += VSUniformBlockDef;
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl after_uniform_blocks");
 
     std::array<bool, 16> used_regs{};
     const auto get_input_reg = [&used_regs](u32 reg) {
+        V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl get_input_reg", reg);
         ASSERT(reg < 16);
         used_regs[reg] = true;
         return fmt::format("vs_in_reg{}", reg);
     };
 
     const auto get_output_reg = [&](u32 reg) -> std::string {
+        V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl get_output_reg", reg);
         ASSERT(reg < 16);
+        V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl get_output_reg_map", config.state.output_map[reg]);
         if (config.state.output_map[reg] < config.state.num_outputs) {
             return fmt::format("vs_out_attr{}", config.state.output_map[reg]);
         }
         return "";
     };
 
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_decompile_program");
     auto program_source =
         DecompileProgram(setup.program_code, setup.swizzle_data, config.state.main_offset,
                          get_input_reg, get_output_reg, config.state.sanitize_mul);
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl after_decompile_program");
+    V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl program_source_size", program_source.size());
 
     if (program_source.empty()) {
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl program_source_empty_return_empty");
         return "";
     }
 
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_input_attributes_declaration");
     // input attributes declaration
     for (std::size_t i = 0; i < used_regs.size(); ++i) {
         if (used_regs[i]) {
+            V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl declare_input_reg", i);
             const auto flags = config.state.load_flags[i];
             const std::string_view prefix = MakeLoadPrefix(flags);
             out +=
@@ -262,10 +379,14 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
         }
     }
     out += '\n';
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl after_input_attributes_declaration");
 
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_output_branch");
     if (config.state.use_geometry_shader) {
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl output_branch_geometry_shader");
         // output attributes declaration
         for (u32 i = 0; i < config.state.num_outputs; ++i) {
+            V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl declare_gs_output_attr", i);
             if (separable_shader) {
                 out += fmt::format("layout(location = {}) ", i);
             }
@@ -274,13 +395,17 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
         }
         out += "void EmitVtx() {}\n";
     } else {
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl output_branch_no_geometry_shader");
         out += GetVertexInterfaceDeclaration(true, config.state.use_clip_planes, separable_shader);
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl after_vertex_interface_declaration");
 
         // output attributes declaration
         for (u32 i = 0; i < config.state.num_outputs; ++i) {
+            V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl declare_vs_output_attr", i);
             out += fmt::format("vec4 vs_out_attr{} = vec4(0.0f, 0.0f, 0.0f, 1.0f);\n", i);
         }
 
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_semantic_lambda");
         const auto semantic =
             [&state = config.state](VSOutputAttributes::Semantic slot_semantic) -> std::string {
             const u32 slot = static_cast<u32>(slot_semantic);
@@ -291,7 +416,9 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
             }
             return "1.0";
         };
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl after_semantic_lambda");
 
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_emit_quaternion_source");
         out += "vec4 GetVertexQuaternion() {\n";
         out += "    return vec4(" + semantic(VSOutputAttributes::QUATERNION_X) + ", " +
                semantic(VSOutputAttributes::QUATERNION_Y) + ", " +
@@ -299,6 +426,7 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
                semantic(VSOutputAttributes::QUATERNION_W) + ");\n";
         out += "}\n\n";
 
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_emit_vtx_source");
         out += "void EmitVtx() {\n";
         out += "    vec4 vtx_pos = vec4(" + semantic(VSOutputAttributes::POSITION_X) + ", " +
                semantic(VSOutputAttributes::POSITION_Y) + ", " +
@@ -307,6 +435,7 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
         out += "    vtx_pos = SanitizeVertex(vtx_pos);\n";
         out += "    gl_Position = vec4(vtx_pos.x, vtx_pos.y, -vtx_pos.z, vtx_pos.w);\n";
         if (config.state.use_clip_planes) {
+            V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl emit_clip_planes_source");
             out += "    gl_ClipDistance[0] = -vtx_pos.z;\n"; // fixed PICA clipping plane z <= 0
             out += "    if (enable_clip1) {\n";
             out += "        gl_ClipDistance[1] = dot(clip_coef, vtx_pos);\n";
@@ -318,8 +447,7 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
         out += "    normquat = GetVertexQuaternion();\n";
         out += "    vec4 vtx_color = vec4(" + semantic(VSOutputAttributes::COLOR_R) + ", " +
                semantic(VSOutputAttributes::COLOR_G) + ", " +
-               semantic(VSOutputAttributes::COLOR_B) + ", " +
-               semantic(VSOutputAttributes::COLOR_A) + ");\n";
+               semantic(VSOutputAttributes::COLOR_B) + ", " + semantic(VSOutputAttributes::COLOR_A) + ");\n";
         out += "    primary_color = min(abs(vtx_color), vec4(1.0f));\n\n";
 
         out += "    texcoord0 = vec2(" + semantic(VSOutputAttributes::TEXCOORD0_U) + ", " +
@@ -335,21 +463,26 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
         out += "    texcoord2 = vec2(" + semantic(VSOutputAttributes::TEXCOORD2_U) + ", " +
                semantic(VSOutputAttributes::TEXCOORD2_V) + ");\n\n";
         out += "}\n";
+        V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl after_emit_vtx_source");
     }
 
     out += "bool exec_shader();\n\n";
 
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_main_source");
     out += "\nvoid main() {\n";
     for (std::size_t i = 0; i < used_regs.size(); ++i) {
         if (used_regs[i]) {
+            V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl main_load_reg", i);
             out += fmt::format("vs_in_reg{0} = vec4(vs_in_typed_reg{0});\n", i);
             if (True(config.state.load_flags[i] & AttribLoadFlags::ZeroW)) {
+                V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl main_zero_w_reg", i);
                 out += fmt::format("vs_in_reg{0}.w = 0;\n", i);
             }
         }
     }
     out += "    // Initialize all vertex attributes to zero\n";
     for (u32 i = 0; i < config.state.num_outputs; ++i) {
+        V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl main_init_output_attr", i);
         out += fmt::format("    vs_out_attr{} = vec4(0.0f, 0.0f, 0.0f, 1.0f);\n", i);
     }
     out += "\n    // Execute shader and emit vertex\n"
@@ -357,7 +490,11 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
            "    EmitVtx();\n"
            "}\n\n";
 
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_append_program_source");
     out += program_source;
+    V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl final_source_size", out.size());
+    V115DA7Z3DumpGeneratedVertexShader(out);
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl return_success");
 
     return out;
 }
