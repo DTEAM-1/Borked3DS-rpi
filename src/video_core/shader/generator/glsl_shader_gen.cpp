@@ -47,6 +47,13 @@ bool ShouldForceSkipLegacyGLESQueryForVulkan() {
            IsEnabledEnv("BORKED3DS_V3DV_A7Z4_FORCE_SKIP_LEGACY_GLES_QUERY");
 }
 
+// v115-D-A7Z4 build-fix: ShouldEmitLegacyGLESSeparableShaderOutputs() is near the top of
+// this file, but the A7Z3 sidecar helpers are defined a little later in the same anonymous
+// namespace. Declare them here before first use so GCC can compile the file with -Werror.
+void V115DA7Z3GLSLTraceRaw(const char* message);
+void V115DA7Z3GLSLTraceNumber(const char* label, std::uint64_t value);
+void V115DA7Z3GLSLTraceBool(const char* label, bool value);
+
 bool ShouldEmitLegacyGLESSeparableShaderOutputs() {
 #ifndef __APPLE__
     V115DA7Z3GLSLTraceRaw("v115d_a7z4 legacy_gles_query_enter");
