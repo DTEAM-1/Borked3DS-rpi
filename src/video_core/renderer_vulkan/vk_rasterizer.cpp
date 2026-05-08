@@ -656,6 +656,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z6_DESCRIPTOR_RETURN_AFTER_VERTEX_BIND_RECORD");
 }
 
+
+[[nodiscard]] bool IsV115DA7Z7DescriptorMinimalVertexBindRecordEnabled() {
+    // v115-D-A7Z7: A7Z6 did not reach its post-record marker and the newest sidecar
+    // cuts immediately after the first pre-record vertex_bind_count breadcrumb. This
+    // opt-in skips the noisy pre-record parameter breadcrumbs and queues only the
+    // minimal bindVertexBuffers record, then returns true immediately. It separates
+    // a logging/trace-tail problem from a real Vulkan vertex-buffer bind problem.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z7_DESCRIPTOR_MINIMAL_VERTEX_BIND_RECORD");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2855,6 +2865,34 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
                 V114ShaderMultiplexFileTraceRaw("v115d_mux zero_count_real_vertex_bind_ultra_quiet_after_record");
                 V114ShaderMultiplexFileTraceRaw("v115d_mux zero_count_real_vertex_bind_ultra_quiet_recorded_return_true");
+            }
+            return true;
+        }
+
+
+        if (IsV115DA7Z7DescriptorMinimalVertexBindRecordEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z7 minimal_vertex_bind_record_begin");
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z7 minimal_binding_count",
+                                                   params.binding_count);
+            }
+            scheduler.Record([this, params](vk::CommandBuffer cmdbuf) {
+                std::array<vk::DeviceSize, 16> offsets{};
+                std::transform(params.bindings.begin(), params.bindings.end(), offsets.begin(),
+                               [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
+                cmdbuf.bindVertexBuffers(0, params.binding_count, vertex_buffers.data(),
+                                         offsets.data());
+            });
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z7 minimal_vertex_bind_record_after_scheduler_record");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z7 stage9_descriptor_minimal_vertex_bind_return_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z7 descriptor minimal vertex bind record indexed={} vertex_count={} binding_count={} result=1",
+                            params.is_indexed, params.vertex_count, params.binding_count);
             }
             return true;
         }
