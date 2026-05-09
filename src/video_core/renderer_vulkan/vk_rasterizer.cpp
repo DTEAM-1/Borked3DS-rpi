@@ -716,6 +716,32 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z10_DESCRIPTOR_MINIMAL_VERTEX_BIND_EARLY_RAW");
 }
 
+[[nodiscard]] bool IsV115DA7Z11DAReturnBeforeOffsetsEnabled() {
+    // v115-D-A7Z11: D-A draw0 reached the real-vertex-bind mux path and wrote
+    // real_vertex_bind_mux_binding_count=3, then cut before after_record. Return
+    // immediately after that breadcrumb, before offset conversion and scheduler.Record.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_RETURN_BEFORE_OFFSETS");
+}
+
+[[nodiscard]] bool IsV115DA7Z11DAReturnAfterOffsetsEnabled() {
+    // v115-D-A7Z11 second mux step: if returning before offsets is safe, build the
+    // vk::DeviceSize offsets array and return before queuing scheduler.Record.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_RETURN_AFTER_OFFSETS");
+}
+
+[[nodiscard]] bool IsV115DA7Z11DABindOnlyRecordEnabled() {
+    // v115-D-A7Z11 third mux step: queue only vkCmdBindVertexBuffers in the D-A path,
+    // then return before any vkCmdDraw. This compares D-A's real path with the descriptor
+    // A7Z10 minimal bind that already passed.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_BIND_ONLY_RECORD");
+}
+
+[[nodiscard]] bool IsV115DA7Z11DADraw0RecordRawEnabled() {
+    // v115-D-A7Z11 fourth mux step: queue a raw D-A bind + vkCmdDraw(0) with a reduced
+    // post-record trace tail. This is only meant for D-A after the earlier A7Z11 gates pass.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_DRAW0_RECORD_RAW");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2773,9 +2799,81 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                                                binding_count);
         }
 
+        if (IsV115DA7Z11DAReturnBeforeOffsetsEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_return_before_offsets_begin");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_return_before_offsets_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z11 D-A return before offsets result=1 selected_step={} final_count={}",
+                            selected_step, final_count);
+            }
+            return true;
+        }
+
         std::array<vk::DeviceSize, 16> real_offsets{};
         std::transform(binding_offsets.begin(), binding_offsets.end(), real_offsets.begin(),
                        [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
+
+        if (IsV114ShaderMultiplexFileTraceEnabled()) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_after_offsets_build");
+        }
+
+        if (IsV115DA7Z11DAReturnAfterOffsetsEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_return_after_offsets_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z11 D-A return after offsets result=1 selected_step={} final_count={}",
+                            selected_step, final_count);
+            }
+            return true;
+        }
+
+        if (IsV115DA7Z11DABindOnlyRecordEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_bind_only_record_begin");
+            }
+            scheduler.Record([this, binding_count, real_offsets](vk::CommandBuffer cmdbuf) {
+                if (binding_count != 0) {
+                    cmdbuf.bindVertexBuffers(0, binding_count, vertex_buffers.data(), real_offsets.data());
+                }
+            });
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_bind_only_after_record");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_bind_only_return_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z11 D-A bind-only record result=1 selected_step={} final_count={}",
+                            selected_step, final_count);
+            }
+            return true;
+        }
+
+        if (IsV115DA7Z11DADraw0RecordRawEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_draw0_raw_record_begin");
+            }
+            scheduler.Record([this, binding_count, real_offsets](vk::CommandBuffer cmdbuf) {
+                if (binding_count != 0) {
+                    cmdbuf.bindVertexBuffers(0, binding_count, vertex_buffers.data(), real_offsets.data());
+                }
+                cmdbuf.draw(0, 1, 0, 0);
+            });
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_draw0_raw_after_record");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_draw0_raw_return_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z11 D-A draw0 raw record result=1 selected_step={} final_count={}",
+                            selected_step, final_count);
+            }
+            return true;
+        }
 
         scheduler.Record([this, binding_count, real_offsets, final_indexed, final_count,
                           final_vertex_offset](vk::CommandBuffer cmdbuf) {
