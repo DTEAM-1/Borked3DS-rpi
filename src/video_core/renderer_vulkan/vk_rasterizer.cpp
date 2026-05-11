@@ -184,6 +184,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7x shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7y shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z15 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z16 shader_file_trace_reset\n", fp);
     std::fclose(fp);
 }
 
@@ -825,6 +826,14 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // then return before binding_count, offsets, scheduler.Record, and
     // vkCmdDrawIndexed(3).
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z15_MUX_ULTRA_CLEAN_RETURN_BEFORE_BINDING_COUNT");
+}
+
+[[nodiscard]] bool IsV115DA7Z16MuxUltraCleanReturnAfterBindingCountEnabled() {
+    // v115-D-A7Z16: D-E is now proven safe after pipeline bind and safe with the
+    // A7Z15 ultra-clean return before binding_count. This gate is the matching
+    // ultra-clean checkpoint immediately after real_vertex_bind_mux_binding_count,
+    // before any A7Z13 flag dump, offsets, scheduler.Record, or vkCmdDrawIndexed(3).
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z16_MUX_ULTRA_CLEAN_RETURN_AFTER_BINDING_COUNT");
 }
 
 [[nodiscard]] u32 GetAccelStageStopAfter() {
@@ -2930,6 +2939,22 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux real_vertex_bind_mux_binding_count",
                                                binding_count);
+        }
+
+        if (IsV115DA7Z16MuxUltraCleanReturnAfterBindingCountEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z16 mux_ultra_clean_return_after_binding_count_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z16 mux_ultra_clean_return_after_binding_count_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z16 mux ultra-clean return after binding_count result=1 selected_step={} final_indexed={} final_count={} binding_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count,
+                            binding_count);
+            }
+            return true;
         }
 
         if (IsV115DA7Z13MuxTraceAfterBindingCountEnabled() &&
