@@ -808,6 +808,15 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_RETURN_AFTER_MANUAL_OFFSETS");
 }
 
+
+[[nodiscard]] bool IsV115DA7Z14MuxReturnBeforeBindingCountEnabled() {
+    // v115-D-A7Z14: A7Z13 proved the indexed D-D raw path can now cut before
+    // real_vertex_bind_mux_binding_count=3. Return immediately after the
+    // real_vertex_bind_mux_before_record breadcrumb, before reading/logging
+    // binding_count, before offset conversion, and before scheduler.Record.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z14_MUX_RETURN_BEFORE_BINDING_COUNT");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2874,6 +2883,26 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_record");
+        }
+
+        if (IsV115DA7Z14MuxReturnBeforeBindingCountEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z14 mux_return_before_binding_count_begin");
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z14 flag_a7z12_draw_raw",
+                                                   static_cast<u32>(IsV115DA7Z12MuxDrawRawEnabled()));
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z14 flag_a7z13_return_after_binding_count",
+                                                   static_cast<u32>(IsV115DA7Z13MuxReturnAfterBindingCountEnabled()));
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z14 mux_return_before_binding_count_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z14 mux return before binding_count result=1 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return true;
+        }
+
+        if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux real_vertex_bind_mux_binding_count",
                                                binding_count);
         }
