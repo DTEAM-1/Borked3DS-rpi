@@ -183,6 +183,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_mux file_trace_reset\n", fp);
     std::fputs("v115d_a7x shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7y shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z15 shader_file_trace_reset\n", fp);
     std::fclose(fp);
 }
 
@@ -815,6 +816,15 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // real_vertex_bind_mux_before_record breadcrumb, before reading/logging
     // binding_count, before offset conversion, and before scheduler.Record.
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z14_MUX_RETURN_BEFORE_BINDING_COUNT");
+}
+
+[[nodiscard]] bool IsV115DA7Z15MuxUltraCleanReturnBeforeBindingCountEnabled() {
+    // v115-D-A7Z15: D-E reaches real_vertex_bind_mux_before_record but the
+    // A7Z14 breadcrumb block can cut before PICA confirms a clean return.
+    // This gate is intentionally shorter than A7Z14: emit only begin/true,
+    // then return before binding_count, offsets, scheduler.Record, and
+    // vkCmdDrawIndexed(3).
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z15_MUX_ULTRA_CLEAN_RETURN_BEFORE_BINDING_COUNT");
 }
 
 [[nodiscard]] u32 GetAccelStageStopAfter() {
@@ -2883,6 +2893,21 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_record");
+        }
+
+        if (IsV115DA7Z15MuxUltraCleanReturnBeforeBindingCountEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z15 mux_ultra_clean_return_before_binding_count_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z15 mux_ultra_clean_return_before_binding_count_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z15 mux ultra-clean return before binding_count result=1 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return true;
         }
 
         if (IsV115DA7Z14MuxReturnBeforeBindingCountEnabled()) {
