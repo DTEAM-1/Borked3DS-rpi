@@ -836,6 +836,14 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z16_MUX_ULTRA_CLEAN_RETURN_AFTER_BINDING_COUNT");
 }
 
+[[nodiscard]] bool IsV115DA7Z17MuxUltraCleanReturnBeforePipelineBindEnabled() {
+    // v115-D-A7Z17: on the A7Z16 build, D-E can select final_count=3 but may cut
+    // between final_vertex_offset and BindPipeline(). Return immediately before
+    // pipeline_cache.BindPipeline(), after the mux selection breadcrumbs, to prove
+    // the D-E mux selection itself returns cleanly before touching pipeline bind.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z17_MUX_ULTRA_CLEAN_RETURN_BEFORE_PIPELINE_BIND");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2871,6 +2879,22 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed", static_cast<u32>(final_indexed));
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_vertex_offset", static_cast<u64>(static_cast<s64>(final_vertex_offset)));
+        }
+
+        if (IsV115DA7Z17MuxUltraCleanReturnBeforePipelineBindEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z17 mux_ultra_clean_return_before_pipeline_bind_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z17 mux_ultra_clean_return_before_pipeline_bind_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z17 mux ultra-clean return before pipeline bind result=1 selected_step={} final_indexed={} final_count={} final_vertex_offset={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count,
+                            final_vertex_offset);
+            }
+            return true;
         }
 
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
