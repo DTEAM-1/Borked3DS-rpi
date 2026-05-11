@@ -779,6 +779,35 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_DRAW_RAW");
 }
 
+[[nodiscard]] bool IsV115DA7Z13MuxTraceAfterBindingCountEnabled() {
+    // v115-D-A7Z13: D-D drawIndexed0 raw cuts after binding_count=3 and before
+    // the normal after-offsets breadcrumb. This snapshot records the active A7Z12
+    // mux flags immediately after binding_count so a bad emulators.cfg line can be
+    // separated from a crash inside offset conversion.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_TRACE_AFTER_BINDING_COUNT");
+}
+
+[[nodiscard]] bool IsV115DA7Z13MuxReturnAfterBindingCountEnabled() {
+    // First A7Z13 gate: return immediately after real_vertex_bind_mux_binding_count,
+    // before checking A7Z11/A7Z12 return-before-offsets flags and before converting
+    // binding_offsets. Use this with A7Z12_MUX_DRAW_RAW=1 to prove whether the raw
+    // draw flag itself is safe before offsets are touched.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_RETURN_AFTER_BINDING_COUNT");
+}
+
+[[nodiscard]] bool IsV115DA7Z13MuxManualOffsetsEnabled() {
+    // Second A7Z13 gate: replace the compact std::transform offset conversion with
+    // a very explicit bounded loop. This makes the D-D indexed0 raw path easier to
+    // bisect on V3DV and gives a clean breadcrumb before and after the conversion.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_MANUAL_OFFSETS_BUILD");
+}
+
+[[nodiscard]] bool IsV115DA7Z13MuxReturnAfterManualOffsetsEnabled() {
+    // Third A7Z13 gate: after the manual offsets loop succeeds, return before any
+    // scheduler.Record/bind/draw. This confirms manual offset conversion alone is safe.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_RETURN_AFTER_MANUAL_OFFSETS");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2849,6 +2878,45 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                                                binding_count);
         }
 
+        if (IsV115DA7Z13MuxTraceAfterBindingCountEnabled() &&
+            IsV114ShaderMultiplexFileTraceEnabled()) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_after_binding_count_checkpoint");
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z13 flag_a7z12_return_after_pipeline_bind",
+                static_cast<u32>(IsV115DA7Z12MuxReturnAfterPipelineBindEnabled()));
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z13 flag_a7z12_return_before_offsets",
+                static_cast<u32>(IsV115DA7Z12MuxReturnBeforeOffsetsEnabled()));
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z13 flag_a7z12_return_after_offsets",
+                static_cast<u32>(IsV115DA7Z12MuxReturnAfterOffsetsEnabled()));
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z13 flag_a7z12_bind_only_record",
+                static_cast<u32>(IsV115DA7Z12MuxBindOnlyRecordEnabled()));
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z13 flag_a7z12_draw_raw",
+                static_cast<u32>(IsV115DA7Z12MuxDrawRawEnabled()));
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z13 flag_a7z13_manual_offsets",
+                static_cast<u32>(IsV115DA7Z13MuxManualOffsetsEnabled()));
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z13 flag_a7z13_return_after_manual_offsets",
+                static_cast<u32>(IsV115DA7Z13MuxReturnAfterManualOffsetsEnabled()));
+        }
+
+        if (IsV115DA7Z13MuxReturnAfterBindingCountEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_return_after_binding_count_begin");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_return_after_binding_count_true");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z13 mux return after binding_count result=1 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return true;
+        }
+
         if (IsV115DA7Z12MuxReturnBeforeOffsetsEnabled()) {
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
                 V114ShaderMultiplexFileTraceRaw("v115d_a7z12 mux_return_before_offsets_begin");
@@ -2876,12 +2944,46 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
 
         std::array<vk::DeviceSize, 16> real_offsets{};
-        std::transform(binding_offsets.begin(), binding_offsets.end(), real_offsets.begin(),
-                       [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
+        if (IsV115DA7Z13MuxManualOffsetsEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_manual_offsets_begin");
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z13 mux_manual_offsets_binding_count",
+                                                   binding_count);
+            }
+            for (size_t offset_index = 0; offset_index < real_offsets.size(); ++offset_index) {
+                real_offsets[offset_index] =
+                    static_cast<vk::DeviceSize>(binding_offsets[offset_index]);
+            }
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_manual_offsets_end");
+            }
+            if (IsV115DA7Z13MuxReturnAfterManualOffsetsEnabled()) {
+                if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z13 mux_return_after_manual_offsets_true");
+                }
+                if (trace_accel || IsDrawTraceEnabled()) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_DRAW strict_compat v115d_a7z13 mux return after manual offsets result=1 selected_step={} final_indexed={} final_count={}",
+                                selected_step, static_cast<u32>(final_indexed), final_count);
+                }
+                return true;
+            }
+        } else {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_std_offsets_begin");
+            }
+            std::transform(binding_offsets.begin(), binding_offsets.end(), real_offsets.begin(),
+                           [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_std_offsets_end");
+            }
+        }
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_a7z11 da_after_offsets_build");
             V114ShaderMultiplexFileTraceRaw("v115d_a7z12 mux_after_offsets_build");
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_after_offsets_build");
         }
 
         if (IsV115DA7Z12MuxReturnAfterOffsetsEnabled()) {
