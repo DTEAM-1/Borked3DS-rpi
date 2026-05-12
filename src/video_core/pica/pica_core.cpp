@@ -160,6 +160,21 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     V114C6PicaGateFileTraceU64(key, value);
 }
 
+[[nodiscard]] bool IsV115DA7Z19PicaCallBoundaryProbeEnabled() {
+    // v115-D-E-A7Z19: caller-side boundary probe. The backend A7Z18 can return false before
+    // pipeline bind, but previous logs did not show the PICA caller regaining control. This
+    // flag keeps the probe in pica_core.cpp and writes only sidecar markers around the call.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z19_PICA_CALL_BOUNDARY_RETURN_PROBE");
+}
+
+[[nodiscard]] bool IsV115DA7Z19PicaSkipBackendCallEnabled() {
+    // Optional emergency sanity check: prove the PICA caller-side return path without entering
+    // the Vulkan backend. Keep disabled for the normal A7Z19 test.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z19_PICA_SKIP_BACKEND_CALL_RETURN_FALSE");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -1043,6 +1058,31 @@ void PicaCore::DrawArrays(bool is_indexed) {
 
                 if (IsSafePicaHwDryRunEnabled()) {
                     V114C6PicaGateFileTraceRaw("v115d_mux early_direct_dry_run_consumed");
+                    return;
+                }
+
+                if (IsV115DA7Z19PicaCallBoundaryProbeEnabled()) {
+                    V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_probe_begin");
+                    V114C6PicaGateFileTraceU64("v115d_a7z19 draw_index", draw_index);
+                    V114C6PicaGateFileTraceU32("v115d_a7z19 indexed", static_cast<u32>(is_indexed));
+                    V114C6PicaGateFileTraceU32("v115d_a7z19 num_vertices", regs.internal.pipeline.num_vertices);
+                    V114C6PicaGateFileTraceU32("v115d_a7z19 vertex_offset", regs.internal.pipeline.vertex_offset);
+                    V114C6PicaGateFileTraceU32("v115d_a7z19 skip_backend_call",
+                                               static_cast<u32>(IsV115DA7Z19PicaSkipBackendCallEnabled()));
+
+                    if (IsV115DA7Z19PicaSkipBackendCallEnabled()) {
+                        V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_skip_backend_return_false");
+                        V114C6PicaGateFileTraceU32("v115d_a7z19 accelerate_draw_batch_result", 0);
+                        V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_return_controlled_false");
+                        return;
+                    }
+
+                    V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_before_call");
+                    const bool v115d_a7z19_accelerated = rasterizer->AccelerateDrawBatch(is_indexed);
+                    V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_after_call");
+                    V114C6PicaGateFileTraceU32("v115d_a7z19 accelerate_draw_batch_result",
+                                               static_cast<u32>(v115d_a7z19_accelerated));
+                    V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_return_controlled");
                     return;
                 }
 
