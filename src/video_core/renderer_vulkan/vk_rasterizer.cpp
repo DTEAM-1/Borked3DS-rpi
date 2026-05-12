@@ -866,6 +866,15 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z23_MUX_RETURN_FALSE_AFTER_PIPELINE_BIND");
 }
 
+[[nodiscard]] bool IsV115DA7Z24MuxReturnFalseAfterBindingCountEnabled() {
+    // v115-D-A7Z24: A7Z23 proved D-E can pass BindPipeline() and return false cleanly
+    // to PICA. This next false-return checkpoint moves one safe step farther: read/log
+    // real_vertex_bind_mux_binding_count, then return false before A7Z13 flag dumps,
+    // offset conversion, scheduler.Record, or vkCmdDrawIndexed(3). This isolates
+    // whether binding_count itself is safe separately from the successful true handoff.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z24_MUX_RETURN_FALSE_AFTER_BINDING_COUNT");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3032,6 +3041,22 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                             binding_count);
             }
             return true;
+        }
+
+        if (IsV115DA7Z24MuxReturnFalseAfterBindingCountEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z24 mux_return_false_after_binding_count_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z24 mux_return_false_after_binding_count_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z24 mux return false after binding_count result=0 selected_step={} final_indexed={} final_count={} binding_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count,
+                            binding_count);
+            }
+            return false;
         }
 
         if (IsV115DA7Z13MuxTraceAfterBindingCountEnabled() &&
