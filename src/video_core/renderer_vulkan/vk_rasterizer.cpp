@@ -185,6 +185,8 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7y shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z15 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z16 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z17 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z18 shader_file_trace_reset\n", fp);
     std::fclose(fp);
 }
 
@@ -842,6 +844,15 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // pipeline_cache.BindPipeline(), after the mux selection breadcrumbs, to prove
     // the D-E mux selection itself returns cleanly before touching pipeline bind.
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z17_MUX_ULTRA_CLEAN_RETURN_BEFORE_PIPELINE_BIND");
+}
+
+[[nodiscard]] bool IsV115DA7Z18MuxUltraCleanReturnFalseBeforePipelineBindEnabled() {
+    // v115-D-A7Z18: A7Z17 proves D-E can reach the pre-pipeline-bind checkpoint and
+    // emit the return-true marker, but PICA may still fail to confirm the caller-side
+    // return. This variant returns false at the exact same checkpoint. If PICA logs
+    // the after-AccelerateDrawBatch result=0, the issue is the successful-accel true
+    // handoff path. If it still cuts, the issue is around the call/return boundary.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z18_MUX_ULTRA_CLEAN_RETURN_FALSE_BEFORE_PIPELINE_BIND");
 }
 
 [[nodiscard]] u32 GetAccelStageStopAfter() {
@@ -2895,6 +2906,22 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                             final_vertex_offset);
             }
             return true;
+        }
+
+        if (IsV115DA7Z18MuxUltraCleanReturnFalseBeforePipelineBindEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z18 mux_ultra_clean_return_false_before_pipeline_bind_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z18 mux_ultra_clean_return_false_before_pipeline_bind_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z18 mux ultra-clean return false before pipeline bind result=0 selected_step={} final_indexed={} final_count={} final_vertex_offset={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count,
+                            final_vertex_offset);
+            }
+            return false;
         }
 
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
