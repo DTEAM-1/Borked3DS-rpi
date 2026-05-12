@@ -192,6 +192,15 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z21_PICA_AFTER_BACKEND_ULTRA_CLEAN_RETURN");
 }
 
+[[nodiscard]] bool IsV115DA7Z22TriggerDrawArraysCallBoundaryProbeEnabled() {
+    // v115-D-E-A7Z22: A7Z21 writes the final DrawArrays-side return breadcrumb after a
+    // real backend call, but the outer trigger_draw_after_drawarrays marker is still absent.
+    // This caller-side probe wraps DrawArrays() itself from the register-trigger path and
+    // returns immediately after the call if control reaches this boundary.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z22_TRIGGER_DRAWARRAYS_CALL_BOUNDARY_PROBE");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -662,6 +671,16 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         }
 
         V115DA7XPicaTraceRaw("v115d_a7x pica_trigger_before_drawarrays");
+        if (IsV115DA7Z22TriggerDrawArraysCallBoundaryProbeEnabled()) {
+            V114C6PicaGateFileTraceRaw("v115d_a7z22 trigger_drawarrays_call_boundary_begin");
+            V114C6PicaGateFileTraceU32("v115d_a7z22 trigger_draw_id", id);
+            V114C6PicaGateFileTraceU32("v115d_a7z22 trigger_draw_indexed", static_cast<u32>(is_indexed));
+            V114C6PicaGateFileTraceU32("v115d_a7z22 trigger_draw_num_vertices", regs.internal.pipeline.num_vertices);
+            DrawArrays(is_indexed);
+            V114C6PicaGateFileTraceRaw("v115d_a7z22 trigger_drawarrays_call_boundary_after_call");
+            V114C6PicaGateFileTraceRaw("v115d_a7z22 trigger_drawarrays_call_boundary_return");
+            return;
+        }
         DrawArrays(is_indexed);
         V115DA7XPicaTraceRaw("v115d_a7x pica_trigger_after_drawarrays");
         V114C6PicaGateFileTraceRaw("v115d_mux trigger_draw_after_drawarrays");
