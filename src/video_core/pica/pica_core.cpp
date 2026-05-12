@@ -175,6 +175,15 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z19_PICA_SKIP_BACKEND_CALL_RETURN_FALSE");
 }
 
+[[nodiscard]] bool IsV115DA7Z20PicaAfterBackendControlledReturnEnabled() {
+    // v115-D-E-A7Z20: after-backend controlled return. A7Z19 proved that PICA can
+    // skip the backend and return cleanly; this probe calls the backend, records the
+    // result immediately after the call, then returns from DrawArrays without executing
+    // the normal post-call path.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z20_PICA_AFTER_BACKEND_CONTROLLED_RETURN");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -1078,6 +1087,21 @@ void PicaCore::DrawArrays(bool is_indexed) {
                     }
 
                     V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_before_call");
+                    if (IsV115DA7Z20PicaAfterBackendControlledReturnEnabled()) {
+                        V114C6PicaGateFileTraceRaw(
+                            "v115d_a7z20 pica_after_backend_controlled_begin");
+                        const bool v115d_a7z20_accelerated =
+                            rasterizer->AccelerateDrawBatch(is_indexed);
+                        V114C6PicaGateFileTraceRaw(
+                            "v115d_a7z20 pica_after_backend_controlled_after_call");
+                        V114C6PicaGateFileTraceU32(
+                            "v115d_a7z20 pica_after_backend_controlled_result",
+                            static_cast<u32>(v115d_a7z20_accelerated));
+                        V114C6PicaGateFileTraceRaw(
+                            "v115d_a7z20 pica_after_backend_controlled_return");
+                        return;
+                    }
+
                     const bool v115d_a7z19_accelerated = rasterizer->AccelerateDrawBatch(is_indexed);
                     V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_after_call");
                     V114C6PicaGateFileTraceU32("v115d_a7z19 accelerate_draw_batch_result",
