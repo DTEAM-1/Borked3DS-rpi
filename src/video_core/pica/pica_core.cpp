@@ -184,6 +184,14 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z20_PICA_AFTER_BACKEND_CONTROLLED_RETURN");
 }
 
+[[nodiscard]] bool IsV115DA7Z21PicaAfterBackendUltraCleanReturnEnabled() {
+    // v115-D-E-A7Z21: A7Z20 proved that PICA reaches the first marker immediately after
+    // a real backend call, but cuts before writing the result value. Return immediately
+    // after the after-call breadcrumb, without formatting/logging the bool result.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z21_PICA_AFTER_BACKEND_ULTRA_CLEAN_RETURN");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -1087,6 +1095,16 @@ void PicaCore::DrawArrays(bool is_indexed) {
                     }
 
                     V114C6PicaGateFileTraceRaw("v115d_a7z19 pica_call_boundary_before_call");
+                    if (IsV115DA7Z21PicaAfterBackendUltraCleanReturnEnabled()) {
+                        V114C6PicaGateFileTraceRaw(
+                            "v115d_a7z21 pica_after_backend_ultra_clean_begin");
+                        (void)rasterizer->AccelerateDrawBatch(is_indexed);
+                        V114C6PicaGateFileTraceRaw(
+                            "v115d_a7z21 pica_after_backend_ultra_clean_after_call");
+                        V114C6PicaGateFileTraceRaw(
+                            "v115d_a7z21 pica_after_backend_ultra_clean_return");
+                        return;
+                    }
                     if (IsV115DA7Z20PicaAfterBackendControlledReturnEnabled()) {
                         V114C6PicaGateFileTraceRaw(
                             "v115d_a7z20 pica_after_backend_controlled_begin");
