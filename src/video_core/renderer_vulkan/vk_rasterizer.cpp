@@ -905,6 +905,17 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z27_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT_NUMBER");
 }
 
+[[nodiscard]] bool IsV115DA7Z28MuxSkipBindingCountNumberReturnFalseEnabled() {
+    // v115-D-E-A7Z28: A7Z27 proved D-E can reach the point immediately before the
+    // binding_count numeric breadcrumb and return false cleanly. A7Z24 still cuts when
+    // the numeric trace is attempted. This checkpoint deliberately skips the
+    // V114ShaderMultiplexFileTraceNumber(...binding_count...) call, emits only raw
+    // breadcrumbs, then returns false before A7Z16/A7Z24/A7Z13 gates, offset conversion,
+    // scheduler.Record, or vkCmdDrawIndexed(3). It isolates the numeric trace as the
+    // suspect while keeping the Vulkan path state unchanged.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z28_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3092,6 +3103,21 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             if (trace_accel || IsDrawTraceEnabled()) {
                 LOG_WARNING(Render_Vulkan,
                             "TRACE_DRAW strict_compat v115d_a7z27 mux return false before binding_count number result=0 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return false;
+        }
+
+        if (IsV115DA7Z28MuxSkipBindingCountNumberReturnFalseEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z28 mux_binding_count_number_skipped");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z28 mux_skip_binding_count_number_return_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z28 mux skip binding_count number return false result=0 selected_step={} final_indexed={} final_count={}",
                             selected_step, static_cast<u32>(final_indexed), final_count);
             }
             return false;
