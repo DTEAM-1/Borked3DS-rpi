@@ -895,6 +895,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z26_MUX_RETURN_FALSE_AFTER_BEFORE_RECORD");
 }
 
+[[nodiscard]] bool IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled() {
+    // v115-D-A7Z27: A7Z26 proved D-E can emit real_vertex_bind_mux_before_record and
+    // return false cleanly. Retrying A7Z24 on the A7Z26 build still cuts before the
+    // real_vertex_bind_mux_binding_count number breadcrumb. This checkpoint advances
+    // past the A7Z15/A7Z14 gate checks, emits only raw breadcrumbs, and returns false
+    // immediately before V114ShaderMultiplexFileTraceNumber(...binding_count...). It
+    // isolates the binding_count number trace/write from the surrounding control flow.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z27_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT_NUMBER");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3070,6 +3080,21 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                             selected_step, static_cast<u32>(final_indexed), final_count);
             }
             return true;
+        }
+
+        if (IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z27 mux_return_false_before_binding_count_number_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z27 mux_return_false_before_binding_count_number_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z27 mux return false before binding_count number result=0 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return false;
         }
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
