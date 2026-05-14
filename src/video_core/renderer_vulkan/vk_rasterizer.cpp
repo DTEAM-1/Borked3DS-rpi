@@ -885,6 +885,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z25_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT");
 }
 
+[[nodiscard]] bool IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled() {
+    // v115-D-A7Z26: A7Z25 proved D-E can return false cleanly immediately before the
+    // before_record / binding_count section. This checkpoint advances one tiny step: emit
+    // real_vertex_bind_mux_before_record, then return false before reading/logging
+    // binding_count, before offsets, scheduler.Record, or vkCmdDrawIndexed(3). This
+    // isolates whether the before_record transition itself is safe separately from
+    // binding_count and from the successful true handoff path.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26_MUX_RETURN_FALSE_AFTER_BEFORE_RECORD");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3013,6 +3023,21 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_record");
+        }
+
+        if (IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26 mux_return_false_after_before_record_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26 mux_return_false_after_before_record_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z26 mux return false after before_record result=0 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return false;
         }
 
         if (IsV115DA7Z15MuxUltraCleanReturnBeforeBindingCountEnabled()) {
