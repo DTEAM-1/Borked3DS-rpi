@@ -916,6 +916,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z28_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE");
 }
 
+[[nodiscard]] bool IsV115DA7Z29MuxSkipBindingCountNumberReturnFalseBeforeOffsetsEnabled() {
+    // v115-D-E-A7Z29: A7Z28 proved the binding_count numeric breadcrumb is the local
+    // hazard, not the logical transition after before_record. Keep skipping that number
+    // breadcrumb, continue through the safe post-binding-count gates, and return false
+    // immediately before offset conversion. This confirms the path can advance from
+    // before_record to the pre-offset boundary without the numeric trace.
+    return IsEnvEnabled(
+        "BORKED3DS_V3DV_A7Z29_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE_BEFORE_OFFSETS");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3123,9 +3133,16 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        const bool a7z29_skip_binding_count_number =
+            IsV115DA7Z29MuxSkipBindingCountNumberReturnFalseBeforeOffsetsEnabled();
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
-            V114ShaderMultiplexFileTraceNumber("v115d_mux real_vertex_bind_mux_binding_count",
-                                               binding_count);
+            if (a7z29_skip_binding_count_number) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29 mux_binding_count_number_skipped_continue");
+            } else {
+                V114ShaderMultiplexFileTraceNumber("v115d_mux real_vertex_bind_mux_binding_count",
+                                                   binding_count);
+            }
         }
 
         if (IsV115DA7Z16MuxUltraCleanReturnAfterBindingCountEnabled()) {
@@ -3210,6 +3227,22 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                             selected_step, static_cast<u32>(final_indexed), final_count);
             }
             return true;
+        }
+
+        if (a7z29_skip_binding_count_number) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29 mux_return_false_before_offsets");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29 mux_return_false_before_offsets_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z29 mux skip binding_count number return false before offsets result=0 selected_step={} final_indexed={} final_count={} binding_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count,
+                            binding_count);
+            }
+            return false;
         }
 
         if (IsV115DA7Z11DAReturnBeforeOffsetsEnabled()) {
