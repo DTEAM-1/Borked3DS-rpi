@@ -926,6 +926,18 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
         "BORKED3DS_V3DV_A7Z29_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE_BEFORE_OFFSETS");
 }
 
+
+[[nodiscard]] bool IsV115DA7Z29BMuxSkipBindingCountNumberReturnFalseBeforeOffsetsSafeEnabled() {
+    // v115-D-E-A7Z29B: A7Z29 was too intrusive when it tried to continue after the
+    // binding_count numeric breadcrumb skip. A7Z28 rechecked cleanly on that build, so
+    // the build is valid and only the A7Z29 continuation must be cleaned up. This
+    // variant keeps the A7Z28 numeric skip, uses raw breadcrumbs only, avoids logging
+    // binding_count in console warnings, and returns false immediately before offset
+    // conversion. It is the safe retry of the intended A7Z29 pre-offset boundary.
+    return IsEnvEnabled(
+        "BORKED3DS_V3DV_A7Z29B_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE_BEFORE_OFFSETS_SAFE");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3135,8 +3147,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         const bool a7z29_skip_binding_count_number =
             IsV115DA7Z29MuxSkipBindingCountNumberReturnFalseBeforeOffsetsEnabled();
+        const bool a7z29b_skip_binding_count_number =
+            IsV115DA7Z29BMuxSkipBindingCountNumberReturnFalseBeforeOffsetsSafeEnabled();
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
-            if (a7z29_skip_binding_count_number) {
+            if (a7z29b_skip_binding_count_number) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29b mux_binding_count_number_skipped_continue_safe");
+            } else if (a7z29_skip_binding_count_number) {
                 V114ShaderMultiplexFileTraceRaw(
                     "v115d_a7z29 mux_binding_count_number_skipped_continue");
             } else {
@@ -3227,6 +3244,16 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                             selected_step, static_cast<u32>(final_indexed), final_count);
             }
             return true;
+        }
+
+        if (a7z29b_skip_binding_count_number) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29b mux_return_false_before_offsets_safe_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29b mux_return_false_before_offsets_safe_false");
+            }
+            return false;
         }
 
         if (a7z29_skip_binding_count_number) {
