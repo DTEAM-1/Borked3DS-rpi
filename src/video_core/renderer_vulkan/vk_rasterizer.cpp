@@ -938,6 +938,17 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
         "BORKED3DS_V3DV_A7Z29B_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE_BEFORE_OFFSETS_SAFE");
 }
 
+
+[[nodiscard]] bool IsV115DA7Z29CMuxImmediateReturnFalseBeforeOffsetsEnabled() {
+    // v115-D-E-A7Z29C: A7Z29B still cut after real_vertex_bind_mux_before_record before
+    // its own breadcrumbs appeared. This makes the probe impossible to miss: use a short
+    // env alias, check it immediately after the validated before_record breadcrumb, skip
+    // the dangerous binding_count numeric trace, emit raw-only breadcrumbs, and return
+    // false before any offset conversion, scheduler.Record, or vkCmdDrawIndexed(3).
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z29C_SAFE_RETURN_FALSE") ||
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z29C_MUX_RETURN_FALSE_BEFORE_OFFSETS");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3141,6 +3152,18 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 LOG_WARNING(Render_Vulkan,
                             "TRACE_DRAW strict_compat v115d_a7z28 mux skip binding_count number return false result=0 selected_step={} final_indexed={} final_count={}",
                             selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return false;
+        }
+
+        if (IsV115DA7Z29CMuxImmediateReturnFalseBeforeOffsetsEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29c mux_after_before_record_entry");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29c mux_binding_count_number_skipped");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z29c mux_return_false_before_offsets_immediate");
             }
             return false;
         }
