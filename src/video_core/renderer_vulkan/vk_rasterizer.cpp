@@ -875,6 +875,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z24_MUX_RETURN_FALSE_AFTER_BINDING_COUNT");
 }
 
+[[nodiscard]] bool IsV115DA7Z25MuxReturnFalseBeforeBindingCountEnabled() {
+    // v115-D-A7Z25: A7Z24 did not reach the binding_count breadcrumb, while the A7Z23
+    // recheck on the same build still returns false cleanly after BindPipeline(). This
+    // checkpoint moves just one micro-step farther than A7Z23: it executes the gate checks
+    // after pipeline bind, then returns false immediately before the before_record /
+    // binding_count section. No binding_count read, offset conversion, scheduler.Record,
+    // or vkCmdDrawIndexed(3) is reached.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z25_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -2984,6 +2994,21 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                             selected_step, static_cast<u32>(final_indexed), final_count);
             }
             return true;
+        }
+
+        if (IsV115DA7Z25MuxReturnFalseBeforeBindingCountEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z25 mux_return_false_before_binding_count_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z25 mux_return_false_before_binding_count_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z25 mux return false before binding_count result=0 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return false;
         }
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
