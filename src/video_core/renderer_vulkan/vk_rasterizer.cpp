@@ -187,6 +187,19 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z16 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z17 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z18 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z23 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z24 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z25 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z29b shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z29c shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z30 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z31b2 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z31c2 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z31c3 shader_file_trace_reset\n", fp);
     std::fclose(fp);
 }
 
@@ -896,13 +909,18 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
 }
 
 [[nodiscard]] bool IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled() {
-    // v115-D-A7Z27: A7Z26 proved D-E can emit real_vertex_bind_mux_before_record and
-    // return false cleanly. Retrying A7Z24 on the A7Z26 build still cuts before the
-    // real_vertex_bind_mux_binding_count number breadcrumb. This checkpoint advances
-    // past the A7Z15/A7Z14 gate checks, emits only raw breadcrumbs, and returns false
-    // immediately before V114ShaderMultiplexFileTraceNumber(...binding_count...). It
-    // isolates the binding_count number trace/write from the surrounding control flow.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z27_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT_NUMBER");
+    // v115-D-A7Z27: A7Z26 proved D-D can emit real_vertex_bind_mux_before_record and
+    // return false cleanly. This checkpoint is now placed immediately after the validated
+    // before_record breadcrumb and before A7Z26/A7Z15/A7Z14, so it is impossible to miss
+    // when the env flag is active. It emits only raw breadcrumbs and returns false before
+    // V114ShaderMultiplexFileTraceNumber(...binding_count...), offset conversion,
+    // scheduler.Record, vkCmdBindVertexBuffers, or vkCmdDrawIndexed.
+    //
+    // Keep short aliases because the full env name is long and easy to mistype in
+    // emulators.cfg during the v115-D bisect.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z27_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT_NUMBER") ||
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z27_SAFE_RETURN_FALSE") ||
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z27_RETURN_FALSE");
 }
 
 [[nodiscard]] bool IsV115DA7Z28MuxSkipBindingCountNumberReturnFalseEnabled() {
@@ -2601,6 +2619,12 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
                                            regs.pipeline.num_vertices);
         V114ShaderMultiplexFileTraceNumber("v115d_mux accel_topology",
                                            static_cast<u64>(regs.pipeline.triangle_topology.Value()));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux flag_a7z26_return_false_after_before_record",
+            static_cast<u64>(IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled()));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux flag_a7z27_return_false_before_binding_count_number",
+            static_cast<u64>(IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled()));
     }
 
     if (!v114_entry_safe) {
@@ -3110,6 +3134,21 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_record");
         }
 
+        if (IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z27 mux_return_false_before_binding_count_number_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z27 mux_return_false_before_binding_count_number_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z27 mux return false before binding_count number result=0 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return false;
+        }
+
         if (IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled()) {
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
                 V114ShaderMultiplexFileTraceRaw(
@@ -3155,21 +3194,6 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                             selected_step, static_cast<u32>(final_indexed), final_count);
             }
             return true;
-        }
-
-        if (IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled()) {
-            if (IsV114ShaderMultiplexFileTraceEnabled()) {
-                V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z27 mux_return_false_before_binding_count_number_begin");
-                V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z27 mux_return_false_before_binding_count_number_false");
-            }
-            if (trace_accel || IsDrawTraceEnabled()) {
-                LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v115d_a7z27 mux return false before binding_count number result=0 selected_step={} final_indexed={} final_count={}",
-                            selected_step, static_cast<u32>(final_indexed), final_count);
-            }
-            return false;
         }
 
         if (IsV115DA7Z28MuxSkipBindingCountNumberReturnFalseEnabled()) {
