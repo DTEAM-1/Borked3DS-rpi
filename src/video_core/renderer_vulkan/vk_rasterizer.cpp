@@ -958,14 +958,12 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z30_MANUAL_OFFSETS_RETURN_FALSE_AFTER_OFFSETS");
 }
 
-[[nodiscard]] bool IsV115DA7Z31BEmptySchedulerRecordReturnFalseEnabled() {
-    // v115-D-E-A7Z31B: A7Z31 was too large because it tested scheduler.Record and
-    // vkCmdBindVertexBuffers together. A7Z30 restored the stable manual-offset
-    // checkpoint. This opt-in keeps the A7Z30 binding_count numeric trace skip and
-    // bounded manual offsets, then queues an empty scheduler.Record lambda and returns
-    // false before bindVertexBuffers or vkCmdDrawIndexed(3). It isolates the scheduler
-    // record boundary itself from vertex-buffer binding.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z31B_EMPTY_RECORD_RETURN_FALSE");
+[[nodiscard]] bool IsV115DA7Z31B2EmptyRecordReturnFalseEnabled() {
+    // v115-D-E-A7Z31B2: restart from the stable A7Z30 base with a short env flag and
+    // a direct branch immediately after before_record. It keeps the binding_count
+    // numeric trace skipped, rebuilds offsets manually, records an empty scheduler
+    // lambda only, then returns false before bindVertexBuffers or vkCmdDrawIndexed.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z31B2_EMPTY_RECORD");
 }
 
 [[nodiscard]] u32 GetAccelStageStopAfter() {
@@ -3175,6 +3173,31 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        if (IsV115DA7Z31B2EmptyRecordReturnFalseEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z31b2 mux_after_before_record_entry");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z31b2 mux_binding_count_number_skipped_continue");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z31b2 mux_manual_offsets_begin");
+            }
+            std::array<vk::DeviceSize, 16> a7z31b2_offsets{};
+            for (size_t offset_index = 0; offset_index < a7z31b2_offsets.size(); ++offset_index) {
+                a7z31b2_offsets[offset_index] =
+                    static_cast<vk::DeviceSize>(binding_offsets[offset_index]);
+            }
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z31b2 mux_manual_offsets_end");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z31b2 mux_empty_record_begin");
+            }
+            scheduler.Record([](vk::CommandBuffer cmdbuf) { (void)cmdbuf; });
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z31b2 mux_empty_record_after_record");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z31b2 mux_empty_record_return_false");
+            }
+            return false;
+        }
+
         if (IsV115DA7Z29CMuxImmediateReturnFalseBeforeOffsetsEnabled()) {
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
                 V114ShaderMultiplexFileTraceRaw(
@@ -3193,13 +3216,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             IsV115DA7Z29BMuxSkipBindingCountNumberReturnFalseBeforeOffsetsSafeEnabled();
         const bool a7z30_manual_offsets =
             IsV115DA7Z30MuxManualOffsetsReturnFalseAfterOffsetsEnabled();
-        const bool a7z31b_empty_record =
-            IsV115DA7Z31BEmptySchedulerRecordReturnFalseEnabled();
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
-            if (a7z31b_empty_record) {
-                V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z31b mux_binding_count_number_skipped_continue");
-            } else if (a7z30_manual_offsets) {
+            if (a7z30_manual_offsets) {
                 V114ShaderMultiplexFileTraceRaw(
                     "v115d_a7z30 mux_binding_count_number_skipped_continue");
             } else if (a7z29b_skip_binding_count_number) {
@@ -3338,11 +3356,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
 
         std::array<vk::DeviceSize, 16> real_offsets{};
-        if (a7z31b_empty_record || a7z30_manual_offsets || IsV115DA7Z13MuxManualOffsetsEnabled()) {
+        if (a7z30_manual_offsets || IsV115DA7Z13MuxManualOffsetsEnabled()) {
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
-                if (a7z31b_empty_record) {
-                    V114ShaderMultiplexFileTraceRaw("v115d_a7z31b mux_manual_offsets_begin");
-                } else if (a7z30_manual_offsets) {
+                if (a7z30_manual_offsets) {
                     V114ShaderMultiplexFileTraceRaw("v115d_a7z30 mux_manual_offsets_begin");
                 } else {
                     V114ShaderMultiplexFileTraceRaw("v115d_a7z13 mux_manual_offsets_begin");
@@ -3355,9 +3371,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                     static_cast<vk::DeviceSize>(binding_offsets[offset_index]);
             }
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
-                if (a7z31b_empty_record) {
-                    V114ShaderMultiplexFileTraceRaw("v115d_a7z31b mux_manual_offsets_end");
-                } else if (a7z30_manual_offsets) {
+                if (a7z30_manual_offsets) {
                     V114ShaderMultiplexFileTraceRaw("v115d_a7z30 mux_manual_offsets_end");
                     V114ShaderMultiplexFileTraceRaw(
                         "v115d_a7z30 mux_return_false_after_offsets");
@@ -3366,17 +3380,6 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 }
             }
             if (a7z30_manual_offsets) {
-                return false;
-            }
-            if (a7z31b_empty_record) {
-                if (IsV114ShaderMultiplexFileTraceEnabled()) {
-                    V114ShaderMultiplexFileTraceRaw("v115d_a7z31b mux_empty_record_begin");
-                }
-                scheduler.Record([](vk::CommandBuffer cmdbuf) { (void)cmdbuf; });
-                if (IsV114ShaderMultiplexFileTraceEnabled()) {
-                    V114ShaderMultiplexFileTraceRaw("v115d_a7z31b mux_empty_record_after_record");
-                    V114ShaderMultiplexFileTraceRaw("v115d_a7z31b mux_empty_record_return_false");
-                }
                 return false;
             }
             if (IsV115DA7Z13MuxReturnAfterManualOffsetsEnabled()) {
