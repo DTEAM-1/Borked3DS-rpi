@@ -966,6 +966,12 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z31B2_EMPTY_RECORD");
 }
 
+[[nodiscard]] bool IsV115DA7Z31C2BindVertexBuffersOnlyReturnFalseEnabled() {
+    // v115-D-E-A7Z31C2: restart strictly from the A7Z31B2 stable empty-record block,
+    // then add only vkCmdBindVertexBuffers. No vkCmdDraw/vkCmdDrawIndexed yet.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z31C2_BIND_VERTEX_BUFFERS_ONLY");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3194,6 +3200,39 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
                 V114ShaderMultiplexFileTraceRaw("v115d_a7z31b2 mux_empty_record_after_record");
                 V114ShaderMultiplexFileTraceRaw("v115d_a7z31b2 mux_empty_record_return_false");
+            }
+            return false;
+        }
+
+        if (IsV115DA7Z31C2BindVertexBuffersOnlyReturnFalseEnabled()) {
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z31c2 mux_after_before_record_entry");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z31c2 mux_binding_count_number_skipped_continue");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z31c2 mux_manual_offsets_begin");
+            }
+            std::array<vk::DeviceSize, 16> a7z31c2_offsets{};
+            for (size_t offset_index = 0; offset_index < a7z31c2_offsets.size(); ++offset_index) {
+                a7z31c2_offsets[offset_index] =
+                    static_cast<vk::DeviceSize>(binding_offsets[offset_index]);
+            }
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z31c2 mux_manual_offsets_end");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z31c2 mux_bind_vertex_buffers_record_begin");
+            }
+            scheduler.Record([this, binding_count, a7z31c2_offsets](vk::CommandBuffer cmdbuf) {
+                if (binding_count != 0) {
+                    cmdbuf.bindVertexBuffers(0, binding_count, vertex_buffers.data(),
+                                             a7z31c2_offsets.data());
+                }
+            });
+            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z31c2 mux_bind_vertex_buffers_after_record");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z31c2 mux_bind_vertex_buffers_return_false");
             }
             return false;
         }
