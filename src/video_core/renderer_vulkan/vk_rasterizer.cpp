@@ -2592,6 +2592,16 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const bool v114_silent_stages = IsV114ShaderMultiplexSilentStagesEnabled();
     const bool v114_file_trace = IsV114ShaderMultiplexFileTraceEnabled();
 
+    // v115-D-A7Z27C: cache the fragile post-before_record gates at function entry.
+    // The previous rebuild proved the A7Z27 flag is visible at accel entry, but the sidecar
+    // still cut immediately after real_vertex_bind_mux_before_record and before the A7Z27
+    // return markers. Reusing the cached booleans below removes repeated getenv()/strict
+    // gate evaluation from the fragile post-before_record boundary.
+    const bool a7z26_return_false_after_before_record =
+        IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled();
+    const bool a7z27_return_false_before_binding_count_number =
+        IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
+
     if (!v114_entry_safe) {
         LOG_WARNING(Render_Vulkan, "TRACE_ACCEL_STAGE v114 raw_enter_noargs");
     }
@@ -2621,10 +2631,11 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
                                            static_cast<u64>(regs.pipeline.triangle_topology.Value()));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z26_return_false_after_before_record",
-            static_cast<u64>(IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled()));
+            static_cast<u64>(a7z26_return_false_after_before_record));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z27_return_false_before_binding_count_number",
-            static_cast<u64>(IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled()));
+            static_cast<u64>(a7z27_return_false_before_binding_count_number));
+        V114ShaderMultiplexFileTraceRaw("v115d_mux flags_cached_for_post_before_record");
     }
 
     if (!v114_entry_safe) {
@@ -3134,22 +3145,22 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_record");
         }
 
-        if (IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled()) {
-            if (IsV114ShaderMultiplexFileTraceEnabled()) {
+        if (a7z27_return_false_before_binding_count_number) {
+            if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z27 mux_return_false_before_binding_count_number_begin");
+                    "v115d_a7z27c cached_return_false_before_binding_count_number_begin");
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z27 mux_return_false_before_binding_count_number_false");
+                    "v115d_a7z27c cached_return_false_before_binding_count_number_false");
             }
             if (trace_accel || IsDrawTraceEnabled()) {
                 LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v115d_a7z27 mux return false before binding_count number result=0 selected_step={} final_indexed={} final_count={}",
+                            "TRACE_DRAW strict_compat v115d_a7z27c cached mux return false before binding_count number result=0 selected_step={} final_indexed={} final_count={}",
                             selected_step, static_cast<u32>(final_indexed), final_count);
             }
             return false;
         }
 
-        if (IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled()) {
+        if (a7z26_return_false_after_before_record) {
             if (IsV114ShaderMultiplexFileTraceEnabled()) {
                 V114ShaderMultiplexFileTraceRaw(
                     "v115d_a7z26 mux_return_false_after_before_record_begin");
