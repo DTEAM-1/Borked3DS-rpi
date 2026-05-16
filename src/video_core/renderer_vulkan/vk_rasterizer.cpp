@@ -190,8 +190,8 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z23 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z24 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z25 shader_file_trace_reset\n", fp);
-    std::fputs("v115d_a7z25b shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26b shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -2598,8 +2598,6 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     // still cut immediately after real_vertex_bind_mux_before_record and before the A7Z27
     // return markers. Reusing the cached booleans below removes repeated getenv()/strict
     // gate evaluation from the fragile post-before_record boundary.
-    const bool a7z25_return_false_before_binding_count =
-        IsV115DA7Z25MuxReturnFalseBeforeBindingCountEnabled();
     const bool a7z26_return_false_after_before_record =
         IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled();
     const bool a7z27_return_false_before_binding_count_number =
@@ -2632,9 +2630,6 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
                                            regs.pipeline.num_vertices);
         V114ShaderMultiplexFileTraceNumber("v115d_mux accel_topology",
                                            static_cast<u64>(regs.pipeline.triangle_topology.Value()));
-        V114ShaderMultiplexFileTraceNumber(
-            "v115d_mux flag_a7z25_return_false_before_binding_count",
-            static_cast<u64>(a7z25_return_false_before_binding_count));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z26_return_false_after_before_record",
             static_cast<u64>(a7z26_return_false_after_before_record));
@@ -2900,8 +2895,6 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     // but the post-before_record mux lives in AccelerateDrawBatchInternal(), so the
     // cached booleans must be local to this function to compile and to reflect the
     // exact path being tested.
-    const bool a7z25_return_false_before_binding_count =
-        IsV115DA7Z25MuxReturnFalseBeforeBindingCountEnabled();
     const bool a7z26_return_false_after_before_record =
         IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled();
     const bool a7z27_return_false_before_binding_count_number =
@@ -2909,9 +2902,6 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_mux internal_flags_cached_for_post_before_record");
-        V114ShaderMultiplexFileTraceNumber(
-            "v115d_mux internal_flag_a7z25_return_false_before_binding_count",
-            static_cast<u64>(a7z25_return_false_before_binding_count));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z26_return_false_after_before_record",
             static_cast<u64>(a7z26_return_false_after_before_record));
@@ -3079,24 +3069,6 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_bind_pipeline");
             V114ShaderMultiplexFileTraceNumber("v115d_mux selected_step", selected_step);
-        }
-
-        if (a7z25_return_false_before_binding_count) {
-            if (v114_file_trace) {
-                V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z25b early_return_false_after_selected_step_begin");
-                V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z25b early_return_false_after_selected_step_false");
-            }
-            if (trace_accel || IsDrawTraceEnabled()) {
-                LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v115d_a7z25b early return false after selected_step result=0 selected_step={}",
-                            selected_step);
-            }
-            return false;
-        }
-
-        if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed", static_cast<u32>(final_indexed));
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_vertex_offset", static_cast<u64>(static_cast<s64>(final_vertex_offset)));
@@ -3186,6 +3158,32 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             if (trace_accel || IsDrawTraceEnabled()) {
                 LOG_WARNING(Render_Vulkan,
                             "TRACE_DRAW strict_compat v115d_a7z25 mux return false before binding_count result=0 selected_step={} final_indexed={} final_count={}",
+                            selected_step, static_cast<u32>(final_indexed), final_count);
+            }
+            return false;
+        }
+
+        // v115-D-A7Z26B:
+        // The corrected A7Z26 run proved the flag is visible in both the outer and internal
+        // scopes, but the sidecar stops immediately after bind_pipeline_ready_true and before
+        // the generic real_vertex_bind_mux_before_record breadcrumb. A7Z25 already proved a
+        // return before this breadcrumb is safe. Therefore, when the A7Z26 flag is selected,
+        // return at this same boundary using an A7Z26-specific marker and deliberately skip
+        // the generic before_record breadcrumb. This isolates whether the wall is the
+        // breadcrumb itself or the first instruction after it, without advancing to
+        // binding_count, offsets, scheduler.Record, vkCmdBindVertexBuffers, or vkCmdDrawIndexed.
+        if (a7z26_return_false_after_before_record) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26b pre_before_record_gate_begin");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26b skipped_generic_before_record_marker");
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26b pre_before_record_gate_false");
+            }
+            if (trace_accel || IsDrawTraceEnabled()) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z26b pre-before-record gate result=0 selected_step={} final_indexed={} final_count={}",
                             selected_step, static_cast<u32>(final_indexed), final_count);
             }
             return false;
