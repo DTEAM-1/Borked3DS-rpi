@@ -2887,6 +2887,27 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
 
 bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool trace_accel = IsAccelStageTraceEnabled();
+    const bool v114_file_trace = IsV114ShaderMultiplexFileTraceEnabled();
+
+    // v115-D-A7Z27C2: cache the fragile post-before_record gates inside the internal
+    // draw path as well. The previous patch cached them in AccelerateDrawBatch(),
+    // but the post-before_record mux lives in AccelerateDrawBatchInternal(), so the
+    // cached booleans must be local to this function to compile and to reflect the
+    // exact path being tested.
+    const bool a7z26_return_false_after_before_record =
+        IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled();
+    const bool a7z27_return_false_before_binding_count_number =
+        IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
+
+    if (v114_file_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_mux internal_flags_cached_for_post_before_record");
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_flag_a7z26_return_false_after_before_record",
+            static_cast<u64>(a7z26_return_false_after_before_record));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_flag_a7z27_return_false_before_binding_count_number",
+            static_cast<u64>(a7z27_return_false_before_binding_count_number));
+    }
 
     const auto log_stage = [&](u32 stage, const char* name) {
         if (trace_accel) {
