@@ -194,6 +194,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26b shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26c shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26d shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26e shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3072,6 +3073,23 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_bind_pipeline");
             V114ShaderMultiplexFileTraceNumber("v115d_mux selected_step", selected_step);
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed", static_cast<u32>(final_indexed));
+        }
+
+        // v115-D-A7Z26E:
+        // A7Z26D proved the current build reaches selected_step and final_indexed but cuts
+        // before final_count and before the old A7Z26D gate. Keep using the A7Z26 env switch,
+        // but return false immediately after the already-observed final_indexed breadcrumb.
+        // This avoids final_count, final_vertex_offset, BindPipeline, before_record, binding_count,
+        // offsets, scheduler.Record, bindVertexBuffers, and all Vulkan draw commands.
+        if (a7z26_return_false_after_before_record) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26e return_false_after_final_indexed_before_final_count");
+            }
+            return false;
+        }
+
+        if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
         }
 
