@@ -904,13 +904,27 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
 }
 
 [[nodiscard]] bool IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled() {
-    // v115-D-A7Z26/F:
-    // Keep the original env name as the canonical switch so existing emulators.cfg lines
-    // continue to work. The A7Z26F aliases are accepted only to make source/binary
-    // realignment tests unambiguous when we need to prove the new file is actually running.
+    // v115-D-A7Z26 canonical gate.
+    //
+    // Important: do not OR this with the A7Z26F realignment alias. A7Z26F is a separate
+    // earlier checkpoint used only to prove source/emulators.cfg alignment after selected_step.
+    // Keeping it separate lets the next run advance from:
+    //
+    //   selected_step -> A7Z26F return false
+    //
+    // to:
+    //
+    //   selected_step -> final_indexed -> A7Z26E return false before final_count
+    //
+    // without rebuilding again for a different branch.
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z26_MUX_RETURN_FALSE_AFTER_BEFORE_RECORD") ||
-           IsEnvEnabled("BORKED3DS_V3DV_A7Z26F_RETURN_FALSE_AFTER_SELECTED_STEP") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26_FORCE");
+}
+
+[[nodiscard]] bool IsV115DA7Z26FReturnFalseAfterSelectedStepEnabled() {
+    // v115-D-A7Z26F: early realignment checkpoint immediately after selected_step.
+    // This intentionally has its own switch so it does not mask later A7Z26/E checkpoints.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26F_RETURN_FALSE_AFTER_SELECTED_STEP");
 }
 
 [[nodiscard]] bool IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled() {
@@ -2604,6 +2618,8 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     // gate evaluation from the fragile post-before_record boundary.
     const bool a7z26_return_false_after_before_record =
         IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled();
+    const bool a7z26f_return_false_after_selected_step =
+        IsV115DA7Z26FReturnFalseAfterSelectedStepEnabled();
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -2637,6 +2653,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z26_return_false_after_before_record",
             static_cast<u64>(a7z26_return_false_after_before_record));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux flag_a7z26f_return_false_after_selected_step",
+            static_cast<u64>(a7z26f_return_false_after_selected_step));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
@@ -2901,6 +2920,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     // exact path being tested.
     const bool a7z26_return_false_after_before_record =
         IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled();
+    const bool a7z26f_return_false_after_selected_step =
+        IsV115DA7Z26FReturnFalseAfterSelectedStepEnabled();
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -2909,6 +2930,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z26_return_false_after_before_record",
             static_cast<u64>(a7z26_return_false_after_before_record));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_flag_a7z26f_return_false_after_selected_step",
+            static_cast<u64>(a7z26f_return_false_after_selected_step));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
@@ -3085,7 +3109,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         //
         // It avoids final_indexed, final_count, final_vertex_offset, BindPipeline, before_record,
         // binding_count, offsets, scheduler.Record, vkCmdBindVertexBuffers, and all draw commands.
-        if (a7z26_return_false_after_before_record) {
+        if (a7z26f_return_false_after_selected_step) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
                     "v115d_a7z26f return_false_after_selected_step_before_final_indexed");
@@ -3094,7 +3118,25 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
-            V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed", static_cast<u32>(final_indexed));
+            V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed",
+                                               static_cast<u32>(final_indexed));
+        }
+
+        // v115-D-A7Z26E:
+        // A7Z26F has now proven that source, binary, and emulators.cfg are aligned and that
+        // returning false immediately after selected_step is clean. Advance one micro-step:
+        // emit final_indexed, then return false before final_count, final_vertex_offset,
+        // BindPipeline, before_record, binding_count, offsets, scheduler.Record,
+        // vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
+        if (a7z26_return_false_after_before_record) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26e return_false_after_final_indexed_before_final_count");
+            }
+            return false;
+        }
+
+        if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
         }
 
