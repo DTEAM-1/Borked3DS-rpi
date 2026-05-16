@@ -195,6 +195,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26c shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26d shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26e shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26f shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -903,13 +904,13 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
 }
 
 [[nodiscard]] bool IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled() {
-    // v115-D-A7Z26: A7Z25 proved D-E can return false cleanly immediately before the
-    // before_record / binding_count section. This checkpoint advances one tiny step: emit
-    // real_vertex_bind_mux_before_record, then return false before reading/logging
-    // binding_count, before offsets, scheduler.Record, or vkCmdDrawIndexed(3). This
-    // isolates whether the before_record transition itself is safe separately from
-    // binding_count and from the successful true handoff path.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26_MUX_RETURN_FALSE_AFTER_BEFORE_RECORD");
+    // v115-D-A7Z26/F:
+    // Keep the original env name as the canonical switch so existing emulators.cfg lines
+    // continue to work. The A7Z26F aliases are accepted only to make source/binary
+    // realignment tests unambiguous when we need to prove the new file is actually running.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26_MUX_RETURN_FALSE_AFTER_BEFORE_RECORD") ||
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z26F_RETURN_FALSE_AFTER_SELECTED_STEP") ||
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z26_FORCE");
 }
 
 [[nodiscard]] bool IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled() {
@@ -3072,24 +3073,28 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_bind_pipeline");
             V114ShaderMultiplexFileTraceNumber("v115d_mux selected_step", selected_step);
-            V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed", static_cast<u32>(final_indexed));
         }
 
-        // v115-D-A7Z26E:
-        // A7Z26D proved the current build reaches selected_step and final_indexed but cuts
-        // before final_count and before the old A7Z26D gate. Keep using the A7Z26 env switch,
-        // but return false immediately after the already-observed final_indexed breadcrumb.
-        // This avoids final_count, final_vertex_offset, BindPipeline, before_record, binding_count,
-        // offsets, scheduler.Record, bindVertexBuffers, and all Vulkan draw commands.
+        // v115-D-A7Z26F:
+        // The latest uploaded test was not a valid A7Z26E run: the sidecar showed the A7Z26
+        // flag as 0 and the reset list did not include the A7Z26B/C/D/E markers. This gate is
+        // deliberately moved one breadcrumb earlier than A7Z26E so the next run can prove both
+        // source and emulators.cfg alignment with the smallest possible boundary:
+        //
+        //   selected_step=4 -> A7Z26F marker -> return false
+        //
+        // It avoids final_indexed, final_count, final_vertex_offset, BindPipeline, before_record,
+        // binding_count, offsets, scheduler.Record, vkCmdBindVertexBuffers, and all draw commands.
         if (a7z26_return_false_after_before_record) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z26e return_false_after_final_indexed_before_final_count");
+                    "v115d_a7z26f return_false_after_selected_step_before_final_indexed");
             }
             return false;
         }
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
+            V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed", static_cast<u32>(final_indexed));
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
         }
 
