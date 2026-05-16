@@ -193,6 +193,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26b shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26c shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26d shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3074,26 +3075,18 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
         }
 
-        // v115-D-A7Z26C:
-        // The A7Z26B rebuild proved the new source is active, but the sidecar stops immediately
-        // after final_count and before final_vertex_offset. That means the next fragile boundary is
-        // earlier than BindPipeline and earlier than the A7Z26B pre-record gate. When the existing
-        // A7Z26 flag is selected, return here before writing the final_vertex_offset breadcrumb,
-        // before BindPipeline, before before_record, before binding_count, before offsets, before
-        // scheduler.Record, and before any Vulkan draw command.
+        // v115-D-A7Z26D:
+        // A7Z26C proved the build is active and reached the pre-final-vertex-offset gate, but the
+        // sidecar stopped after the second breadcrumb and never reached the explicit false marker.
+        // Keep the same A7Z26 env switch, but make the gate ultra-minimal: one flushed sidecar
+        // breadcrumb, no numeric breadcrumb, no LOG_WARNING, no final_vertex_offset trace, no
+        // BindPipeline, no before_record, no binding_count, no offsets, no scheduler.Record, and no
+        // Vulkan draw command. This isolates whether the crash is caused by the multi-breadcrumb /
+        // normal-log path, or by returning false to PICA at this exact boundary.
         if (a7z26_return_false_after_before_record) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z26c pre_final_vertex_offset_gate_begin");
-                V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z26c skipped_final_vertex_offset_marker");
-                V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z26c pre_final_vertex_offset_gate_false");
-            }
-            if (trace_accel || IsDrawTraceEnabled()) {
-                LOG_WARNING(Render_Vulkan,
-                            "TRACE_DRAW strict_compat v115d_a7z26c pre-final-vertex-offset gate result=0 selected_step={} final_indexed={} final_count={}",
-                            selected_step, static_cast<u32>(final_indexed), final_count);
+                    "v115d_a7z26d single_marker_return_false_before_final_vertex_offset");
             }
             return false;
         }
