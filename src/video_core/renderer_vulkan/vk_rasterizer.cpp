@@ -199,6 +199,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26f shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26g shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26h shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26i shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -955,6 +956,18 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // offsets, scheduler.Record, vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z26H_RETURN_FALSE_AFTER_FINAL_VERTEX_OFFSET") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26H_RETURN_FALSE_BEFORE_BIND_PIPELINE");
+}
+
+[[nodiscard]] bool IsV115DA7Z26IReturnFalseAfterInternalBindingCountEnabled() {
+    // v115-D-A7Z26I: the A7Z26 retry with A7Z23B trace-align cut after the early
+    // internal binding_count breadcrumb and before internal_vertex_buffer_count /
+    // internal_after_binding_count_valid / selected_step. This checkpoint avoids
+    // before_record, BindPipeline re-entry, offsets, scheduler.Record, vertex-buffer
+    // binding, and vkCmdDrawIndexed. It returns false immediately after the already
+    // observed internal binding_count value to verify that the backend can unwind
+    // cleanly from this earlier boundary.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26I_RETURN_FALSE_AFTER_INTERNAL_BINDING_COUNT") ||
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z26I_RETURN_FALSE_BEFORE_INTERNAL_VERTEX_BUFFER_COUNT");
 }
 
 [[nodiscard]] bool IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled() {
@@ -2658,6 +2671,8 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         IsV115DA7Z26GReturnFalseAfterFinalCountEnabled();
     const bool a7z26h_return_false_after_final_vertex_offset =
         IsV115DA7Z26HReturnFalseAfterFinalVertexOffsetEnabled();
+    const bool a7z26i_return_false_after_internal_binding_count =
+        IsV115DA7Z26IReturnFalseAfterInternalBindingCountEnabled();
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -2706,6 +2721,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z26h_return_false_after_final_vertex_offset",
             static_cast<u64>(a7z26h_return_false_after_final_vertex_offset));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux flag_a7z26i_return_false_after_internal_binding_count",
+            static_cast<u64>(a7z26i_return_false_after_internal_binding_count));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
@@ -2980,6 +2998,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         IsV115DA7Z26GReturnFalseAfterFinalCountEnabled();
     const bool a7z26h_return_false_after_final_vertex_offset =
         IsV115DA7Z26HReturnFalseAfterFinalVertexOffsetEnabled();
+    const bool a7z26i_return_false_after_internal_binding_count =
+        IsV115DA7Z26IReturnFalseAfterInternalBindingCountEnabled();
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -3003,6 +3023,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z26h_return_false_after_final_vertex_offset",
             static_cast<u64>(a7z26h_return_false_after_final_vertex_offset));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_flag_a7z26i_return_false_after_internal_binding_count",
+            static_cast<u64>(a7z26i_return_false_after_internal_binding_count));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
@@ -3063,6 +3086,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_binding_count",
                                            binding_count);
+    }
+    if (a7z26i_return_false_after_internal_binding_count) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26i return_false_after_internal_binding_count_before_vertex_buffer_count");
+        }
+        return false;
+    }
+    if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_vertex_buffer_count",
                                            static_cast<u64>(vertex_buffers.size()));
     }
