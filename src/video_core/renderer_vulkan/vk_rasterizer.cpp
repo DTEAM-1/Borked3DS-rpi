@@ -196,6 +196,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26d shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26e shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26f shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26g shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -925,6 +926,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // v115-D-A7Z26F: early realignment checkpoint immediately after selected_step.
     // This intentionally has its own switch so it does not mask later A7Z26/E checkpoints.
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z26F_RETURN_FALSE_AFTER_SELECTED_STEP");
+}
+
+[[nodiscard]] bool IsV115DA7Z26GReturnFalseAfterFinalCountEnabled() {
+    // v115-D-A7Z26G: the A7Z26E split-flags run proved selected_step -> final_indexed
+    // is safe and returns false before final_count. Advance one micro-step: allow
+    // final_count to be emitted, then return false before final_vertex_offset,
+    // BindPipeline, before_record, binding_count, offsets, scheduler.Record,
+    // vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26G_RETURN_FALSE_AFTER_FINAL_COUNT") ||
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z26G_RETURN_FALSE_BEFORE_FINAL_VERTEX_OFFSET");
 }
 
 [[nodiscard]] bool IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled() {
@@ -2620,6 +2631,8 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled();
     const bool a7z26f_return_false_after_selected_step =
         IsV115DA7Z26FReturnFalseAfterSelectedStepEnabled();
+    const bool a7z26g_return_false_after_final_count =
+        IsV115DA7Z26GReturnFalseAfterFinalCountEnabled();
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -2656,6 +2669,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z26f_return_false_after_selected_step",
             static_cast<u64>(a7z26f_return_false_after_selected_step));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux flag_a7z26g_return_false_after_final_count",
+            static_cast<u64>(a7z26g_return_false_after_final_count));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
@@ -2922,6 +2938,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled();
     const bool a7z26f_return_false_after_selected_step =
         IsV115DA7Z26FReturnFalseAfterSelectedStepEnabled();
+    const bool a7z26g_return_false_after_final_count =
+        IsV115DA7Z26GReturnFalseAfterFinalCountEnabled();
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -2933,6 +2951,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z26f_return_false_after_selected_step",
             static_cast<u64>(a7z26f_return_false_after_selected_step));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_flag_a7z26g_return_false_after_final_count",
+            static_cast<u64>(a7z26g_return_false_after_final_count));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
@@ -3138,6 +3159,19 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
+        }
+
+        // v115-D-A7Z26G:
+        // A7Z26E proved final_indexed is safe and returns false before final_count.
+        // Advance exactly one breadcrumb: allow final_count, then return false before
+        // final_vertex_offset, BindPipeline, before_record, binding_count, offsets,
+        // scheduler.Record, vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
+        if (a7z26g_return_false_after_final_count) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26g return_false_after_final_count_before_final_vertex_offset");
+            }
+            return false;
         }
 
         // v115-D-A7Z26D:
