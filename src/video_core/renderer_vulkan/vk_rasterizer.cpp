@@ -202,6 +202,8 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26i shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26j shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26k shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26l shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -992,6 +994,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // vkCmdDrawIndexed.
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z26K_RETURN_FALSE_AFTER_INTERNAL_STAGE10") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26K_RETURN_FALSE_BEFORE_INTERNAL_VERTEX_COUNT");
+}
+
+[[nodiscard]] bool IsV115DA7Z26LReturnFalseAfterInternalStage10SingleMarkerEnabled() {
+    // v115-D-A7Z26L: A7Z26K reached the generic internal_after_stage10 breadcrumb but
+    // cut before its second return marker. This variant uses a single dedicated marker
+    // immediately after stage10, then returns false before the vertex-count check. It
+    // avoids the two-breadcrumb tail and isolates whether the failure is caused by the
+    // extra trace/log tail rather than the stage10 boundary itself.
+    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26L_RETURN_FALSE_AFTER_INTERNAL_STAGE10_SINGLE_MARKER") ||
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z26L_RETURN_FALSE_BEFORE_INTERNAL_VERTEX_COUNT");
 }
 
 [[nodiscard]] bool IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled() {
@@ -2701,6 +2713,10 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         IsV115DA7Z26JReturnFalseAfterInternalFlagCacheEnabled();
     const bool a7z26k_return_false_after_internal_stage10 =
         IsV115DA7Z26KReturnFalseAfterInternalStage10Enabled();
+    const bool a7z26l_return_false_after_internal_stage10_single_marker =
+        IsV115DA7Z26LReturnFalseAfterInternalStage10SingleMarkerEnabled();
+    const u32 a7z26_multi_probe_step =
+        GetEnvU32("BORKED3DS_V3DV_A7Z26_MULTI_PROBE_STEP", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -2758,6 +2774,12 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z26k_return_false_after_internal_stage10",
             static_cast<u64>(a7z26k_return_false_after_internal_stage10));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux flag_a7z26l_return_false_after_internal_stage10_single_marker",
+            static_cast<u64>(a7z26l_return_false_after_internal_stage10_single_marker));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux a7z26_multi_probe_step",
+            static_cast<u64>(a7z26_multi_probe_step));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
@@ -3038,6 +3060,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         IsV115DA7Z26JReturnFalseAfterInternalFlagCacheEnabled();
     const bool a7z26k_return_false_after_internal_stage10 =
         IsV115DA7Z26KReturnFalseAfterInternalStage10Enabled();
+    const bool a7z26l_return_false_after_internal_stage10_single_marker =
+        IsV115DA7Z26LReturnFalseAfterInternalStage10SingleMarkerEnabled();
+    const u32 a7z26_multi_probe_step =
+        GetEnvU32("BORKED3DS_V3DV_A7Z26_MULTI_PROBE_STEP", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -3071,6 +3097,12 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             "v115d_mux internal_flag_a7z26k_return_false_after_internal_stage10",
             static_cast<u64>(a7z26k_return_false_after_internal_stage10));
         V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_flag_a7z26l_return_false_after_internal_stage10_single_marker",
+            static_cast<u64>(a7z26l_return_false_after_internal_stage10_single_marker));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_a7z26_multi_probe_step",
+            static_cast<u64>(a7z26_multi_probe_step));
+        V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
     }
@@ -3079,6 +3111,14 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
                 "v115d_a7z26j return_false_after_internal_flags_before_stage10");
+        }
+        return false;
+    }
+
+    if (a7z26_multi_probe_step == 1) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp step01_return_false_after_internal_flags_before_stage10");
         }
         return false;
     }
@@ -3110,6 +3150,20 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (consume_if_stage_limited(10, "internal_enter")) {
         return true;
     }
+    if (a7z26_multi_probe_step == 2) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp step02_return_false_after_internal_stage10_before_vertex_count");
+        }
+        return false;
+    }
+    if (a7z26l_return_false_after_internal_stage10_single_marker) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26l return_false_after_internal_stage10_single_marker_before_vertex_count");
+        }
+        return false;
+    }
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_stage10");
     }
@@ -3133,6 +3187,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_vertex_count_nonzero");
     }
+    if (a7z26_multi_probe_step == 3) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp step03_return_false_after_vertex_count_before_stage11");
+        }
+        return false;
+    }
 
     if (consume_if_stage_limited(11, "vertex_count_ok")) {
         return true;
@@ -3140,11 +3201,25 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_stage11");
     }
+    if (a7z26_multi_probe_step == 4) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp step04_return_false_after_internal_stage11_before_binding_count");
+        }
+        return false;
+    }
 
     const u32 binding_count = pipeline_info.vertex_layout.binding_count;
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_binding_count",
                                            binding_count);
+    }
+    if (a7z26_multi_probe_step == 5) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp step05_return_false_after_internal_binding_count_before_vertex_buffer_count");
+        }
+        return false;
     }
     if (a7z26i_return_false_after_internal_binding_count) {
         if (v114_file_trace) {
@@ -3156,6 +3231,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_vertex_buffer_count",
                                            static_cast<u64>(vertex_buffers.size()));
+    }
+    if (a7z26_multi_probe_step == 6) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp step06_return_false_after_vertex_buffer_count_before_binding_count_valid");
+        }
+        return false;
     }
     if (binding_count == 0 || binding_count > vertex_buffers.size()) {
         LOG_ERROR(Render_Vulkan, "Accelerated draw has invalid binding_count={} (max={})",
@@ -3173,12 +3255,26 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_binding_count_valid");
     }
+    if (a7z26_multi_probe_step == 7) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp step07_return_false_after_binding_count_valid_before_stage12");
+        }
+        return false;
+    }
 
     if (consume_if_stage_limited(12, "binding_count_ok")) {
         return true;
     }
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_stage12");
+    }
+    if (a7z26_multi_probe_step == 8) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp step08_return_false_after_internal_stage12_before_index_setup");
+        }
+        return false;
     }
 
     if (IsPipelineBindProbeOnlyEnabled()) {
@@ -3294,6 +3390,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_bind_pipeline");
             V114ShaderMultiplexFileTraceNumber("v115d_mux selected_step", selected_step);
         }
+        if (a7z26_multi_probe_step == 9) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp step09_return_false_after_selected_step_before_final_indexed");
+            }
+            return false;
+        }
 
         // v115-D-A7Z26F:
         // The latest uploaded test was not a valid A7Z26E run: the sidecar showed the A7Z26
@@ -3317,6 +3420,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed",
                                                static_cast<u32>(final_indexed));
         }
+        if (a7z26_multi_probe_step == 10) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp step10_return_false_after_final_indexed_before_final_count");
+            }
+            return false;
+        }
 
         // v115-D-A7Z26E:
         // A7Z26F has now proven that source, binary, and emulators.cfg are aligned and that
@@ -3334,6 +3444,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
+        }
+        if (a7z26_multi_probe_step == 11) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp step11_return_false_after_final_count_before_final_vertex_offset");
+            }
+            return false;
         }
 
         // v115-D-A7Z26G:
@@ -3368,6 +3485,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_vertex_offset",
                                                static_cast<u64>(static_cast<s64>(final_vertex_offset)));
+        }
+        if (a7z26_multi_probe_step == 12) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp step12_return_false_after_final_vertex_offset_before_bind_pipeline");
+            }
+            return false;
         }
 
         // v115-D-A7Z26H:
@@ -3425,6 +3549,14 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        if (a7z26_multi_probe_step == 13) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp step13_return_false_before_bind_pipeline_call");
+            }
+            return false;
+        }
+
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
@@ -3436,6 +3568,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             }
         }
         if (!pipeline_ready) {
+            return false;
+        }
+        if (a7z26_multi_probe_step == 14) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp step14_return_false_after_bind_pipeline_before_a7z23");
+            }
             return false;
         }
 
@@ -3508,8 +3647,23 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        if (a7z26_multi_probe_step == 15) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp step15_return_false_before_before_record_marker");
+            }
+            return false;
+        }
+
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_record");
+        }
+        if (a7z26_multi_probe_step == 16) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp step16_return_false_after_before_record_before_binding_count_number");
+            }
+            return false;
         }
 
         if (a7z27_return_false_before_binding_count_number) {
