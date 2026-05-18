@@ -205,6 +205,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26l shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp2 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3344,18 +3345,108 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return pipeline_ready;
     }
 
+    // v115-D-D-A7Z26MP3:
+    // Step 9 from MP2 stopped after internal_after_stage12 and before the first
+    // D-step/index setup breadcrumb. Keep the same single env knob, but reserve
+    // steps 80-93 for the fragile gap between stage12 and selected_step.
+    if (a7z26_multi_probe_step == 80) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step80_return_false_after_stage12_before_d_step_flags");
+        }
+        return false;
+    }
+
     const bool v115d_mux_step_a = IsV115DAMuxRealVertexBindDrawZeroEnabled();
+    if (a7z26_multi_probe_step == 81) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step81_return_false_after_step_a_flag");
+        }
+        return false;
+    }
+
     const bool v115d_mux_step_b = IsV115DBMuxRealVertexBindDraw3Enabled();
+    if (a7z26_multi_probe_step == 82) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step82_return_false_after_step_b_flag");
+        }
+        return false;
+    }
+
     const bool v115d_mux_step_c = IsV115DCMuxRealVertexBindDraw6Enabled();
+    if (a7z26_multi_probe_step == 83) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step83_return_false_after_step_c_flag");
+        }
+        return false;
+    }
+
     const bool v115d_mux_step_d = IsV115DDMuxRealVertexBindDrawIndexedZeroEnabled();
+    if (a7z26_multi_probe_step == 84) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step84_return_false_after_step_d_flag");
+        }
+        return false;
+    }
+
     const bool v115d_mux_step_e = IsV115DEMuxRealVertexBindDrawIndexed3Enabled();
+    if (a7z26_multi_probe_step == 85) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step85_return_false_after_step_e_flag");
+        }
+        return false;
+    }
+
     const bool v115d_mux_any_step = IsV115DMuxAnyDrawCommandProbeEnabled();
+    if (a7z26_multi_probe_step == 86) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step86_return_false_after_any_step_flag");
+        }
+        return false;
+    }
 
     const bool v115d_mux_zero_count_draw = IsFirstVkCmdDrawZeroCountProbeOnlyEnabled() ||
                                            IsFirstVkCmdDrawZeroCountMinimalProbeOnlyEnabled() ||
                                            v115d_mux_step_a || v115d_mux_step_d;
+    if (a7z26_multi_probe_step == 87) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z26mp3 step87_zero_count_draw", static_cast<u32>(v115d_mux_zero_count_draw));
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step87_return_false_after_zero_count_draw_compute");
+        }
+        return false;
+    }
+
     const bool v115d_mux_real_vertex_bind_ultra_quiet_draw =
         IsFirstVkCmdDrawZeroCountMinimalProbeOnlyEnabled() || v115d_mux_any_step;
+    if (a7z26_multi_probe_step == 88) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z26mp3 step88_real_vertex_bind_ultra_quiet_draw",
+                static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step88_return_false_after_real_vertex_bind_flag_compute");
+        }
+        return false;
+    }
+
+    if (a7z26_multi_probe_step == 89) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceNumber("v115d_a7z26mp3 step89_is_indexed",
+                                            static_cast<u32>(is_indexed));
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step89_return_false_before_indexed_branch");
+        }
+        return false;
+    }
+
     if (is_indexed) {
         // v115-D-MUX: keep the indexed setup path available for every multiplex step.
         // For D-A/D-B/D-C the final Vulkan command is deliberately non-indexed, but the
@@ -3364,14 +3455,50 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if ((v115d_mux_zero_count_draw || v115d_mux_any_step) && IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux keep_setup_index_array_for_mux_step");
         }
+        if (a7z26_multi_probe_step == 90) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp3 step90_return_false_before_setup_index_array");
+            }
+            return false;
+        }
+
         SetupIndexArray();
+
+        if (a7z26_multi_probe_step == 91) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp3 step91_return_false_after_setup_index_array_before_stage13");
+            }
+            return false;
+        }
+
         if (consume_if_stage_limited(13, v115d_mux_zero_count_draw
                                              ? "zero_count_index_array_setup_done"
                                              : "index_array_setup_done")) {
             return true;
         }
+
+        if (a7z26_multi_probe_step == 92) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z26mp3 step92_return_false_after_stage13_before_real_vertex_bind_branch");
+            }
+            return false;
+        }
     } else if (consume_if_stage_limited(13, "nonindexed_no_index_setup")) {
         return true;
+    }
+
+    if (a7z26_multi_probe_step == 93) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_a7z26mp3 step93_real_vertex_bind_ultra_quiet_draw",
+                static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3 step93_return_false_before_real_vertex_bind_branch_body");
+        }
+        return false;
     }
 
     if (v115d_mux_real_vertex_bind_ultra_quiet_draw) {
