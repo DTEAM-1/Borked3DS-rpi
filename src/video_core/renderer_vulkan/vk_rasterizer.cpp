@@ -206,6 +206,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp2 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3b shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3285,11 +3286,49 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return false;
     }
 
+    // v115-D-D-A7Z26MP3B:
+    // MP3 step 80 was requested after stage12, but the observed log stopped after
+    // internal_after_binding_count_valid and never reached internal_after_stage12.
+    // Split the tiny gap around consume_if_stage_limited(12) so we do not rework
+    // MP2 steps 2-7 and can identify whether the fragile point is before, inside,
+    // or immediately after the stage12 consume check.
+    if (a7z26_multi_probe_step == 70) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3b step70_return_false_after_binding_count_valid_before_stage12_consume");
+        }
+        return false;
+    }
+    if (v114_file_trace && a7z26_multi_probe_step >= 70 && a7z26_multi_probe_step <= 80) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z26mp3b before_stage12_consume");
+    }
+    if (a7z26_multi_probe_step == 71) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3b step71_return_false_before_stage12_consume_call");
+        }
+        return false;
+    }
+
     if (consume_if_stage_limited(12, "binding_count_ok")) {
         return true;
     }
+    if (a7z26_multi_probe_step == 72) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3b step72_return_false_after_stage12_consume_before_stage12_marker");
+        }
+        return false;
+    }
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_stage12");
+    }
+    if (a7z26_multi_probe_step == 73) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp3b step73_return_false_after_stage12_marker_before_mp3_gap");
+        }
+        return false;
     }
     if (a7z26_multi_probe_step == 8) {
         if (v114_file_trace) {
