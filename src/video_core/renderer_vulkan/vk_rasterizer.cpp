@@ -209,6 +209,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3b shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3c shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3d shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3e shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3375,6 +3376,22 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
         return false;
     }
+
+    // v115-D-D-A7Z26MP3E:
+    // Step 80 in MP3D was intended to return immediately after stage12, but the uploaded log
+    // for step 80 stopped at internal_after_binding_count_valid and never emitted the
+    // internal_after_stage12 breadcrumb. Step 72 and the stable MP2 step 8 both proved the
+    // stage12 consume path can return cleanly, so make the high-step bridge cut at the same
+    // quiet post-consume point before the longer internal_after_stage12 breadcrumb. This keeps
+    // the 80+ progression usable without reworking the already validated 60-72/8 sequence.
+    if (a7z26_multi_probe_step == 80) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_mp3e_s80_after_stage12_consume_before_marker");
+        }
+        return false;
+    }
+
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_stage12");
     }
