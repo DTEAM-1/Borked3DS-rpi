@@ -213,6 +213,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3f shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3g shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3i shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3j shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3639,19 +3640,79 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        // v115-D-D-A7Z26MP3J:
+        // MP3I step 97 proved the stage13 consume call and stage13_consumed value can be
+        // logged cleanly. MP3I step 98 was placed only a few lines later, but on the Pi5/V3DV
+        // test it became a high-step style fragile probe and stopped back at
+        // internal_after_binding_count_valid. Keep the validated MP3I source and add direct,
+        // same-scope probes that log and return immediately without falling through the
+        // generic stage13 / realbind path. This avoids retesting SetupIndexArray or stage13.
+        if (a7z26_multi_probe_step == 98) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_mp3j_s98_stage13_consumed",
+                    static_cast<u32>(stage13_consumed));
+                if (stage13_consumed) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3j_s98_stage13_consumed_return_true");
+                } else {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3j_s98_after_stage13_direct");
+                }
+            }
+            return stage13_consumed;
+        }
+
+        if (a7z26_multi_probe_step == 99) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_mp3j_s99_stage13_consumed",
+                    static_cast<u32>(stage13_consumed));
+                if (stage13_consumed) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3j_s99_stage13_consumed_return_true");
+                } else {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3j_s99_after_stage13_before_realbind_check");
+                    V114ShaderMultiplexFileTraceNumber(
+                        "v115d_mp3j_s99_realbind",
+                        static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
+                }
+            }
+            return stage13_consumed;
+        }
+
+        if (a7z26_multi_probe_step == 100) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_mp3j_s100_stage13_consumed",
+                    static_cast<u32>(stage13_consumed));
+                if (stage13_consumed) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3j_s100_stage13_consumed_return_true");
+                } else {
+                    V114ShaderMultiplexFileTraceNumber(
+                        "v115d_mp3j_s100_realbind",
+                        static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
+                    V114ShaderMultiplexFileTraceRaw(
+                        v115d_mux_real_vertex_bind_ultra_quiet_draw
+                            ? "v115d_mp3j_s100_realbind_branch_enter"
+                            : "v115d_mp3j_s100_realbind_branch_not_taken");
+                }
+            }
+            return stage13_consumed;
+        }
+
         if (stage13_consumed) {
             return true;
         }
 
-        if (a7z26_multi_probe_step == 92 || a7z26_multi_probe_step == 96 ||
-            a7z26_multi_probe_step == 98) {
+        if (a7z26_multi_probe_step == 92 || a7z26_multi_probe_step == 96) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
                     a7z26_multi_probe_step == 92
                         ? "v115d_mp3f_s92_after_stage13"
-                        : a7z26_multi_probe_step == 96
-                            ? "v115d_mp3g_s96_after_stage13"
-                            : "v115d_mp3i_s98_after_stage13");
+                        : "v115d_mp3g_s96_after_stage13");
             }
             return false;
         }
