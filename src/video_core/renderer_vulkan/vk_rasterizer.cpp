@@ -211,6 +211,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3d shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3e shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3f shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3g shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3594,16 +3595,43 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
-        if (consume_if_stage_limited(13, v115d_mux_zero_count_draw
-                                             ? "zero_count_index_array_setup_done"
-                                             : "index_array_setup_done")) {
+        // v115-D-D-A7Z26MP3G:
+        // Step 92 reached internal_after_stage12 but did not return cleanly to PICA before
+        // emitting the old after-stage13 marker. Split the fragile stage13 boundary into
+        // shorter probes so we do not retest the already validated SetupIndexArray path.
+        if (a7z26_multi_probe_step == 94) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_mp3g_s94_before_stage13_consume");
+            }
+            return false;
+        }
+
+        const bool stage13_consumed = consume_if_stage_limited(
+            13, v115d_mux_zero_count_draw ? "zero_count_index_array_setup_done"
+                                          : "index_array_setup_done");
+
+        if (a7z26_multi_probe_step == 95) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_mp3g_s95_stage13_consumed",
+                    static_cast<u32>(stage13_consumed));
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_mp3g_s95_after_stage13_consume_call");
+            }
+            return false;
+        }
+
+        if (stage13_consumed) {
             return true;
         }
 
-        if (a7z26_multi_probe_step == 92) {
+        if (a7z26_multi_probe_step == 92 || a7z26_multi_probe_step == 96) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_mp3f_s92_after_stage13");
+                    a7z26_multi_probe_step == 92
+                        ? "v115d_mp3f_s92_after_stage13"
+                        : "v115d_mp3g_s96_after_stage13");
             }
             return false;
         }
