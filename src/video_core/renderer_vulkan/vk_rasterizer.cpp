@@ -210,6 +210,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3c shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3d shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3e shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3f shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3456,10 +3457,19 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return pipeline_ready;
     }
 
-    // v115-D-D-A7Z26MP3D selected-step split:
+    // v115-D-D-A7Z26MP3D/MP3F selected-step split:
     // Step 9 from MP2 stopped after internal_after_stage12 and before the first
-    // D-step/index setup breadcrumb. Keep the same single env knob, but reserve
-    // steps 80-93 for the fragile gap between stage12 and selected_step.
+    // D-step/index setup breadcrumb. Keep the same single env knob.
+    //
+    // MP3D/MP3E validated the pre-index path through:
+    //   internal_after_stage12 -> any_step -> zero_count_draw
+    //   -> real_vertex_bind_ultra_quiet_draw -> is_indexed=1
+    //
+    // MP3F now isolates the real indexed setup path:
+    //   90: before SetupIndexArray()
+    //   91: after SetupIndexArray()
+    //   92: after stage13 consume/check
+    //   93: after selected_step, before final_indexed/final_count/final_vertex_offset
     if (a7z26_multi_probe_step == 80) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3569,7 +3579,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (a7z26_multi_probe_step == 90) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_mp3d_s90_before_setup_index");
+                    "v115d_mp3f_s90_before_setup_index");
             }
             return false;
         }
@@ -3579,7 +3589,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (a7z26_multi_probe_step == 91) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_mp3d_s91_after_setup_index");
+                    "v115d_mp3f_s91_after_setup_index");
             }
             return false;
         }
@@ -3593,23 +3603,12 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (a7z26_multi_probe_step == 92) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_mp3d_s92_after_stage13");
+                    "v115d_mp3f_s92_after_stage13");
             }
             return false;
         }
     } else if (consume_if_stage_limited(13, "nonindexed_no_index_setup")) {
         return true;
-    }
-
-    if (a7z26_multi_probe_step == 93) {
-        if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceNumber(
-                "v115d_mp3d_s93_realbind",
-                static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
-            V114ShaderMultiplexFileTraceRaw(
-                "v115d_mp3d_s93_before_bind_body");
-        }
-        return false;
     }
 
     if (v115d_mux_real_vertex_bind_ultra_quiet_draw) {
@@ -3649,6 +3648,17 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_bind_pipeline");
             V114ShaderMultiplexFileTraceNumber("v115d_mux selected_step", selected_step);
         }
+
+        if (a7z26_multi_probe_step == 93) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_mp3f_s93_selected_step", selected_step);
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_mp3f_s93_after_selected_step_before_final_indexed");
+            }
+            return false;
+        }
+
         if (a7z26_multi_probe_step == 9) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
