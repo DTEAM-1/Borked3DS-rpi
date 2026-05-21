@@ -218,6 +218,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3l shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3n shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3o shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3p shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3677,6 +3678,19 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                         static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
                     V114ShaderMultiplexFileTraceRaw(
                         "v115d_mp3o_s95_sub1_before_realbind_branch");
+
+                    // v115-D-D-A7Z26MP3P:
+                    // MP3O validated that real_vertex_bind evaluates to true from the
+                    // stable MP3L substep 1 scope. Keep the same scope and add only the
+                    // logical branch-entry breadcrumb. Do not fall through to selected_step,
+                    // BindPipeline, scheduler.Record, or vkCmdDrawIndexed yet.
+                    if (v115d_mux_real_vertex_bind_ultra_quiet_draw) {
+                        V114ShaderMultiplexFileTraceRaw(
+                            "v115d_mp3p_s95_sub1_realbind_branch_enter");
+                    } else {
+                        V114ShaderMultiplexFileTraceRaw(
+                            "v115d_mp3p_s95_sub1_realbind_branch_not_taken");
+                    }
                 }
                 return false;
             }
