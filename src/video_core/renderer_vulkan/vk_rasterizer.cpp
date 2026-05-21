@@ -215,6 +215,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3i shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3j shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3k shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3l shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -2728,6 +2729,8 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         IsV115DA7Z26LReturnFalseAfterInternalStage10SingleMarkerEnabled();
     const u32 a7z26_multi_probe_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MULTI_PROBE_STEP", 0);
+    const u32 a7z26_mp3l_substep =
+        GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3L_SUBSTEP", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -2791,6 +2794,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux a7z26_multi_probe_step",
             static_cast<u64>(a7z26_multi_probe_step));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux a7z26_mp3l_substep",
+            static_cast<u64>(a7z26_mp3l_substep));
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
@@ -3622,6 +3628,79 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 V114ShaderMultiplexFileTraceRaw(
                     "v115d_mp3g_s95_after_stage13_consume_call");
             }
+
+            // v115-D-D-A7Z26MP3L:
+            // MP3K step 95 is validated, but MP3K step 96 still behaves like a fragile
+            // high-step probe and can stop back at internal_after_stage12 before logging its
+            // direct after-stage13 marker. Keep the stable numeric step 95 and use a tiny
+            // substep selector to advance from the same validated location without changing
+            // the surrounding indexed setup or stage13 consume path.
+            if (a7z26_mp3l_substep == 1) {
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceNumber(
+                        "v115d_mp3l_s95_sub1_stage13_consumed",
+                        static_cast<u32>(stage13_consumed));
+                    V114ShaderMultiplexFileTraceRaw(
+                        stage13_consumed
+                            ? "v115d_mp3l_s95_sub1_stage13_consumed_return_true"
+                            : "v115d_mp3l_s95_sub1_after_stage13_direct");
+                }
+                return stage13_consumed;
+            }
+
+            if (a7z26_mp3l_substep == 2) {
+                if (stage13_consumed) {
+                    if (v114_file_trace) {
+                        V114ShaderMultiplexFileTraceRaw(
+                            "v115d_mp3l_s95_sub2_stage13_consumed_return_true");
+                    }
+                    return true;
+                }
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3l_s95_sub2_after_stage13_consumed_branch");
+                }
+                return false;
+            }
+
+            if (a7z26_mp3l_substep == 3) {
+                if (stage13_consumed) {
+                    if (v114_file_trace) {
+                        V114ShaderMultiplexFileTraceRaw(
+                            "v115d_mp3l_s95_sub3_stage13_consumed_return_true");
+                    }
+                    return true;
+                }
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceNumber(
+                        "v115d_mp3l_s95_sub3_realbind",
+                        static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3l_s95_sub3_before_realbind_branch");
+                }
+                return false;
+            }
+
+            if (a7z26_mp3l_substep == 4) {
+                if (stage13_consumed) {
+                    if (v114_file_trace) {
+                        V114ShaderMultiplexFileTraceRaw(
+                            "v115d_mp3l_s95_sub4_stage13_consumed_return_true");
+                    }
+                    return true;
+                }
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceNumber(
+                        "v115d_mp3l_s95_sub4_realbind",
+                        static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
+                    V114ShaderMultiplexFileTraceRaw(
+                        v115d_mux_real_vertex_bind_ultra_quiet_draw
+                            ? "v115d_mp3l_s95_sub4_realbind_branch_enter"
+                            : "v115d_mp3l_s95_sub4_realbind_branch_not_taken");
+                }
+                return false;
+            }
+
             return false;
         }
 
