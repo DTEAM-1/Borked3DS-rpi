@@ -3081,6 +3081,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         IsV115DA7Z26LReturnFalseAfterInternalStage10SingleMarkerEnabled();
     const u32 a7z26_multi_probe_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MULTI_PROBE_STEP", 0);
+    const u32 a7z26_mp3l_substep =
+        GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3L_SUBSTEP", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -3089,6 +3091,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_a7z26_multi_probe_step",
             static_cast<u64>(a7z26_multi_probe_step));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_a7z26_mp3l_substep",
+            static_cast<u64>(a7z26_mp3l_substep));
     }
 
     // A7Z26MP2: fast multi-probe gate. Keep the multi-probe path quiet before
