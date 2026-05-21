@@ -214,6 +214,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3g shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3i shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3j shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3k shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3624,6 +3625,28 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        // v115-D-D-A7Z26MP3K:
+        // MP3J step 95 is now validated in the same build, while MP3J steps 97/98 were
+        // still fragile high-step probes. Reuse the nearby step 96 number, but move its
+        // probe immediately after the validated stage13 consume call. This avoids the old
+        // later MP3G step96 location and gives a shorter direct cut:
+        // stage13_consumed value -> after_stage13_direct.
+        if (a7z26_multi_probe_step == 96) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_mp3k_s96_stage13_consumed",
+                    static_cast<u32>(stage13_consumed));
+                if (stage13_consumed) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3k_s96_stage13_consumed_return_true");
+                } else {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3k_s96_after_stage13_direct");
+                }
+            }
+            return stage13_consumed;
+        }
+
         // v115-D-D-A7Z26MP3I:
         // MP3H made step 95 fragile again in this user's Pi5/V3DV run even though
         // the MP3G version of step 95 was already validated. Restart from the MP3G
@@ -3707,17 +3730,33 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return true;
         }
 
-        if (a7z26_multi_probe_step == 92 || a7z26_multi_probe_step == 96) {
+        if (a7z26_multi_probe_step == 101) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    a7z26_multi_probe_step == 92
-                        ? "v115d_mp3f_s92_after_stage13"
-                        : "v115d_mp3g_s96_after_stage13");
+                    "v115d_mp3k_s101_after_stage13_consumed_branch");
+            }
+            return false;
+        }
+
+        if (a7z26_multi_probe_step == 92) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_mp3f_s92_after_stage13");
             }
             return false;
         }
     } else if (consume_if_stage_limited(13, "nonindexed_no_index_setup")) {
         return true;
+    }
+
+    if (a7z26_multi_probe_step == 102) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceNumber(
+                "v115d_mp3k_s102_realbind",
+                static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_mp3k_s102_before_realbind_branch");
+        }
+        return false;
     }
 
     if (a7z26_multi_probe_step == 99) {
@@ -3732,6 +3771,14 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     if (v115d_mux_real_vertex_bind_ultra_quiet_draw) {
+        if (a7z26_multi_probe_step == 103) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_mp3k_s103_realbind_branch_enter");
+            }
+            return false;
+        }
+
         if (a7z26_multi_probe_step == 100) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
