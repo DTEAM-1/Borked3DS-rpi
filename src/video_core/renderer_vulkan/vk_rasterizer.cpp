@@ -216,6 +216,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3j shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3k shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3l shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3m shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -2731,6 +2732,8 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MULTI_PROBE_STEP", 0);
     const u32 a7z26_mp3l_substep =
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3L_SUBSTEP", 0);
+    const u32 a7z26_mp3m_chain =
+        GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3M_CHAIN", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -3094,6 +3097,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_a7z26_mp3l_substep",
             static_cast<u64>(a7z26_mp3l_substep));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_a7z26_mp3m_chain",
+            static_cast<u64>(a7z26_mp3m_chain));
     }
 
     // A7Z26MP2: fast multi-probe gate. Keep the multi-probe path quiet before
@@ -3640,6 +3646,32 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             // direct after-stage13 marker. Keep the stable numeric step 95 and use a tiny
             // substep selector to advance from the same validated location without changing
             // the surrounding indexed setup or stage13 consume path.
+            // v115-D-D-A7Z26MP3M:
+            // MP3L substep 1 is stable and validates the after_stage13_direct marker.
+            // MP3L substep 2, when selected directly with SUBSTEP=2, can stop much earlier
+            // at internal_after_binding_count_valid before reaching the same stage13 point.
+            // Keep the known-good SUBSTEP=1 selector and add a tiny chained probe from that
+            // already validated location. This avoids reusing the fragile SUBSTEP=2 path.
+            if (a7z26_mp3l_substep == 1 && a7z26_mp3m_chain == 1) {
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceNumber(
+                        "v115d_mp3m_s95_chain_stage13_consumed",
+                        static_cast<u32>(stage13_consumed));
+                    V114ShaderMultiplexFileTraceRaw(
+                        stage13_consumed
+                            ? "v115d_mp3m_s95_chain_stage13_consumed_return_true"
+                            : "v115d_mp3m_s95_chain_after_stage13_direct");
+                }
+                if (stage13_consumed) {
+                    return true;
+                }
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_mp3m_s95_chain_after_stage13_consumed_branch");
+                }
+                return false;
+            }
+
             if (a7z26_mp3l_substep == 1) {
                 if (v114_file_trace) {
                     V114ShaderMultiplexFileTraceNumber(
