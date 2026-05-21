@@ -2732,8 +2732,6 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MULTI_PROBE_STEP", 0);
     const u32 a7z26_mp3l_substep =
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3L_SUBSTEP", 0);
-    const u32 a7z26_mp3m_chain =
-        GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3M_CHAIN", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
@@ -3086,6 +3084,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MULTI_PROBE_STEP", 0);
     const u32 a7z26_mp3l_substep =
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3L_SUBSTEP", 0);
+    const u32 a7z26_mp3m_chain =
+        GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3M_CHAIN", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
