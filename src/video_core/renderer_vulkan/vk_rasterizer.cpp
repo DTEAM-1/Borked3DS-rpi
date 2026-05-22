@@ -3744,7 +3744,34 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
-            return false;
+            // v115-D-D-A7Z26MP3S:
+            // MP3R validated realbind_branch_enter, but the older A7Z26F/H gates are outside
+            // the stable MP3L substep scope and became fragile before reaching selected_step.
+            // Reuse the existing MP3L substep selector instead of adding a new env flag:
+            // substep 5 keeps the stable step95/stage13 path, then deliberately falls through
+            // to the real real_vertex_bind mux branch where it will cut immediately after
+            // selected_step and before final_indexed, final_count, final_vertex_offset,
+            // BindPipeline, scheduler.Record, vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
+            if (a7z26_mp3l_substep == 5) {
+                if (stage13_consumed) {
+                    if (v114_file_trace) {
+                        V114ShaderMultiplexFileTraceRaw(
+                            "v115d_mp3s_s95_sub5_stage13_consumed_return_true");
+                    }
+                    return true;
+                }
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceNumber(
+                        "v115d_mp3s_s95_sub5_realbind",
+                        static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
+                    V114ShaderMultiplexFileTraceRaw(
+                        v115d_mux_real_vertex_bind_ultra_quiet_draw
+                            ? "v115d_mp3s_s95_sub5_fallthrough_to_realbind_branch"
+                            : "v115d_mp3s_s95_sub5_realbind_branch_not_taken");
+                }
+            } else {
+                return false;
+            }
         }
 
         // v115-D-D-A7Z26MP3K:
@@ -3944,6 +3971,16 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux real_vertex_bind_mux_before_bind_pipeline");
             V114ShaderMultiplexFileTraceNumber("v115d_mux selected_step", selected_step);
+        }
+
+        if (a7z26_multi_probe_step == 95 && a7z26_mp3l_substep == 5) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_mp3s_s95_sub5_selected_step", selected_step);
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_mp3s_s95_sub5_after_selected_step_before_final_indexed");
+            }
+            return false;
         }
 
         if (a7z26_multi_probe_step == 93) {
