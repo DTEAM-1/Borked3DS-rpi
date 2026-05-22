@@ -218,6 +218,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z26mp3l shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3n shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z26mp3o shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z26mp3q shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z27 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z28 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z29 shader_file_trace_reset\n", fp);
@@ -3677,6 +3678,17 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                         static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
                     V114ShaderMultiplexFileTraceRaw(
                         "v115d_mp3o_s95_sub1_before_realbind_branch");
+
+                    // v115-D-D-A7Z26MP3Q:
+                    // The old numeric step 103 does not preserve the stable MP3O path and
+                    // can fall back before internal_after_stage12. Keep the validated step
+                    // 95/substep 1 scope, avoid any new env variable, and test only the
+                    // real_vertex_bind branch decision with a single inline breadcrumb before
+                    // selected_step, BindPipeline, scheduler.Record, or vkCmdDrawIndexed.
+                    V114ShaderMultiplexFileTraceRaw(
+                        v115d_mux_real_vertex_bind_ultra_quiet_draw
+                            ? "v115d_mp3q_s95_sub1_inline_realbind_branch_enter"
+                            : "v115d_mp3q_s95_sub1_inline_realbind_branch_not_taken");
                 }
                 return false;
             }
