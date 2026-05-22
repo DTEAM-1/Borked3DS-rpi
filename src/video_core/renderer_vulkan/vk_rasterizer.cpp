@@ -3744,36 +3744,46 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
-            // v115-D-D-A7Z26MP3S/MP3T:
+            // v115-D-D-A7Z26MP3S/MP3T/MP3U:
             // MP3R validated realbind_branch_enter, but the older A7Z26F/H gates are outside
             // the stable MP3L substep scope and became fragile before reaching selected_step.
             // Reuse the existing MP3L substep selector instead of adding a new env flag.
             //   substep 5 cuts immediately after selected_step.
             //   substep 6 keeps the same stable fallthrough, allows final_indexed to be emitted,
             //             then cuts before final_count.
-            if (a7z26_mp3l_substep == 5 || a7z26_mp3l_substep == 6) {
+            //   substep 7 allows final_count to be emitted, then cuts before final_vertex_offset.
+            if (a7z26_mp3l_substep == 5 || a7z26_mp3l_substep == 6 ||
+                a7z26_mp3l_substep == 7) {
                 if (stage13_consumed) {
                     if (v114_file_trace) {
                         V114ShaderMultiplexFileTraceRaw(
-                            a7z26_mp3l_substep == 6
-                                ? "v115d_mp3t_s95_sub6_stage13_consumed_return_true"
-                                : "v115d_mp3s_s95_sub5_stage13_consumed_return_true");
+                            a7z26_mp3l_substep == 7
+                                ? "v115d_mp3u_s95_sub7_stage13_consumed_return_true"
+                                : (a7z26_mp3l_substep == 6
+                                       ? "v115d_mp3t_s95_sub6_stage13_consumed_return_true"
+                                       : "v115d_mp3s_s95_sub5_stage13_consumed_return_true"));
                     }
                     return true;
                 }
                 if (v114_file_trace) {
                     V114ShaderMultiplexFileTraceNumber(
-                        a7z26_mp3l_substep == 6 ? "v115d_mp3t_s95_sub6_realbind"
-                                                 : "v115d_mp3s_s95_sub5_realbind",
+                        a7z26_mp3l_substep == 7
+                            ? "v115d_mp3u_s95_sub7_realbind"
+                            : (a7z26_mp3l_substep == 6 ? "v115d_mp3t_s95_sub6_realbind"
+                                                        : "v115d_mp3s_s95_sub5_realbind"),
                         static_cast<u32>(v115d_mux_real_vertex_bind_ultra_quiet_draw));
                     V114ShaderMultiplexFileTraceRaw(
                         v115d_mux_real_vertex_bind_ultra_quiet_draw
-                            ? (a7z26_mp3l_substep == 6
-                                   ? "v115d_mp3t_s95_sub6_fallthrough_to_realbind_branch"
-                                   : "v115d_mp3s_s95_sub5_fallthrough_to_realbind_branch")
-                            : (a7z26_mp3l_substep == 6
-                                   ? "v115d_mp3t_s95_sub6_realbind_branch_not_taken"
-                                   : "v115d_mp3s_s95_sub5_realbind_branch_not_taken"));
+                            ? (a7z26_mp3l_substep == 7
+                                   ? "v115d_mp3u_s95_sub7_fallthrough_to_realbind_branch"
+                                   : (a7z26_mp3l_substep == 6
+                                          ? "v115d_mp3t_s95_sub6_fallthrough_to_realbind_branch"
+                                          : "v115d_mp3s_s95_sub5_fallthrough_to_realbind_branch"))
+                            : (a7z26_mp3l_substep == 7
+                                   ? "v115d_mp3u_s95_sub7_realbind_branch_not_taken"
+                                   : (a7z26_mp3l_substep == 6
+                                          ? "v115d_mp3t_s95_sub6_realbind_branch_not_taken"
+                                          : "v115d_mp3s_s95_sub5_realbind_branch_not_taken")));
                 }
             } else {
                 return false;
@@ -3989,12 +3999,17 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
-        if (a7z26_multi_probe_step == 95 && a7z26_mp3l_substep == 6) {
+        if (a7z26_multi_probe_step == 95 &&
+            (a7z26_mp3l_substep == 6 || a7z26_mp3l_substep == 7)) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceNumber(
-                    "v115d_mp3t_s95_sub6_selected_step", selected_step);
+                    a7z26_mp3l_substep == 7 ? "v115d_mp3u_s95_sub7_selected_step"
+                                             : "v115d_mp3t_s95_sub6_selected_step",
+                    selected_step);
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_mp3t_s95_sub6_after_selected_step_before_final_indexed");
+                    a7z26_mp3l_substep == 7
+                        ? "v115d_mp3u_s95_sub7_after_selected_step_before_final_indexed"
+                        : "v115d_mp3t_s95_sub6_after_selected_step_before_final_indexed");
             }
         }
 
@@ -4038,15 +4053,21 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_indexed",
                                                static_cast<u32>(final_indexed));
         }
-        if (a7z26_multi_probe_step == 95 && a7z26_mp3l_substep == 6) {
+        if (a7z26_multi_probe_step == 95 &&
+            (a7z26_mp3l_substep == 6 || a7z26_mp3l_substep == 7)) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceNumber(
-                    "v115d_mp3t_s95_sub6_final_indexed",
+                    a7z26_mp3l_substep == 7 ? "v115d_mp3u_s95_sub7_final_indexed"
+                                             : "v115d_mp3t_s95_sub6_final_indexed",
                     static_cast<u32>(final_indexed));
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_mp3t_s95_sub6_after_final_indexed_before_final_count");
+                    a7z26_mp3l_substep == 7
+                        ? "v115d_mp3u_s95_sub7_after_final_indexed_before_final_count"
+                        : "v115d_mp3t_s95_sub6_after_final_indexed_before_final_count");
             }
-            return false;
+            if (a7z26_mp3l_substep == 6) {
+                return false;
+            }
         }
         if (a7z26_multi_probe_step == 10) {
             if (v114_file_trace) {
@@ -4072,6 +4093,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         if (IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_count", final_count);
+        }
+        if (a7z26_multi_probe_step == 95 && a7z26_mp3l_substep == 7) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_mp3u_s95_sub7_final_count", final_count);
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_mp3u_s95_sub7_after_final_count_before_final_vertex_offset");
+            }
+            return false;
         }
         if (a7z26_multi_probe_step == 11) {
             if (v114_file_trace) {
