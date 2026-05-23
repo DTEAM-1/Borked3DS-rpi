@@ -3114,6 +3114,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3L_SUBSTEP", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
+    const bool a7z32_direct_final_vertex_offset_after_stage12 =
+        IsV115DA7Z32DirectFinalVertexOffsetAfterStage12Enabled();
+    const bool a7z32_return_false_after_direct_final_vertex_offset =
+        IsV115DA7Z32ReturnFalseAfterDirectFinalVertexOffsetEnabled();
 
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_mux internal_flags_cached_for_post_before_record");
