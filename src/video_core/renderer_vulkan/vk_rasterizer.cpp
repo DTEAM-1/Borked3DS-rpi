@@ -1110,6 +1110,24 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     return IsEnvEnabled("BORKED3DS_V3DV_A7Z31C3_BIND_VERTEX_BUFFER0_ONLY");
 }
 
+
+[[nodiscard]] bool IsV115DA7Z32ValidateFinalVertexOffsetBeforeBindPipelineEnabled() {
+    // v115-D-A7Z32:
+    // Validate final_vertex_offset at the last safe boundary before BindPipeline().
+    // This keeps the D-D indexed setup path alive, but it does not bind the pipeline,
+    // does not build offsets, does not enter scheduler.Record, and does not record
+    // vkCmdBindVertexBuffers or vkCmdDrawIndexed when the return flag is enabled.
+    return IsEnvEnabled(
+        "BORKED3DS_V3DV_A7Z32_VALIDATE_FINAL_VERTEX_OFFSET_BEFORE_BIND_PIPELINE") ||
+           IsEnvEnabled(
+               "BORKED3DS_V3DV_A7Z32_RETURN_FALSE_AFTER_VALIDATED_FINAL_VERTEX_OFFSET");
+}
+
+[[nodiscard]] bool IsV115DA7Z32ReturnFalseAfterValidatedFinalVertexOffsetEnabled() {
+    return IsEnvEnabled(
+        "BORKED3DS_V3DV_A7Z32_RETURN_FALSE_AFTER_VALIDATED_FINAL_VERTEX_OFFSET");
+}
+
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
@@ -3087,6 +3105,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z26_MP3L_SUBSTEP", 0);
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
+    const bool a7z32_validate_final_vertex_offset_before_bind_pipeline =
+        IsV115DA7Z32ValidateFinalVertexOffsetBeforeBindPipelineEnabled();
+    const bool a7z32_return_false_after_validated_final_vertex_offset =
+        IsV115DA7Z32ReturnFalseAfterValidatedFinalVertexOffsetEnabled();
 
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_mux internal_flags_cached_for_post_before_record");
@@ -3149,6 +3171,12 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z27_return_false_before_binding_count_number",
             static_cast<u64>(a7z27_return_false_before_binding_count_number));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_flag_a7z32_validate_final_vertex_offset_before_bind_pipeline",
+            static_cast<u64>(a7z32_validate_final_vertex_offset_before_bind_pipeline));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux internal_flag_a7z32_return_false_after_validated_final_vertex_offset",
+            static_cast<u64>(a7z32_return_false_after_validated_final_vertex_offset));
     }
 
     if (a7z26j_return_false_after_internal_flags) {
@@ -3794,6 +3822,12 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                                                  ? "v115d_mp3t_s95_sub6_realbind_branch_not_taken"
                                                  : "v115d_mp3s_s95_sub5_realbind_branch_not_taken"))));
                 }
+            } else if (a7z26_mp3l_substep == 9 &&
+                       a7z32_validate_final_vertex_offset_before_bind_pipeline) {
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z32_s95_sub9_fallthrough_to_final_vertex_offset_validation");
+                }
             } else {
                 return false;
             }
@@ -4170,6 +4204,69 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceNumber("v115d_mux final_vertex_offset",
                                                static_cast<u64>(static_cast<s64>(final_vertex_offset)));
         }
+        if (a7z32_validate_final_vertex_offset_before_bind_pipeline) {
+            const s32 expected_params_vertex_offset =
+                -static_cast<s32>(vertex_info.vs_input_index_min);
+            const bool final_vertex_offset_matches_params =
+                final_vertex_offset == expected_params_vertex_offset;
+            const bool final_vertex_offset_min_overflows_s32 =
+                vertex_info.vs_input_index_min > 0x7fffffffu;
+            const bool final_vertex_offset_is_negative = final_vertex_offset < 0;
+            const bool final_vertex_offset_valid =
+                final_vertex_offset_matches_params && !final_vertex_offset_min_overflows_s32;
+
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_a7z32 before_bind_pipeline_final_vertex_offset_validate");
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z32 selected_step",
+                                                   static_cast<u64>(selected_step));
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z32 final_indexed",
+                                                   static_cast<u64>(final_indexed));
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z32 final_count",
+                                                   static_cast<u64>(final_count));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z32 vertex_info_vs_input_index_min",
+                    static_cast<u64>(vertex_info.vs_input_index_min));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z32 vertex_info_vs_input_index_max",
+                    static_cast<u64>(vertex_info.vs_input_index_max));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z32 final_vertex_offset",
+                    static_cast<u64>(static_cast<s64>(final_vertex_offset)));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z32 params_vertex_offset",
+                    static_cast<u64>(static_cast<s64>(expected_params_vertex_offset)));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z32 final_vertex_offset_matches_params",
+                    static_cast<u64>(final_vertex_offset_matches_params));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z32 final_vertex_offset_min_overflows_s32",
+                    static_cast<u64>(final_vertex_offset_min_overflows_s32));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z32 final_vertex_offset_is_negative",
+                    static_cast<u64>(final_vertex_offset_is_negative));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z32 final_vertex_offset_valid",
+                    static_cast<u64>(final_vertex_offset_valid));
+            }
+
+            if (!final_vertex_offset_valid) {
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z32 invalid_final_vertex_offset_return_false");
+                }
+                return false;
+            }
+
+            if (a7z32_return_false_after_validated_final_vertex_offset) {
+                if (v114_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z32 return_false_after_validated_final_vertex_offset");
+                }
+                return false;
+            }
+        }
+
         if (a7z26_multi_probe_step == 95 && a7z26_mp3l_substep == 8) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceNumber(
