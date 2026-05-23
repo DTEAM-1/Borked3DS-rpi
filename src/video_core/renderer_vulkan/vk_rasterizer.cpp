@@ -2877,6 +2877,12 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux flag_a7z32b_return_false_after_direct_final_vertex_offset",
             static_cast<u64>(a7z32b_return_false_after_direct_final_vertex_offset));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux flag_a7z32c_direct_final_vertex_offset_after_vertex_count",
+            static_cast<u64>(a7z32c_direct_final_vertex_offset_after_vertex_count));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_mux flag_a7z32c_return_false_after_direct_final_vertex_offset",
+            static_cast<u64>(a7z32c_return_false_after_direct_final_vertex_offset));
         V114ShaderMultiplexFileTraceRaw("v115d_mux flags_cached_for_post_before_record");
     }
 
