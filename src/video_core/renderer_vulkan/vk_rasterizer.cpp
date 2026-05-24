@@ -3220,6 +3220,24 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_a7z26_mp3l_substep",
             static_cast<u64>(a7z26_mp3l_substep));
+    }
+
+    // v115-D-A7Z26MP2B:
+    // The latest Pi5/V3DV log proves A7Z26_MULTI_PROBE_STEP=2 is read inside
+    // AccelerateDrawBatchInternal(), but the old step02 checkpoint is still too late:
+    // execution reaches the cached step/substep values and then cuts before the
+    // stage10 boundary marker. Stop immediately after the step/substep values are
+    // known, before A7Z32B/C/D flag traces, stage10, vertex_count, binding_count,
+    // SetupIndexArray(), BindPipeline(), scheduler.Record(), or any vkCmd* call.
+    if (a7z26_multi_probe_step == 2 && a7z26_mp3l_substep == 0) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_a7z26mp2b step02_early_return_false_after_internal_step_values_before_a7z32_flags");
+        }
+        return false;
+    }
+
+    if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z32b_direct_final_vertex_offset_after_binding_valid",
             static_cast<u64>(a7z32b_direct_final_vertex_offset_after_binding_valid));
