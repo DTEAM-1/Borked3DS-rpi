@@ -1119,8 +1119,6 @@ void PicaCore::DrawArrays(bool is_indexed) {
                         V114C6PicaGateFileTraceRaw(
                             "v115d_a7z21 pica_after_backend_ultra_clean_begin");
                         (void)rasterizer->AccelerateDrawBatch(is_indexed);
-                        V114C6PicaGateFileTraceRaw(
-                            "v115d_a7z21 pica_after_backend_ultra_clean_after_call");
                         return;
                     }
                     if (IsV115DA7Z20PicaAfterBackendControlledReturnEnabled()) {
