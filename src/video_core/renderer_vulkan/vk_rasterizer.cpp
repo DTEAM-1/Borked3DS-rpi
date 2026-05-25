@@ -3638,19 +3638,24 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return false;
     }
 
+    if (a7z26_multi_probe_step == 64) {
+        // v115-D-D-A7Z26MP3D-S64C:
+        // The previous S64B test stopped immediately after the already-safe
+        // internal_after_stage11 breadcrumb and before the numeric
+        // internal_binding_count trace. Isolate the next operation by reading
+        // binding_count silently and returning false without any additional sidecar
+        // trace payload. If PICA receives after_call/return, the binding_count read is
+        // safe and the numeric trace payload was the fragile part.
+        volatile u32 a7z26mp3d_s64c_binding_count_probe =
+            pipeline_info.vertex_layout.binding_count;
+        (void)a7z26mp3d_s64c_binding_count_probe;
+        return false;
+    }
+
     const u32 binding_count = pipeline_info.vertex_layout.binding_count;
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_binding_count",
                                            binding_count);
-    }
-    if (a7z26_multi_probe_step == 64) {
-        // v115-D-D-A7Z26MP3D-S64B:
-        // The uploaded step64 log reaches the already-written
-        // "v115d_a7z23b internal_binding_count" breadcrumb and then cuts before the
-        // extra S64 raw marker. For this probe, the binding_count breadcrumb above is
-        // the marker; return immediately without any additional file trace payload so
-        // we can verify clean PICA return with the smallest possible code path.
-        return false;
     }
     if (a7z26_multi_probe_step == 5) {
         if (v114_file_trace) {
