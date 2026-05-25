@@ -187,13 +187,14 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
 [[nodiscard]] bool IsV115DA7Z21PicaAfterBackendUltraCleanReturnEnabled() {
     // v115-D-E-A7Z21: A7Z20 proved that PICA reaches the first marker immediately after
     // a real backend call, but cuts before writing the result value. Return immediately
-    // after the after-call breadcrumb, without formatting/logging the bool result.
+    // after the after-call breadcrumb, without formatting/logging the bool result and
+    // without writing an additional final return breadcrumb.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z21_PICA_AFTER_BACKEND_ULTRA_CLEAN_RETURN");
 }
 
 [[nodiscard]] bool IsV115DA7Z22TriggerDrawArraysCallBoundaryProbeEnabled() {
-    // v115-D-E-A7Z22: A7Z21 writes the final DrawArrays-side return breadcrumb after a
+    // v115-D-E-A7Z22: A7Z21 reaches the DrawArrays-side after-call breadcrumb after a
     // real backend call, but the outer trigger_draw_after_drawarrays marker is still absent.
     // This caller-side probe wraps DrawArrays() itself from the register-trigger path and
     // returns immediately after the call if control reaches this boundary.
@@ -1120,8 +1121,6 @@ void PicaCore::DrawArrays(bool is_indexed) {
                         (void)rasterizer->AccelerateDrawBatch(is_indexed);
                         V114C6PicaGateFileTraceRaw(
                             "v115d_a7z21 pica_after_backend_ultra_clean_after_call");
-                        V114C6PicaGateFileTraceRaw(
-                            "v115d_a7z21 pica_after_backend_ultra_clean_return");
                         return;
                     }
                     if (IsV115DA7Z20PicaAfterBackendControlledReturnEnabled()) {
