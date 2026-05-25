@@ -3671,17 +3671,20 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
         return false;
     }
+    if (a7z26_multi_probe_step == 65) {
+        // v115-D-D-A7Z26MP3D-S65C:
+        // S65B proved the path can reach the vertex_buffer_count area, but the backend
+        // still did not unwind to PICA after writing the numeric breadcrumb. Make the
+        // step-65 probe fully silent: read vertex_buffers.size() only to validate the
+        // access, then return immediately before any vertex_buffer_count trace payload.
+        const u64 a7z26mp3d_s65c_vertex_buffer_count_probe =
+            static_cast<u64>(vertex_buffers.size());
+        (void)a7z26mp3d_s65c_vertex_buffer_count_probe;
+        return false;
+    }
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_vertex_buffer_count",
                                            static_cast<u64>(vertex_buffers.size()));
-    }
-    if (a7z26_multi_probe_step == 65) {
-        // v115-D-D-A7Z26MP3D-S65B:
-        // Step 65 reached the already-safe numeric vertex_buffer_count breadcrumb,
-        // but the sidecar stopped before the extra raw S65 marker and never returned
-        // to PICA. Keep the numeric breadcrumb as the proof point and return
-        // immediately, without writing another trace payload.
-        return false;
     }
     if (a7z26_multi_probe_step == 6) {
         if (v114_file_trace) {
