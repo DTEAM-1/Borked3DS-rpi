@@ -3237,7 +3237,22 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return false;
     }
 
-    if (v114_file_trace) {
+    const bool a7z32_internal_flag_trace_needed =
+        a7z32b_direct_final_vertex_offset_after_binding_valid ||
+        a7z32b_return_false_after_direct_final_vertex_offset ||
+        a7z32c_direct_final_vertex_offset_after_vertex_count ||
+        a7z32c_return_false_after_direct_final_vertex_offset ||
+        a7z32d_direct_final_vertex_offset_after_internal_flags ||
+        a7z32d_return_false_after_direct_final_vertex_offset ||
+        a7z26_multi_probe_step == 0 || a7z26_multi_probe_step == 95;
+
+    // v115-D-D-A7Z26MP3D-S64 fix:
+    // Step64 is not an A7Z32 offset-validation pass. The uploaded step64 log proves the
+    // backend reaches the cached step/substep values, then cuts while writing disabled
+    // A7Z32B/C/D flag breadcrumbs, before stage10/binding_count. Keep those breadcrumbs only
+    // for A7Z32-specific tests and generic no-step diagnostics. High MP3D steps can now
+    // continue directly toward their actual checkpoints.
+    if (v114_file_trace && a7z32_internal_flag_trace_needed) {
         V114ShaderMultiplexFileTraceNumber(
             "v115d_mux internal_flag_a7z32b_direct_final_vertex_offset_after_binding_valid",
             static_cast<u64>(a7z32b_direct_final_vertex_offset_after_binding_valid));
