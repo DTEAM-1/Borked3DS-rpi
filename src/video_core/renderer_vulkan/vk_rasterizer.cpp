@@ -3376,22 +3376,19 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return false;
     }
 
-    // v115-D-D-A7Z26MP3D-S72C:
-    // The stage-stop-12 control reached the correct step=0 configuration but stopped
-    // while entering the stage-12 limiter area, before returning to PICA. For the MP3D
-    // probe corridor, bypass this diagnostic limiter when it is a no-op
-    // (ACCEL_STAGE_STOP_AFTER=0). This keeps normal behavior equivalent for the probe
-    // path while avoiding the fragile helper call.
-    const bool a7z26mp3d_bypass_stage12_limiter =
-        a7z26_multi_probe_step >= 72 && a7z26_multi_probe_step <= 79 &&
-        GetAccelStageStopAfter() == 0;
-
-    if (!a7z26mp3d_bypass_stage12_limiter &&
-        consume_if_stage_limited(12, "binding_count_ok")) {
-        return true;
-    }
+    // v115-D-D-A7Z26MP3D-S72D:
+    // S72C still stopped immediately after the already validated
+    // "v115d_a7z23b internal_after_binding_count_valid" breadcrumb and did not
+    // unwind to PICA. Make step 72 an exact quiet alias of the known-good S66B
+    // cut: no stage12 helper, no bypass variable, no GetAccelStageStopAfter(),
+    // and no extra sidecar marker. This confirms whether the step72 branch
+    // itself can return cleanly before any stage12 diagnostic code runs.
     if (a7z26_multi_probe_step == 72) {
         return false;
+    }
+
+    if (consume_if_stage_limited(12, "binding_count_ok")) {
+        return true;
     }
 
     // v115-D-D-A7Z26MP3E:
