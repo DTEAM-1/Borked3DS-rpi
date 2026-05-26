@@ -3348,7 +3348,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_binding_count_valid");
     }
-    if (a7z26_multi_probe_step == 66) {
+
+    // v115-D-D-A7Z26MP3D-S66B/S72D:
+    // Keep this cut silent. The Pi5/V3DV path is stable up to
+    // "v115d_a7z23b internal_after_binding_count_valid", but extra breadcrumbs or
+    // helper calls immediately after this point can prevent the backend from unwinding
+    // cleanly to PICA. Step 66 validates the original binding-count-valid cut. Step 72
+    // is intentionally an alias of that exact cut so we can prove that the numeric
+    // step itself is not the fragile part before reintroducing the stage12 boundary.
+    if (a7z26_multi_probe_step == 66 || a7z26_multi_probe_step == 72) {
         return false;
     }
     if (a7z26_multi_probe_step == 7) {
@@ -3372,18 +3380,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
         return false;
     }
+    // v115-D-D-A7Z26MP3D-S71B:
+    // Step 71 is only a boundary check before the stage12 helper. Keep it silent,
+    // because the explicit s71 breadcrumb was observed to make the return path fragile.
     if (a7z26_multi_probe_step == 71) {
-        return false;
-    }
-
-    // v115-D-D-A7Z26MP3D-S72D:
-    // S72C still stopped immediately after the already validated
-    // "v115d_a7z23b internal_after_binding_count_valid" breadcrumb and did not
-    // unwind to PICA. Make step 72 an exact quiet alias of the known-good S66B
-    // cut: no stage12 helper, no bypass variable, no GetAccelStageStopAfter(),
-    // and no extra sidecar marker. This confirms whether the step72 branch
-    // itself can return cleanly before any stage12 diagnostic code runs.
-    if (a7z26_multi_probe_step == 72) {
         return false;
     }
 
