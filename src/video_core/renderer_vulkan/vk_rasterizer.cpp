@@ -3379,11 +3379,12 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (consume_if_stage_limited(12, "binding_count_ok")) {
         return true;
     }
+    // v115-D-D-A7Z26MP3D-S72B:
+    // Step 72 reaches the already validated post-stage12-consume cut, but the extra
+    // sidecar marker can prevent the unwind back to PICA on Pi5/V3DV. Keep the
+    // validated stage12 consume path above and return immediately without writing
+    // another raw trace.
     if (a7z26_multi_probe_step == 72) {
-        if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw(
-                "v115d_mp3d_s72_after_stage12_consume");
-        }
         return false;
     }
 
