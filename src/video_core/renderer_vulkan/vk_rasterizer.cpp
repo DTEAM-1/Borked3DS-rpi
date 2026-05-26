@@ -3376,14 +3376,20 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return false;
     }
 
-    if (consume_if_stage_limited(12, "binding_count_ok")) {
+    // v115-D-D-A7Z26MP3D-S72C:
+    // The stage-stop-12 control reached the correct step=0 configuration but stopped
+    // while entering the stage-12 limiter area, before returning to PICA. For the MP3D
+    // probe corridor, bypass this diagnostic limiter when it is a no-op
+    // (ACCEL_STAGE_STOP_AFTER=0). This keeps normal behavior equivalent for the probe
+    // path while avoiding the fragile helper call.
+    const bool a7z26mp3d_bypass_stage12_limiter =
+        a7z26_multi_probe_step >= 72 && a7z26_multi_probe_step <= 79 &&
+        GetAccelStageStopAfter() == 0;
+
+    if (!a7z26mp3d_bypass_stage12_limiter &&
+        consume_if_stage_limited(12, "binding_count_ok")) {
         return true;
     }
-    // v115-D-D-A7Z26MP3D-S72B:
-    // Step 72 reaches the already validated post-stage12-consume cut, but the extra
-    // sidecar marker can prevent the unwind back to PICA on Pi5/V3DV. Keep the
-    // validated stage12 consume path above and return immediately without writing
-    // another raw trace.
     if (a7z26_multi_probe_step == 72) {
         return false;
     }
