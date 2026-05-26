@@ -3348,12 +3348,11 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_binding_count_valid");
     }
-    // v115-D-D-A7Z26MP3D-S66B:
-    // The current Pi5/V3DV log reaches the stable breadcrumb
-    // "v115d_a7z23b internal_after_binding_count_valid" but does not unwind to PICA
-    // before the extra S66 marker is emitted. Keep the validated breadcrumb above and
-    // return immediately here without writing an additional raw trace.
     if (a7z26_multi_probe_step == 66) {
+        if (v114_file_trace) {
+            V114ShaderMultiplexFileTraceRaw(
+                "v115d_mp3d_s66_after_binding_valid");
+        }
         return false;
     }
     if (a7z26_multi_probe_step == 7) {
@@ -3378,10 +3377,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return false;
     }
     if (a7z26_multi_probe_step == 71) {
-        if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw(
-                "v115d_mp3d_s71_before_stage12_call");
-        }
+        // v115-D-D-A7Z26MP3D-S71B:
+        // The step 71 breadcrumb was reached, but the raw file trace at this exact
+        // point prevented the PICA ultra-clean wrapper from returning to
+        // trigger_draw_after_drawarrays. Keep the probe as a silent cut point.
         return false;
     }
 
