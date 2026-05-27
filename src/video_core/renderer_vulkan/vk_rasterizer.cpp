@@ -3294,10 +3294,12 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                                            binding_count);
     }
     if (a7z26_multi_probe_step == 64) {
-        if (v114_file_trace) {
-            V114ShaderMultiplexFileTraceRaw(
-                "v115d_mp3d_s64_after_binding_count");
-        }
+        // v115-D-D-A7Z26MP3D-S64B:
+        // Step63 returns cleanly after "internal_after_stage11". The current
+        // step64 log reaches "internal_binding_count=3" and writes the extra
+        // S64 breadcrumb, but does not unwind cleanly to PICA. Use the already
+        // emitted numeric binding_count breadcrumb as the probe marker and return
+        // immediately without any additional trace payload.
         return false;
     }
     if (a7z26_multi_probe_step == 5) {
