@@ -3345,19 +3345,20 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
         return false;
     }
-    if (v114_file_trace) {
-        V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_binding_count_valid");
-    }
 
-    // v115-D-D-A7Z26MP3D-S66B/S72D:
-    // Keep this cut silent. The Pi5/V3DV path is stable up to
-    // "v115d_a7z23b internal_after_binding_count_valid", but extra breadcrumbs or
-    // helper calls immediately after this point can prevent the backend from unwinding
-    // cleanly to PICA. Step 66 validates the original binding-count-valid cut. Step 72
-    // is intentionally an alias of that exact cut so we can prove that the numeric
-    // step itself is not the fragile part before reintroducing the stage12 boundary.
+    // v115-D-D-A7Z26MP3D-S66C/S72E:
+    // The latest Pi5/V3DV log reaches binding_count=3 and vertex_buffer_count=16,
+    // then stalls after the shared internal_after_binding_count_valid breadcrumb even
+    // when step 66 is selected. Cut before that final breadcrumb so this pass validates
+    // only the already-evaluated binding-count condition and tests whether the raw
+    // file trace itself is the fragile boundary. No extra variables, helper calls,
+    // lambdas, pipeline bind, or vkCmd* commands are introduced here.
     if (a7z26_multi_probe_step == 66 || a7z26_multi_probe_step == 72) {
         return false;
+    }
+
+    if (v114_file_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_binding_count_valid");
     }
     if (a7z26_multi_probe_step == 7) {
         if (v114_file_trace) {
