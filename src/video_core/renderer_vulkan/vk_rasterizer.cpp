@@ -3686,8 +3686,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         //   step 92 / substep 1: after reading index_u8
         //   step 92 / substep 2: after reading native_u8 capability
         //   step 92 / substep 3: after computing source/destination index buffer sizes
-        //   step 92 / substep 4: after choosing VkIndexType
-        //   step 92 / substep 5: after computing the PICA index buffer physical address
+        //   step 92 / substep 4: after forcing VkIndexType eUint16 only
+        //   step 92 / substep 5: after forcing VkIndexType eUint8EXT only
+        //   step 92 / substep 6: after choosing conditional VkIndexType
+        //   step 92 / substep 7: after computing the PICA index buffer physical address
         if (a7z34_post_stage12_step == 92) {
             if (a7z34_post_stage12_substep == 0) {
                 return false;
@@ -3716,9 +3718,37 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
+            // v115-D-D-A7Z34F:
+            // A7Z34E substep 3 validated the index size calculations, but substep 4
+            // did not return cleanly when choosing the conditional VkIndexType. Split
+            // the type selection into smaller ultra-silent probes:
+            //   substep 4: force eUint16 only
+            //   substep 5: force eUint8EXT only
+            //   substep 6: original conditional native_u8 ? eUint8EXT : eUint16
+            //   substep 7: compute index_addr after the conditional type is validated
+            if (a7z34_post_stage12_substep == 4) {
+                const vk::IndexType forced_index_type = vk::IndexType::eUint16;
+                (void)index_u8;
+                (void)native_u8;
+                (void)source_index_size;
+                (void)index_buffer_size;
+                (void)forced_index_type;
+                return false;
+            }
+
+            if (a7z34_post_stage12_substep == 5) {
+                const vk::IndexType forced_index_type = vk::IndexType::eUint8EXT;
+                (void)index_u8;
+                (void)native_u8;
+                (void)source_index_size;
+                (void)index_buffer_size;
+                (void)forced_index_type;
+                return false;
+            }
+
             const vk::IndexType index_type =
                 native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
-            if (a7z34_post_stage12_substep == 4) {
+            if (a7z34_post_stage12_substep == 6) {
                 (void)index_u8;
                 (void)native_u8;
                 (void)source_index_size;
@@ -3730,6 +3760,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             const PAddr index_addr =
                 regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
                 regs.pipeline.index_array.offset;
+            if (a7z34_post_stage12_substep == 7) {
+                (void)index_u8;
+                (void)native_u8;
+                (void)source_index_size;
+                (void)index_buffer_size;
+                (void)index_type;
+                (void)index_addr;
+                return false;
+            }
             (void)index_u8;
             (void)native_u8;
             (void)source_index_size;
