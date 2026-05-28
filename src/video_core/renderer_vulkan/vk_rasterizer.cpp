@@ -2709,6 +2709,8 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
     const u32 a7z34_post_stage12_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
+    const u32 a7z34_post_stage12_substep =
+        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
     const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_a7z33_file_trace =
@@ -3673,6 +3675,70 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     if (is_indexed) {
+        // v115-D-D-A7Z34E:
+        // The 910/920 three-digit A7Z34 step values still fail to return cleanly even
+        // when the code cuts before the legacy indexed breadcrumb. Step 90, however,
+        // was already validated. Keep the parent step two digits wide and move the
+        // fine-grained position into BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP so the
+        // hot path no longer writes a 3-digit checkpoint value before returning.
+        //
+        //   step 92 / substep 0: ultra-silent cut at indexed-branch entry
+        //   step 92 / substep 1: after reading index_u8
+        //   step 92 / substep 2: after reading native_u8 capability
+        //   step 92 / substep 3: after computing source/destination index buffer sizes
+        //   step 92 / substep 4: after choosing VkIndexType
+        //   step 92 / substep 5: after computing the PICA index buffer physical address
+        if (a7z34_post_stage12_step == 92) {
+            if (a7z34_post_stage12_substep == 0) {
+                return false;
+            }
+
+            const bool index_u8 = regs.pipeline.index_array.format == 0;
+            if (a7z34_post_stage12_substep == 1) {
+                (void)index_u8;
+                return false;
+            }
+
+            const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
+            if (a7z34_post_stage12_substep == 2) {
+                (void)index_u8;
+                (void)native_u8;
+                return false;
+            }
+
+            const u32 source_index_size = regs.pipeline.num_vertices * (index_u8 ? 1u : 2u);
+            const u32 index_buffer_size = regs.pipeline.num_vertices * (native_u8 ? 1u : 2u);
+            if (a7z34_post_stage12_substep == 3) {
+                (void)index_u8;
+                (void)native_u8;
+                (void)source_index_size;
+                (void)index_buffer_size;
+                return false;
+            }
+
+            const vk::IndexType index_type =
+                native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
+            if (a7z34_post_stage12_substep == 4) {
+                (void)index_u8;
+                (void)native_u8;
+                (void)source_index_size;
+                (void)index_buffer_size;
+                (void)index_type;
+                return false;
+            }
+
+            const PAddr index_addr =
+                regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
+                regs.pipeline.index_array.offset;
+            (void)index_u8;
+            (void)native_u8;
+            (void)source_index_size;
+            (void)index_buffer_size;
+            (void)index_type;
+            (void)index_addr;
+            return false;
+        }
+
         // v115-D-D-A7Z34D:
         // Step 920 in A7Z34C still did not return cleanly even though it should have cut
         // before SetupIndexArray(). Move the A7Z34C caller-scope cuts to the very first
