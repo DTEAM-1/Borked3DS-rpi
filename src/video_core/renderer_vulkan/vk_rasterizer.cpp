@@ -2165,7 +2165,8 @@ bool RasterizerVulkan::SetupVertexShader() {
 
     const bool v114_file_trace =
         IsV114ShaderMultiplexFileTraceEnabled() &&
-        GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0) == 0;
+        GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0) == 0 &&
+        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0) == 0;
     const bool trace_accel = IsAccelStageTraceEnabled() && !v114_file_trace;
     const bool trivial_vs_probe = IsTrivialVertexShaderProbeEnabled();
     const bool programmable_config_probe = IsProgrammableVertexShaderConfigProbeEnabled();
@@ -2706,11 +2707,18 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const bool v114_silent_stages = IsV114ShaderMultiplexSilentStagesEnabled();
     const u32 a7z33_checkpoint_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
+    const u32 a7z34_post_stage12_step =
+        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
+    const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_a7z33_file_trace =
         IsV114ShaderMultiplexFileTraceEnabled() && a7z33_checkpoint_enabled;
+    const bool v114_a7z34_file_trace =
+        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
+        a7z34_post_stage12_enabled;
     const bool v114_file_trace =
-        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled;
+        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
+        !a7z34_post_stage12_enabled;
 
     // v115-D-A7Z27C: cache the fragile post-before_record gates at function entry.
     // The previous rebuild proved the A7Z27 flag is visible at accel entry, but the sidecar
@@ -2765,6 +2773,12 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z33 checkpoint_mode_enter");
         V114ShaderMultiplexFileTraceNumber("v115d_a7z33 checkpoint_step",
                                            static_cast<u64>(a7z33_checkpoint_step));
+    }
+    if (v114_a7z34_file_trace && accel_id == 1) {
+        V114ShaderMultiplexFileTraceReset();
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z34 post_stage12_mode_enter");
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z34 post_stage12_step",
+                                           static_cast<u64>(a7z34_post_stage12_step));
     }
     if (v114_file_trace && accel_id == 1) {
         V114ShaderMultiplexFileTraceReset();
@@ -3070,9 +3084,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool trace_accel = IsAccelStageTraceEnabled();
     const u32 a7z33_checkpoint_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
+    const u32 a7z34_post_stage12_step =
+        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
+    const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_file_trace =
-        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled;
+        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
+        !a7z34_post_stage12_enabled;
 
     // v115-D-A7Z27C2: cache the fragile post-before_record gates inside the internal
     // draw path as well. The previous patch cached them in AccelerateDrawBatch(),
@@ -3430,6 +3448,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (a7z33_checkpoint_step == 72) {
         return false;
     }
+    if (a7z34_post_stage12_step == 80) {
+        return false;
+    }
 
     // v115-D-D-A7Z26MP3E:
     // Step 80 in MP3D was intended to return immediately after stage12, but the uploaded log
@@ -3448,6 +3469,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_stage12");
+    }
+    if (a7z34_post_stage12_step == 81) {
+        return false;
     }
     if (a7z26_multi_probe_step == 73) {
         if (v114_file_trace) {
@@ -3532,6 +3556,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const bool v115d_mux_step_a = IsV115DAMuxRealVertexBindDrawZeroEnabled();
+    if (a7z34_post_stage12_step == 81) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 81) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3541,6 +3568,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const bool v115d_mux_step_b = IsV115DBMuxRealVertexBindDraw3Enabled();
+    if (a7z34_post_stage12_step == 82) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 82) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3550,6 +3580,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const bool v115d_mux_step_c = IsV115DCMuxRealVertexBindDraw6Enabled();
+    if (a7z34_post_stage12_step == 83) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 83) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3559,6 +3592,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const bool v115d_mux_step_d = IsV115DDMuxRealVertexBindDrawIndexedZeroEnabled();
+    if (a7z34_post_stage12_step == 84) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 84) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3568,6 +3604,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const bool v115d_mux_step_e = IsV115DEMuxRealVertexBindDrawIndexed3Enabled();
+    if (a7z34_post_stage12_step == 85) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 85) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3577,6 +3616,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const bool v115d_mux_any_step = IsV115DMuxAnyDrawCommandProbeEnabled();
+    if (a7z34_post_stage12_step == 86) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 86) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3588,6 +3630,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool v115d_mux_zero_count_draw = IsFirstVkCmdDrawZeroCountProbeOnlyEnabled() ||
                                            IsFirstVkCmdDrawZeroCountMinimalProbeOnlyEnabled() ||
                                            v115d_mux_step_a || v115d_mux_step_d;
+    if (a7z34_post_stage12_step == 87) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 87) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceNumber(
@@ -3600,6 +3645,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
     const bool v115d_mux_real_vertex_bind_ultra_quiet_draw =
         IsFirstVkCmdDrawZeroCountMinimalProbeOnlyEnabled() || v115d_mux_any_step;
+    if (a7z34_post_stage12_step == 88) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 88) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceNumber(
@@ -3611,6 +3659,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return false;
     }
 
+    if (a7z34_post_stage12_step == 89) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 89) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceNumber("v115d_mp3d_s89_indexed",
@@ -3629,6 +3680,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         if ((v115d_mux_zero_count_draw || v115d_mux_any_step) && IsV114ShaderMultiplexFileTraceEnabled()) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux keep_setup_index_array_for_mux_step");
         }
+        if (a7z34_post_stage12_step == 90) {
+            return false;
+        }
         if (a7z26_multi_probe_step == 90) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
@@ -3638,6 +3692,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
 
         SetupIndexArray();
+
+        if (a7z34_post_stage12_step == 91) {
+            return false;
+        }
 
         if (a7z26_multi_probe_step == 91) {
             if (v114_file_trace) {
@@ -3651,6 +3709,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         // Step 92 reached internal_after_stage12 but did not return cleanly to PICA before
         // emitting the old after-stage13 marker. Split the fragile stage13 boundary into
         // shorter probes so we do not retest the already validated SetupIndexArray path.
+        if (a7z34_post_stage12_step == 94) {
+            return false;
+        }
         if (a7z26_multi_probe_step == 94) {
             if (v114_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
@@ -3662,6 +3723,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         const bool stage13_consumed = consume_if_stage_limited(
             13, v115d_mux_zero_count_draw ? "zero_count_index_array_setup_done"
                                           : "index_array_setup_done");
+
+        if (a7z34_post_stage12_step == 95) {
+            return false;
+        }
 
         if (a7z26_multi_probe_step == 95) {
             if (v114_file_trace) {
