@@ -3691,6 +3691,68 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        // v115-D-D-A7Z34C:
+        // A7Z34B step 910 proved that entering SetupIndexArray() and returning at the
+        // helper's first internal checkpoint is still too fragile on Pi5/V3DV. Keep the
+        // optimized A7Z34 path, but test the indexed setup pre-computations inline in the
+        // already validated caller scope before calling SetupIndexArray().
+        //
+        //   920: caller-scope cut before any indexed setup helper work
+        //   921: after reading index_u8
+        //   922: after reading native_u8 capability
+        //   923: after computing source/destination index buffer sizes
+        //   924: after choosing VkIndexType
+        //   925: after computing the PICA index buffer physical address
+        if (a7z34_post_stage12_step == 920) {
+            return false;
+        }
+        if (a7z34_post_stage12_step >= 921 && a7z34_post_stage12_step <= 925) {
+            const bool index_u8 = regs.pipeline.index_array.format == 0;
+            if (a7z34_post_stage12_step == 921) {
+                (void)index_u8;
+                return false;
+            }
+
+            const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
+            if (a7z34_post_stage12_step == 922) {
+                (void)index_u8;
+                (void)native_u8;
+                return false;
+            }
+
+            const u32 source_index_size = regs.pipeline.num_vertices * (index_u8 ? 1u : 2u);
+            const u32 index_buffer_size = regs.pipeline.num_vertices * (native_u8 ? 1u : 2u);
+            if (a7z34_post_stage12_step == 923) {
+                (void)index_u8;
+                (void)native_u8;
+                (void)source_index_size;
+                (void)index_buffer_size;
+                return false;
+            }
+
+            const vk::IndexType index_type =
+                native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
+            if (a7z34_post_stage12_step == 924) {
+                (void)index_u8;
+                (void)native_u8;
+                (void)source_index_size;
+                (void)index_buffer_size;
+                (void)index_type;
+                return false;
+            }
+
+            const PAddr index_addr =
+                regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() +
+                regs.pipeline.index_array.offset;
+            (void)index_u8;
+            (void)native_u8;
+            (void)source_index_size;
+            (void)index_buffer_size;
+            (void)index_type;
+            (void)index_addr;
+            return false;
+        }
+
         SetupIndexArray();
 
         // v115-D-D-A7Z34B:
