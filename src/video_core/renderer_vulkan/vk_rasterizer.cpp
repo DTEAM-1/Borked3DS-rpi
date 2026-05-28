@@ -3693,6 +3693,17 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         SetupIndexArray();
 
+        // v115-D-D-A7Z34B:
+        // A7Z34 step 90 proved that the post-stage12 path reaches the indexed
+        // setup call boundary. Step 91 then entered SetupIndexArray() but did
+        // not return cleanly to PICA on Pi5/V3DV. The 910-914 substeps split
+        // SetupIndexArray() internally while preserving the normal void helper
+        // signature. When one of those substeps returns early from the helper,
+        // cut the backend immediately here so PICA can regain control.
+        if (a7z34_post_stage12_step >= 910 && a7z34_post_stage12_step <= 914) {
+            return false;
+        }
+
         if (a7z34_post_stage12_step == 91) {
             return false;
         }
@@ -5452,6 +5463,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 }
 
 void RasterizerVulkan::SetupIndexArray() {
+    const u32 a7z34_post_stage12_step =
+        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
+
     const bool index_u8 = regs.pipeline.index_array.format == 0;
     const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
     const u32 source_index_size = regs.pipeline.num_vertices * (index_u8 ? 1u : 2u);
@@ -5459,6 +5473,15 @@ void RasterizerVulkan::SetupIndexArray() {
     const vk::IndexType index_type = native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
     const PAddr index_addr =
         regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() + regs.pipeline.index_array.offset;
+
+    // v115-D-D-A7Z34B:
+    // Step 91 proved that the backend does not return cleanly after the full
+    // SetupIndexArray() helper on Pi5/V3DV. These substeps intentionally avoid
+    // extra breadcrumbs inside the helper; the already-emitted A7Z34 step number
+    // is enough to identify which cut was tested.
+    if (a7z34_post_stage12_step == 910) {
+        return;
+    }
 
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
@@ -5469,6 +5492,10 @@ void RasterizerVulkan::SetupIndexArray() {
 
     auto [index_ptr, index_offset, _] = stream_buffer.Map(index_buffer_size, 2);
     std::memset(index_ptr, 0, index_buffer_size);
+
+    if (a7z34_post_stage12_step == 911) {
+        return;
+    }
 
     if (source_index_size != 0) {
         const MemoryRef index_ref = memory.GetPhysicalRef(index_addr);
@@ -5489,12 +5516,24 @@ void RasterizerVulkan::SetupIndexArray() {
         }
     }
 
+    if (a7z34_post_stage12_step == 912) {
+        return;
+    }
+
     stream_buffer.Commit(index_buffer_size);
+
+    if (a7z34_post_stage12_step == 913) {
+        return;
+    }
 
     scheduler.Record(
         [this, index_offset = index_offset, index_type = index_type](vk::CommandBuffer cmdbuf) {
             cmdbuf.bindIndexBuffer(stream_buffer.Handle(), index_offset, index_type);
         });
+
+    if (a7z34_post_stage12_step == 914) {
+        return;
+    }
 }
 
 void RasterizerVulkan::DrawTriangles() {
