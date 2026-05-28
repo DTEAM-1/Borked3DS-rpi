@@ -3289,18 +3289,19 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const u32 binding_count = pipeline_info.vertex_layout.binding_count;
+    if (a7z26_multi_probe_step == 64) {
+        // v115-D-D-A7Z26MP3D-S64C:
+        // S64B proved the binding_count value is 3, but the return path still did
+        // not unwind cleanly after the numeric "internal_binding_count" breadcrumb.
+        // For step64, cut silently immediately after reading binding_count and
+        // before writing that numeric breadcrumb. This keeps the probe before
+        // vertex_buffer_count, binding_count_valid, stage12, BindPipeline, lambdas,
+        // scheduler.Record, vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
+        return false;
+    }
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_binding_count",
                                            binding_count);
-    }
-    if (a7z26_multi_probe_step == 64) {
-        // v115-D-D-A7Z26MP3D-S64B:
-        // Step63 returns cleanly after "internal_after_stage11". The current
-        // step64 log reaches "internal_binding_count=3" and writes the extra
-        // S64 breadcrumb, but does not unwind cleanly to PICA. Use the already
-        // emitted numeric binding_count breadcrumb as the probe marker and return
-        // immediately without any additional trace payload.
-        return false;
     }
     if (a7z26_multi_probe_step == 5) {
         if (v114_file_trace) {
