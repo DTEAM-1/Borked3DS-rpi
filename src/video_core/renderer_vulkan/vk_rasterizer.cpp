@@ -2163,7 +2163,9 @@ void RasterizerVulkan::SetupFixedAttribs() {
 bool RasterizerVulkan::SetupVertexShader() {
     BORKED3DS_PROFILE("Vulkan", "Vertex Shader Setup");
 
-    const bool v114_file_trace = IsV114ShaderMultiplexFileTraceEnabled();
+    const bool v114_file_trace =
+        IsV114ShaderMultiplexFileTraceEnabled() &&
+        GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0) == 0;
     const bool trace_accel = IsAccelStageTraceEnabled() && !v114_file_trace;
     const bool trivial_vs_probe = IsTrivialVertexShaderProbeEnabled();
     const bool programmable_config_probe = IsProgrammableVertexShaderConfigProbeEnabled();
@@ -2702,7 +2704,13 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
 
     const bool v114_entry_safe = IsV114ShaderMultiplexEntrySafeEnabled();
     const bool v114_silent_stages = IsV114ShaderMultiplexSilentStagesEnabled();
-    const bool v114_file_trace = IsV114ShaderMultiplexFileTraceEnabled();
+    const u32 a7z33_checkpoint_step =
+        GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
+    const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
+    const bool v114_a7z33_file_trace =
+        IsV114ShaderMultiplexFileTraceEnabled() && a7z33_checkpoint_enabled;
+    const bool v114_file_trace =
+        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled;
 
     // v115-D-A7Z27C: cache the fragile post-before_record gates at function entry.
     // The previous rebuild proved the A7Z27 flag is visible at accel entry, but the sidecar
@@ -2752,6 +2760,12 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     V115DA7Z2ShaderTraceNumber("v115d_a7z2 topology",
                                static_cast<u64>(regs.pipeline.triangle_topology.Value()));
 
+    if (v114_a7z33_file_trace && accel_id == 1) {
+        V114ShaderMultiplexFileTraceReset();
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z33 checkpoint_mode_enter");
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z33 checkpoint_step",
+                                           static_cast<u64>(a7z33_checkpoint_step));
+    }
     if (v114_file_trace && accel_id == 1) {
         V114ShaderMultiplexFileTraceReset();
     }
@@ -3054,7 +3068,11 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
 
 bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool trace_accel = IsAccelStageTraceEnabled();
-    const bool v114_file_trace = IsV114ShaderMultiplexFileTraceEnabled();
+    const u32 a7z33_checkpoint_step =
+        GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
+    const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
+    const bool v114_file_trace =
+        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled;
 
     // v115-D-A7Z27C2: cache the fragile post-before_record gates inside the internal
     // draw path as well. The previous patch cached them in AccelerateDrawBatch(),
@@ -3273,6 +3291,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z23b internal_after_stage11");
     }
+    if (a7z33_checkpoint_step == 63) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 63) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3298,6 +3319,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const u32 binding_count = pipeline_info.vertex_layout.binding_count;
+    if (a7z33_checkpoint_step == 64) {
+        return false;
+    }
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_binding_count",
                                            binding_count);
@@ -3314,6 +3338,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             V114ShaderMultiplexFileTraceRaw(
                 "v115d_a7z26i return_false_after_internal_binding_count_before_vertex_buffer_count");
         }
+        return false;
+    }
+    if (a7z33_checkpoint_step == 65) {
         return false;
     }
     if (v114_file_trace) {
@@ -3348,6 +3375,10 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return false;
     }
 
+    if (a7z33_checkpoint_step == 66) {
+        return false;
+    }
+
     // v115-D-D-A7Z26MP3D-S66C/S72E:
     // The latest Pi5/V3DV log reaches binding_count=3 and vertex_buffer_count=16,
     // then stalls after the shared internal_after_binding_count_valid breadcrumb even
@@ -3376,6 +3407,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     // Split the tiny gap around consume_if_stage_limited(12) so we do not rework
     // MP2 steps 2-7 and can identify whether the fragile point is before, inside,
     // or immediately after the stage12 consume check.
+    if (a7z33_checkpoint_step == 70) {
+        return false;
+    }
     if (a7z26_multi_probe_step == 70) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3392,6 +3426,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
     if (consume_if_stage_limited(12, "binding_count_ok")) {
         return true;
+    }
+    if (a7z33_checkpoint_step == 72) {
+        return false;
     }
 
     // v115-D-D-A7Z26MP3E:
