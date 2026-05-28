@@ -2709,8 +2709,6 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
     const u32 a7z34_post_stage12_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
-    const u32 a7z34_post_stage12_substep =
-        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
     const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_a7z33_file_trace =
@@ -3088,6 +3086,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
     const u32 a7z34_post_stage12_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
+    const u32 a7z34_post_stage12_substep =
+        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
     const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_file_trace =
