@@ -3280,6 +3280,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         }
         return false;
     }
+    if (a7z26_multi_probe_step == 64) {
+        // v115-D-D-A7Z26MP3D-S64D:
+        // Step63 is clean, while the last attempted S64C build still reached the
+        // numeric binding_count breadcrumb. Make step64 an exact silent cut at the
+        // already validated internal_after_stage11 checkpoint. This verifies that
+        // the active binary really contains the S64D source before we reintroduce
+        // binding_count reading in a later pass.
+        return false;
+    }
     if (a7z26_multi_probe_step == 4) {
         if (v114_file_trace) {
             V114ShaderMultiplexFileTraceRaw(
@@ -3289,16 +3298,6 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const u32 binding_count = pipeline_info.vertex_layout.binding_count;
-    if (a7z26_multi_probe_step == 64) {
-        // v115-D-D-A7Z26MP3D-S64C:
-        // S64B proved the binding_count value is 3, but the return path still did
-        // not unwind cleanly after the numeric "internal_binding_count" breadcrumb.
-        // For step64, cut silently immediately after reading binding_count and
-        // before writing that numeric breadcrumb. This keeps the probe before
-        // vertex_buffer_count, binding_count_valid, stage12, BindPipeline, lambdas,
-        // scheduler.Record, vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
-        return false;
-    }
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z23b internal_binding_count",
                                            binding_count);
