@@ -3673,31 +3673,14 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     if (is_indexed) {
-        // v115-D-MUX: keep the indexed setup path available for every multiplex step.
-        // For D-A/D-B/D-C the final Vulkan command is deliberately non-indexed, but the
-        // original PICA command may still be indexed; keeping SetupIndexArray() unchanged
-        // avoids changing two variables at once.
-        if ((v115d_mux_zero_count_draw || v115d_mux_any_step) && IsV114ShaderMultiplexFileTraceEnabled()) {
-            V114ShaderMultiplexFileTraceRaw("v115d_mux keep_setup_index_array_for_mux_step");
-        }
-        if (a7z34_post_stage12_step == 90) {
-            return false;
-        }
-        if (a7z26_multi_probe_step == 90) {
-            if (v114_file_trace) {
-                V114ShaderMultiplexFileTraceRaw(
-                    "v115d_mp3f_s90_before_setup_index");
-            }
-            return false;
-        }
-
-        // v115-D-D-A7Z34C:
-        // A7Z34B step 910 proved that entering SetupIndexArray() and returning at the
-        // helper's first internal checkpoint is still too fragile on Pi5/V3DV. Keep the
-        // optimized A7Z34 path, but test the indexed setup pre-computations inline in the
-        // already validated caller scope before calling SetupIndexArray().
+        // v115-D-D-A7Z34D:
+        // Step 920 in A7Z34C still did not return cleanly even though it should have cut
+        // before SetupIndexArray(). Move the A7Z34C caller-scope cuts to the very first
+        // lines of the indexed branch, before the legacy keep_setup_index_array breadcrumb.
+        // This keeps the already-emitted A7Z34 step header as the only trace marker for
+        // the 920-925 tests and avoids perturbing the return path with another file write.
         //
-        //   920: caller-scope cut before any indexed setup helper work
+        //   920: ultra-silent cut at indexed-branch entry
         //   921: after reading index_u8
         //   922: after reading native_u8 capability
         //   923: after computing source/destination index buffer sizes
@@ -3750,6 +3733,24 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             (void)index_buffer_size;
             (void)index_type;
             (void)index_addr;
+            return false;
+        }
+
+        // v115-D-MUX: keep the indexed setup path available for every multiplex step.
+        // For D-A/D-B/D-C the final Vulkan command is deliberately non-indexed, but the
+        // original PICA command may still be indexed; keeping SetupIndexArray() unchanged
+        // avoids changing two variables at once.
+        if ((v115d_mux_zero_count_draw || v115d_mux_any_step) && IsV114ShaderMultiplexFileTraceEnabled()) {
+            V114ShaderMultiplexFileTraceRaw("v115d_mux keep_setup_index_array_for_mux_step");
+        }
+        if (a7z34_post_stage12_step == 90) {
+            return false;
+        }
+        if (a7z26_multi_probe_step == 90) {
+            if (v114_file_trace) {
+                V114ShaderMultiplexFileTraceRaw(
+                    "v115d_mp3f_s90_before_setup_index");
+            }
             return false;
         }
 
