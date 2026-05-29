@@ -3841,6 +3841,17 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        // v115-D-D-A7Z34G:
+        // Step 92 / substep 7 validated the caller-side index_addr calculation. For
+        // step 93, enter SetupIndexArray() directly and return immediately after the
+        // helper substep, before the legacy keep_setup_index_array breadcrumb and before
+        // stage13 / BindPipeline / command recording. This tests the real helper without
+        // reintroducing the fragile old marker.
+        if (a7z34_post_stage12_step == 93) {
+            SetupIndexArray();
+            return false;
+        }
+
         // v115-D-MUX: keep the indexed setup path available for every multiplex step.
         // For D-A/D-B/D-C the final Vulkan command is deliberately non-indexed, but the
         // original PICA command may still be indexed; keeping SetupIndexArray() unchanged
@@ -5633,6 +5644,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 void RasterizerVulkan::SetupIndexArray() {
     const u32 a7z34_post_stage12_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
+    const u32 a7z34_post_stage12_substep =
+        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
 
     const bool index_u8 = regs.pipeline.index_array.format == 0;
     const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
@@ -5641,6 +5654,29 @@ void RasterizerVulkan::SetupIndexArray() {
     const vk::IndexType index_type = native_u8 ? vk::IndexType::eUint8EXT : vk::IndexType::eUint16;
     const PAddr index_addr =
         regs.pipeline.vertex_attributes.GetPhysicalBaseAddress() + regs.pipeline.index_array.offset;
+
+    // v115-D-D-A7Z34G:
+    // A7Z34F step 92 / substep 7 validated the caller-side indexed calculations,
+    // including index_addr, and returned cleanly to PICA. Re-enter the real
+    // SetupIndexArray() helper using a two-digit parent step plus substep, avoiding
+    // the old 910-914 three-digit steps and avoiding the legacy indexed breadcrumb
+    // in the caller. These cuts intentionally do not emit extra helper breadcrumbs:
+    // the existing A7Z34 step line is enough to identify the active probe.
+    //
+    //   step 93 / substep 0: helper-local calculations done, before draw trace / Map
+    //   step 93 / substep 1: after stream_buffer.Map + memset
+    //   step 93 / substep 2: after index source read/copy/expand
+    //   step 93 / substep 3: after stream_buffer.Commit
+    //   step 93 / substep 4: after scheduler.Record(bindIndexBuffer)
+    if (a7z34_post_stage12_step == 93 && a7z34_post_stage12_substep == 0) {
+        (void)index_u8;
+        (void)native_u8;
+        (void)source_index_size;
+        (void)index_buffer_size;
+        (void)index_type;
+        (void)index_addr;
+        return;
+    }
 
     // v115-D-D-A7Z34B:
     // Step 91 proved that the backend does not return cleanly after the full
@@ -5660,6 +5696,11 @@ void RasterizerVulkan::SetupIndexArray() {
 
     auto [index_ptr, index_offset, _] = stream_buffer.Map(index_buffer_size, 2);
     std::memset(index_ptr, 0, index_buffer_size);
+
+    if (a7z34_post_stage12_step == 93 && a7z34_post_stage12_substep == 1) {
+        (void)index_offset;
+        return;
+    }
 
     if (a7z34_post_stage12_step == 911) {
         return;
@@ -5684,11 +5725,21 @@ void RasterizerVulkan::SetupIndexArray() {
         }
     }
 
+    if (a7z34_post_stage12_step == 93 && a7z34_post_stage12_substep == 2) {
+        (void)index_offset;
+        return;
+    }
+
     if (a7z34_post_stage12_step == 912) {
         return;
     }
 
     stream_buffer.Commit(index_buffer_size);
+
+    if (a7z34_post_stage12_step == 93 && a7z34_post_stage12_substep == 3) {
+        (void)index_offset;
+        return;
+    }
 
     if (a7z34_post_stage12_step == 913) {
         return;
@@ -5698,6 +5749,10 @@ void RasterizerVulkan::SetupIndexArray() {
         [this, index_offset = index_offset, index_type = index_type](vk::CommandBuffer cmdbuf) {
             cmdbuf.bindIndexBuffer(stream_buffer.Handle(), index_offset, index_type);
         });
+
+    if (a7z34_post_stage12_step == 93 && a7z34_post_stage12_substep == 4) {
+        return;
+    }
 
     if (a7z34_post_stage12_step == 914) {
         return;
