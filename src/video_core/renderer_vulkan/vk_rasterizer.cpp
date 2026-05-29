@@ -3852,6 +3852,126 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             return false;
         }
 
+        // v115-D-D-A7Z34H:
+        // Step 93 / substep 5 validated the complete SetupIndexArray() helper, including
+        // stream_buffer.Map, index copy/expand, Commit, and scheduler.Record(bindIndexBuffer),
+        // while returning cleanly before the legacy keep_setup_index_array breadcrumb. Continue
+        // from that same quiet location into the next corridor without re-emitting the old
+        // breadcrumb and without reusing the fragile high-step 94 path already present below.
+        //
+        //   step 94 / substep 0: SetupIndexArray() complete, cut before stage13 consume
+        //   step 94 / substep 1: after stage13 consume/check
+        //   step 94 / substep 2: after real-vertex-bind branch decision
+        //   step 94 / substep 3: after selected_step
+        //   step 94 / substep 4: after final_indexed
+        //   step 94 / substep 5: after final_count
+        //   step 94 / substep 6: after final_vertex_offset, before BindPipeline
+        //   step 94 / substep 7: after BindPipeline, before vertex-buffer bind/record/draw
+        if (a7z34_post_stage12_step == 94) {
+            SetupIndexArray();
+
+            if (a7z34_post_stage12_substep == 0) {
+                return false;
+            }
+
+            const bool stage13_consumed = consume_if_stage_limited(
+                13, v115d_mux_zero_count_draw ? "zero_count_index_array_setup_done"
+                                              : "index_array_setup_done");
+
+            if (a7z34_post_stage12_substep == 1) {
+                return stage13_consumed;
+            }
+
+            if (stage13_consumed) {
+                return true;
+            }
+
+            const bool real_vertex_bind_path = v115d_mux_real_vertex_bind_ultra_quiet_draw;
+            if (a7z34_post_stage12_substep == 2 || !real_vertex_bind_path) {
+                (void)real_vertex_bind_path;
+                return false;
+            }
+
+            const bool wait_built = true;
+            const bool final_indexed = v115d_mux_step_d || v115d_mux_step_e;
+            const u32 final_count = (v115d_mux_step_b || v115d_mux_step_e) ? 3u
+                                  : v115d_mux_step_c                  ? 6u
+                                                                       : 0u;
+            const s32 final_vertex_offset = -static_cast<s32>(vertex_info.vs_input_index_min);
+            u32 selected_step = 0;
+            if (v115d_mux_step_a || IsFirstVkCmdDrawZeroCountMinimalProbeOnlyEnabled()) {
+                selected_step = 1;
+            }
+            if (v115d_mux_step_b) {
+                selected_step = 2;
+            }
+            if (v115d_mux_step_c) {
+                selected_step = 3;
+            }
+            if (v115d_mux_step_d) {
+                selected_step = 4;
+            }
+            if (v115d_mux_step_e) {
+                selected_step = 5;
+            }
+
+            if (a7z34_post_stage12_substep == 3) {
+                (void)wait_built;
+                (void)final_indexed;
+                (void)final_count;
+                (void)final_vertex_offset;
+                (void)selected_step;
+                return false;
+            }
+
+            if (a7z34_post_stage12_substep == 4) {
+                (void)wait_built;
+                (void)final_indexed;
+                (void)final_count;
+                (void)final_vertex_offset;
+                (void)selected_step;
+                return false;
+            }
+
+            if (a7z34_post_stage12_substep == 5) {
+                (void)wait_built;
+                (void)final_indexed;
+                (void)final_count;
+                (void)final_vertex_offset;
+                (void)selected_step;
+                return false;
+            }
+
+            if (a7z34_post_stage12_substep == 6) {
+                (void)wait_built;
+                (void)final_indexed;
+                (void)final_count;
+                (void)final_vertex_offset;
+                (void)selected_step;
+                return false;
+            }
+
+            const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
+            if (a7z34_post_stage12_substep == 7) {
+                (void)final_indexed;
+                (void)final_count;
+                (void)final_vertex_offset;
+                (void)selected_step;
+                (void)pipeline_ready;
+                return false;
+            }
+
+            if (!pipeline_ready) {
+                return false;
+            }
+
+            (void)final_indexed;
+            (void)final_count;
+            (void)final_vertex_offset;
+            (void)selected_step;
+            return false;
+        }
+
         // v115-D-MUX: keep the indexed setup path available for every multiplex step.
         // For D-A/D-B/D-C the final Vulkan command is deliberately non-indexed, but the
         // original PICA command may still be indexed; keeping SetupIndexArray() unchanged
