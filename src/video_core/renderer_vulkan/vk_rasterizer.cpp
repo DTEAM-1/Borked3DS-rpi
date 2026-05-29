@@ -2779,6 +2779,12 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z34 post_stage12_mode_enter");
         V114ShaderMultiplexFileTraceNumber("v115d_a7z34 post_stage12_step",
                                            static_cast<u64>(a7z34_post_stage12_step));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_a7z35 outer_post_stage12_substep",
+            static_cast<u64>(GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0)));
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_a7z35 outer_trivial_vs_probe",
+            static_cast<u64>(IsTrivialVertexShaderProbeEnabled()));
     }
     if (v114_file_trace && accel_id == 1) {
         V114ShaderMultiplexFileTraceReset();
@@ -2967,6 +2973,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_mux before_setup_vertex_array");
     }
+    if (v114_a7z34_file_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z35 before_setup_vertex_array");
+    }
     SetupVertexArray();
     V115DA7Z2ShaderTraceRaw("v115d_a7z2 after_setup_vertex_array");
     if (v114_file_trace) {
@@ -2974,6 +2983,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V115DA7XShaderTraceRaw("v115d_a7x accel_stage6_done");
         V115DA7YShaderTraceRaw("v115d_a7y accel_stage6_done");
         V115DA7ZShaderTraceRaw("v115d_a7z accel_stage6_done");
+    }
+    if (v114_a7z34_file_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z35 after_setup_vertex_array");
     }
     V115DA7Z2ShaderTraceRaw("v115d_a7z2 before_stage6_consume");
     if (consume_if_stage_limited(6, "vertex_array_setup_done")) {
@@ -2991,6 +3003,12 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V115DA7YShaderTraceRaw("v115d_a7y before_setup_vertex_shader_from_accel");
         V115DA7ZShaderTraceRaw("v115d_a7z before_setup_vertex_shader_from_accel");
     }
+    if (v114_a7z34_file_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z35 before_setup_vertex_shader");
+        V114ShaderMultiplexFileTraceNumber(
+            "v115d_a7z35 before_setup_vertex_shader_trivial_vs_probe",
+            static_cast<u64>(IsTrivialVertexShaderProbeEnabled()));
+    }
     V115DA7Z2ShaderTraceRaw("v115d_a7z2 immediately_before_setup_vertex_shader_call");
     if (!SetupVertexShader()) {
         V115DA7Z2ShaderTraceRaw("v115d_a7z2 setup_vertex_shader_result=0");
@@ -2998,6 +3016,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
             V114ShaderMultiplexFileTraceRaw("v115d_mux setup_vertex_shader_result=0");
             V115DA7YShaderTraceRaw("v115d_a7y setup_vertex_shader_result=0");
             V115DA7ZShaderTraceRaw("v115d_a7z setup_vertex_shader_result=0");
+        }
+        if (v114_a7z34_file_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z35 setup_vertex_shader_result=0");
         }
         if (trace_accel) {
             LOG_WARNING(Render_Vulkan,
@@ -3019,6 +3040,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V115DA7XShaderTraceRaw("v115d_a7x setup_vertex_shader_result=1");
         V115DA7YShaderTraceRaw("v115d_a7y setup_vertex_shader_result=1");
         V115DA7ZShaderTraceRaw("v115d_a7z setup_vertex_shader_result=1");
+    }
+    if (v114_a7z34_file_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z35 setup_vertex_shader_result=1");
     }
     const char* stage7_name = "vertex_shader_setup_ok";
     if (IsTrivialVertexShaderProbeEnabled()) {
@@ -3093,6 +3117,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool v114_file_trace =
         IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
         !a7z34_post_stage12_enabled;
+    const bool v114_a7z34_file_trace =
+        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
+        a7z34_post_stage12_enabled;
 
     // v115-D-A7Z27C2: cache the fragile post-before_record gates inside the internal
     // draw path as well. The previous patch cached them in AccelerateDrawBatch(),
@@ -4143,17 +4170,40 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         //   step 96 / substep 4: bindVertexBuffers + vkCmdDraw(3) non-indexed control
         //   step 96 / substep 5: bindVertexBuffers + vkCmdDrawIndexed(final_count)
         if (a7z34_post_stage12_step == 96) {
+            if (v114_a7z34_file_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z35 step96_internal_enter");
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z35 step96_substep",
+                                                   static_cast<u64>(a7z34_post_stage12_substep));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z35 step96_trivial_vs_probe",
+                    static_cast<u64>(IsTrivialVertexShaderProbeEnabled()));
+            }
+
             SetupIndexArray();
+            if (v114_a7z34_file_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z35 after_setup_index_array");
+            }
 
             const bool stage13_consumed = consume_if_stage_limited(
                 13, v115d_mux_zero_count_draw ? "zero_count_index_array_setup_done"
                                               : "index_array_setup_done");
             if (stage13_consumed) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 stage13_consumed_return_true");
+                }
                 return true;
+            }
+            if (v114_a7z34_file_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z35 after_stage13_not_consumed");
             }
 
             const bool real_vertex_bind_path = v115d_mux_real_vertex_bind_ultra_quiet_draw;
             if (!real_vertex_bind_path) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 real_vertex_bind_path_false_return_false");
+                }
                 return false;
             }
 
@@ -4164,7 +4214,26 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                                                                        : 0u;
             const s32 final_vertex_offset = -static_cast<s32>(vertex_info.vs_input_index_min);
 
+            if (v114_a7z34_file_trace) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z35 final_indexed",
+                                                   static_cast<u64>(final_indexed));
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z35 final_count",
+                                                   static_cast<u64>(final_count));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z35 final_vertex_offset_abs",
+                    static_cast<u64>(final_vertex_offset < 0 ? -final_vertex_offset
+                                                             : final_vertex_offset));
+                V114ShaderMultiplexFileTraceNumber(
+                    "v115d_a7z35 final_vertex_offset_negative",
+                    static_cast<u64>(final_vertex_offset < 0));
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z35 before_bind_pipeline");
+            }
+
             const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
+            if (v114_a7z34_file_trace) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z35 pipeline_ready",
+                                                   static_cast<u64>(pipeline_ready));
+            }
             if (!pipeline_ready) {
                 (void)final_indexed;
                 (void)final_count;
@@ -4172,15 +4241,21 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
-            if (v114_file_trace) {
+            if (v114_a7z34_file_trace) {
                 V114ShaderMultiplexFileTraceRaw(
-                    "v115d_a7z34j after_bind_pipeline_before_nonzero_draw_probe");
-                V114ShaderMultiplexFileTraceNumber("v115d_a7z34j substep",
-                                                   static_cast<u64>(a7z34_post_stage12_substep));
+                    "v115d_a7z35 after_bind_pipeline_before_nonzero_draw_probe");
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z35 binding_count",
+                                                   static_cast<u64>(binding_count));
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z35 vertex_buffer_count",
+                                                   static_cast<u64>(vertex_buffers.size()));
             }
 
             const u32 a7z34j_binding_count = binding_count;
             if (a7z34j_binding_count == 0 || a7z34j_binding_count > vertex_buffers.size()) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 invalid_binding_count_return_false");
+                }
                 (void)final_indexed;
                 (void)final_count;
                 (void)final_vertex_offset;
@@ -4192,57 +4267,105 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                            a7z34j_real_offsets.begin(),
                            [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
 
+            if (v114_a7z34_file_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z35 after_real_offsets");
+            }
+
             if (a7z34_post_stage12_substep == 0) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep0_before_record_drawindexed1");
+                }
                 scheduler.Record([this, a7z34j_binding_count, a7z34j_real_offsets,
                                   final_vertex_offset](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34j_binding_count, vertex_buffers.data(),
                                              a7z34j_real_offsets.data());
                     cmdbuf.drawIndexed(1, 1, 0, final_vertex_offset, 0);
                 });
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep0_after_record_return_true");
+                }
                 return true;
             }
 
             if (a7z34_post_stage12_substep == 1) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep1_before_record_drawindexed2");
+                }
                 scheduler.Record([this, a7z34j_binding_count, a7z34j_real_offsets,
                                   final_vertex_offset](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34j_binding_count, vertex_buffers.data(),
                                              a7z34j_real_offsets.data());
                     cmdbuf.drawIndexed(2, 1, 0, final_vertex_offset, 0);
                 });
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep1_after_record_return_true");
+                }
                 return true;
             }
 
             if (a7z34_post_stage12_substep == 2) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep2_before_record_drawindexed3");
+                }
                 scheduler.Record([this, a7z34j_binding_count, a7z34j_real_offsets,
                                   final_vertex_offset](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34j_binding_count, vertex_buffers.data(),
                                              a7z34j_real_offsets.data());
                     cmdbuf.drawIndexed(3, 1, 0, final_vertex_offset, 0);
                 });
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep2_after_record_return_true");
+                }
                 return true;
             }
 
             if (a7z34_post_stage12_substep == 3) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep3_before_record_drawindexed3_vertexoffset0");
+                }
                 scheduler.Record([this, a7z34j_binding_count,
                                   a7z34j_real_offsets](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34j_binding_count, vertex_buffers.data(),
                                              a7z34j_real_offsets.data());
                     cmdbuf.drawIndexed(3, 1, 0, 0, 0);
                 });
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep3_after_record_return_true");
+                }
                 return true;
             }
 
             if (a7z34_post_stage12_substep == 4) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep4_before_record_draw3_nonindexed");
+                }
                 scheduler.Record([this, a7z34j_binding_count,
                                   a7z34j_real_offsets](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34j_binding_count, vertex_buffers.data(),
                                              a7z34j_real_offsets.data());
                     cmdbuf.draw(3, 1, 0, 0);
                 });
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep4_after_record_return_true");
+                }
                 return true;
             }
 
             if (a7z34_post_stage12_substep == 5) {
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep5_before_record_final_draw");
+                }
                 scheduler.Record([this, a7z34j_binding_count, a7z34j_real_offsets, final_indexed,
                                   final_count, final_vertex_offset](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34j_binding_count, vertex_buffers.data(),
@@ -4253,9 +4376,16 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                         cmdbuf.draw(final_count, 1, 0, 0);
                     }
                 });
+                if (v114_a7z34_file_trace) {
+                    V114ShaderMultiplexFileTraceRaw(
+                        "v115d_a7z35 substep5_after_record_return_true");
+                }
                 return true;
             }
 
+            if (v114_a7z34_file_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z35 no_matching_substep_return_false");
+            }
             (void)final_indexed;
             (void)final_count;
             (void)final_vertex_offset;
