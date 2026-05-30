@@ -284,6 +284,17 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z39_STEP95_SKIP_STAGE13");
 }
 
+[[nodiscard]] bool IsV115DA7Z40DrawWrapperTraceEnabled() {
+    // v115-D-E-A7Z40:
+    // A7Z39 proves the outer AccelerateDrawBatch() flags are visible, but the sidecar stops
+    // before the step95 markers in AccelerateDrawBatchInternal(). This traces only the
+    // Draw(accelerate=true) wrapper between the outer accel handoff and the internal
+    // vkCmdDraw bisect path. It does not bind vertex buffers, does not record a draw, and
+    // does not change GLES or texture/depth/blend behaviour.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z40_DRAW_WRAPPER_TRACE");
+}
+
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
     // v114 diagnostic fallback:
     // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
@@ -6297,6 +6308,18 @@ void RasterizerVulkan::DrawTriangles() {
 
 bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     BORKED3DS_PROFILE("Vulkan", "Drawing");
+    const bool a7z40_draw_wrapper_trace =
+        accelerate && IsV114ShaderMultiplexFileTraceEnabled() &&
+        IsV115DA7Z40DrawWrapperTraceEnabled();
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 draw_wrapper_enter");
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z40 draw_wrapper_indexed",
+                                           static_cast<u64>(is_indexed));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z40 draw_wrapper_step",
+                                           static_cast<u64>(GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0)));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z40 draw_wrapper_substep",
+                                           static_cast<u64>(GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0)));
+    }
     if (IsDrawTraceEnabled()) {
         const u64 draw_index = ++g_vk_draw_counter;
         if (draw_index <= 16 || (draw_index % 256) == 0) {
@@ -6332,8 +6355,23 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         (write_depth_fb || regs.framebuffer.output_merger.depth_test_enable != 0 ||
          (has_stencil && pipeline_info.depth_stencil.stencil_test_enable));
 
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_get_framebuffer_surfaces");
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z40 using_color_fb",
+                                           static_cast<u64>(using_color_fb));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z40 using_depth_fb",
+                                           static_cast<u64>(using_depth_fb));
+    }
     const auto fb_helper = res_cache.GetFramebufferSurfaces(using_color_fb, using_depth_fb);
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_get_framebuffer_surfaces");
+    }
     const Framebuffer* framebuffer = fb_helper.Framebuffer();
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_framebuffer_pointer");
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z40 framebuffer_handle_valid",
+                                           static_cast<u64>(static_cast<bool>(framebuffer->Handle())));
+    }
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_DRAW framebuffer using_color={} using_depth={} fb_valid={} color_addr=0x{:08x} depth_addr=0x{:08x}",
@@ -6342,6 +6380,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                  regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
     }
     if (!framebuffer->Handle()) {
+        if (a7z40_draw_wrapper_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z40 framebuffer_handle_invalid_return_true");
+        }
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan, "TRACE_DRAW skipped: framebuffer handle invalid");
         }
@@ -6722,8 +6763,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
     }
 
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_attachment_formats");
+    }
     pipeline_info.attachments.color = framebuffer->Format(SurfaceType::Color);
     pipeline_info.attachments.depth = framebuffer->Format(SurfaceType::Depth);
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_attachment_formats");
+    }
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_DRAW attachments color_format={} depth_format={} using_color={} using_depth={}",
@@ -6731,7 +6778,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                  static_cast<u32>(pipeline_info.attachments.depth), using_color_fb, using_depth_fb);
     }
 
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_scissor");
+    }
     const auto [scissor_x1, scissor_y2, scissor_x2, scissor_y1] = fb_helper.Scissor();
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_scissor");
+    }
     if (fs_uniform_block_data.data.scissor_x1 != scissor_x1 ||
         fs_uniform_block_data.data.scissor_x2 != scissor_x2 ||
         fs_uniform_block_data.data.scissor_y1 != scissor_y1 ||
@@ -6753,7 +6806,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                     static_cast<u32>(ArePrimaryTexturesDisabled(regs)));
     }
 
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_sync_texture_units");
+    }
     SyncTextureUnits(framebuffer);
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_sync_texture_units");
+    }
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_DRAW strict_compat v82 after SyncTextureUnits before utility/shader path vertex_batch_size={}",
@@ -6765,7 +6824,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      "TRACE_DRAW strict_compat v82 skipping SyncUtilityTextures on software null-texture path");
         }
     } else {
+        if (a7z40_draw_wrapper_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_sync_utility_textures");
+        }
         SyncUtilityTextures(framebuffer);
+        if (a7z40_draw_wrapper_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_sync_utility_textures");
+        }
     }
 
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
@@ -6786,7 +6851,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      static_cast<u32>(use_custom_normal), static_cast<u32>(lighting_disabled),
                      static_cast<u32>(instance.IsFragmentShaderBarycentricSupported()));
         }
+        if (a7z40_draw_wrapper_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_use_fragment_shader");
+        }
         pipeline_cache.UseFragmentShader(regs, user_config);
+        if (a7z40_draw_wrapper_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_use_fragment_shader");
+        }
         if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
                      "TRACE_DRAW strict_compat v82 after UseFragmentShader");
@@ -6800,15 +6871,27 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_DRAW strict_compat v82 before LUT/uniform upload");
     }
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_lut_uniform_upload");
+    }
     SyncAndUploadLUTs();
     SyncAndUploadLUTsLF();
     UploadUniforms(accelerate);
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_lut_uniform_upload");
+    }
     if (strict_software_null_texture_path && IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan,
                  "TRACE_DRAW strict_compat v82 after LUT/uniform upload before descriptor flush");
     }
 
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_update_queue_flush");
+    }
     update_queue.Flush();
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_update_queue_flush");
+    }
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan, "TRACE_DRAW descriptors_flushed accelerate={}",
                  static_cast<u32>(accelerate));
@@ -6822,8 +6905,17 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
     }
 
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_draw_rect");
+    }
     const auto draw_rect = fb_helper.DrawRect();
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_draw_rect_before_begin_rendering");
+    }
     renderpass_cache.BeginRendering(framebuffer, draw_rect);
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_begin_rendering");
+    }
 
     const auto viewport = fb_helper.Viewport();
     if (IsDrawTraceEnabled()) {
@@ -6832,6 +6924,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                  draw_rect.left, draw_rect.bottom, draw_rect.GetWidth(), draw_rect.GetHeight(),
                  viewport.x, viewport.y, viewport.width, viewport.height);
     }
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_dynamic_viewport_scissor");
+    }
     pipeline_info.dynamic.viewport = Common::Rectangle<s32>{
         viewport.x,
         viewport.y,
@@ -6839,6 +6934,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         viewport.y + viewport.height,
     };
     pipeline_info.dynamic.scissor = draw_rect;
+    if (a7z40_draw_wrapper_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_dynamic_viewport_scissor");
+    }
 
     const bool strict_software_debug_clear_fallback =
         !accelerate && IsStrictCompatEnabled() && IsSoftwareClearProbeEnabled() &&
@@ -6939,7 +7037,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                             static_cast<u32>(IsFirstVkCmdDrawZeroCountProbeOnlyEnabled()));
             }
         }
+        if (a7z40_draw_wrapper_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_accelerate_draw_batch_internal");
+        }
         succeeded = AccelerateDrawBatchInternal(is_indexed);
+        if (a7z40_draw_wrapper_trace) {
+            V114ShaderMultiplexFileTraceNumber("v115d_a7z40 after_accelerate_draw_batch_internal",
+                                               static_cast<u64>(succeeded));
+        }
     } else {
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan, "TRACE_DRAW software_path vertex_batch_size={}",
