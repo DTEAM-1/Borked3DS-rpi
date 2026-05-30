@@ -4027,21 +4027,39 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         //   step 95 / substep 7: scheduler.Record(bindVertexBuffers + zero-count draw)
         //   step 95 / substep 8: scheduler.Record(bindVertexBuffers + selected final draw count)
         if (a7z34_post_stage12_step == 95) {
+            if (a7z37_pipeline_ready_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z38 step95_enter");
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z38 step95_before_setup_index_array");
+            }
             SetupIndexArray();
+            if (a7z37_pipeline_ready_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z38 step95_after_setup_index_array");
+            }
 
             const bool stage13_consumed = consume_if_stage_limited(
                 13, v115d_mux_zero_count_draw ? "zero_count_index_array_setup_done"
                                               : "index_array_setup_done");
+            if (a7z37_pipeline_ready_trace) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z38 step95_stage13_consumed",
+                                                   static_cast<u64>(stage13_consumed));
+            }
             if (stage13_consumed) {
                 return true;
             }
 
             const bool real_vertex_bind_path = v115d_mux_real_vertex_bind_ultra_quiet_draw;
+            if (a7z37_pipeline_ready_trace) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z38 step95_real_vertex_bind_path",
+                                                   static_cast<u64>(real_vertex_bind_path));
+            }
             if (!real_vertex_bind_path) {
                 return false;
             }
 
             const bool wait_built = !a7z36_pipeline_bind_nowait;
+            if (a7z37_pipeline_ready_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z38 step95_before_bind_pipeline");
+            }
             const bool final_indexed = v115d_mux_step_d || v115d_mux_step_e;
             const u32 final_count = (v115d_mux_step_b || v115d_mux_step_e) ? 3u
                                   : v115d_mux_step_c                  ? 6u
