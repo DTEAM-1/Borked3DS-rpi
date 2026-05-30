@@ -5,6 +5,9 @@
 
 #include <boost/container/static_vector.hpp>
 #include <cstdlib>
+#include <fstream>
+#include <mutex>
+#include <string>
 
 #include "common/common_paths.h"
 #include "common/file_util.h"
@@ -31,9 +34,41 @@ namespace Vulkan {
 
 namespace {
 
-[[nodiscard]] bool IsPi5StrictCompatEnabled() {
-    const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
+[[nodiscard]] bool IsEnvFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
     return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+[[nodiscard]] bool IsPi5StrictCompatEnabled() {
+    return IsEnvFlagEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+}
+
+[[nodiscard]] bool IsV115DA7Z41PipelineCacheTraceEnabled() {
+    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z41_PIPELINE_CACHE_TRACE");
+}
+
+[[nodiscard]] bool IsV115DA7Z41PipelineForceNoWaitOnWaitEnabled() {
+    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z41_PIPELINE_FORCE_NOWAIT_ON_WAIT");
+}
+
+void AppendV115DPipelineCacheTraceLine(const std::string& line) {
+    static std::mutex trace_mutex;
+    std::lock_guard<std::mutex> lock{trace_mutex};
+
+    std::ofstream file{"/tmp/borked3ds_v115d_mux_shader_probe.log", std::ios::app};
+    if (!file.is_open()) {
+        return;
+    }
+
+    file << line << '\n';
+}
+
+void AppendV115DPipelineCacheTraceValue(const std::string& key, u64 value) {
+    AppendV115DPipelineCacheTraceLine("v115d_a7z41 " + key + "=" + std::to_string(value));
+}
+
+void AppendV115DPipelineCacheTraceValue(const std::string& key, bool value) {
+    AppendV115DPipelineCacheTraceLine("v115d_a7z41 " + key + "=" + std::to_string(value ? 1 : 0));
 }
 
 } // namespace
@@ -205,6 +240,17 @@ void PipelineCache::SaveDiskCache() {
 bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     BORKED3DS_PROFILE("Vulkan", "Pipeline Bind");
 
+    const bool a7z41_trace = IsV115DA7Z41PipelineCacheTraceEnabled();
+    const bool a7z41_force_nowait_on_wait = IsV115DA7Z41PipelineForceNoWaitOnWaitEnabled();
+    const bool effective_wait_built = wait_built && !a7z41_force_nowait_on_wait;
+
+    if (a7z41_trace) {
+        AppendV115DPipelineCacheTraceLine("v115d_a7z41 bind_pipeline_enter");
+        AppendV115DPipelineCacheTraceValue("wait_built_requested", wait_built);
+        AppendV115DPipelineCacheTraceValue("force_nowait_on_wait", a7z41_force_nowait_on_wait);
+        AppendV115DPipelineCacheTraceValue("effective_wait_built", effective_wait_built);
+    }
+
     u64 shader_hash = 0;
     for (u32 i = 0; i < MAX_SHADER_STAGES; i++) {
         shader_hash = Common::HashCombine(shader_hash, shader_hashes[i]);
@@ -213,16 +259,58 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     const u64 info_hash = info.Hash(instance);
     const u64 pipeline_hash = Common::HashCombine(shader_hash, info_hash);
 
+    if (a7z41_trace) {
+        AppendV115DPipelineCacheTraceValue("shader_hash", shader_hash);
+        AppendV115DPipelineCacheTraceValue("info_hash", info_hash);
+        AppendV115DPipelineCacheTraceValue("pipeline_hash", pipeline_hash);
+    }
+
     auto [it, new_pipeline] = graphics_pipelines.try_emplace(pipeline_hash);
+    if (a7z41_trace) {
+        AppendV115DPipelineCacheTraceValue("new_pipeline", new_pipeline);
+    }
+
     if (new_pipeline) {
+        if (a7z41_trace) {
+            AppendV115DPipelineCacheTraceLine("v115d_a7z41 new_graphics_pipeline_begin");
+        }
+
         it.value() =
             std::make_unique<GraphicsPipeline>(instance, renderpass_cache, info, *pipeline_cache,
                                                *pipeline_layout, current_shaders, &workers);
+
+        if (a7z41_trace) {
+            AppendV115DPipelineCacheTraceLine("v115d_a7z41 new_graphics_pipeline_end");
+        }
     }
 
     GraphicsPipeline* const pipeline{it->second.get()};
-    if (!pipeline->IsDone() && !pipeline->TryBuild(wait_built)) {
-        return false;
+    const bool pipeline_done_before_try = pipeline->IsDone();
+
+    if (a7z41_trace) {
+        AppendV115DPipelineCacheTraceValue("pipeline_done_before_try", pipeline_done_before_try);
+    }
+
+    if (!pipeline_done_before_try) {
+        if (a7z41_trace) {
+            AppendV115DPipelineCacheTraceLine("v115d_a7z41 try_build_begin");
+            AppendV115DPipelineCacheTraceValue("try_build_wait", effective_wait_built);
+        }
+
+        const bool try_build_result = pipeline->TryBuild(effective_wait_built);
+
+        if (a7z41_trace) {
+            AppendV115DPipelineCacheTraceLine("v115d_a7z41 try_build_end");
+            AppendV115DPipelineCacheTraceValue("try_build_result", try_build_result);
+            AppendV115DPipelineCacheTraceValue("pipeline_done_after_try", pipeline->IsDone());
+        }
+
+        if (!try_build_result) {
+            if (a7z41_trace) {
+                AppendV115DPipelineCacheTraceLine("v115d_a7z41 bind_pipeline_return_false_not_ready");
+            }
+            return false;
+        }
     }
 
     const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
@@ -231,7 +319,15 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
 
     const bool is_dirty = scheduler.IsStateDirty(StateFlags::Pipeline);
     const bool pipeline_dirty = (current_pipeline != pipeline) || is_dirty;
+
+    if (a7z41_trace) {
+        AppendV115DPipelineCacheTraceValue("state_dirty", is_dirty);
+        AppendV115DPipelineCacheTraceValue("pipeline_dirty", pipeline_dirty);
+        AppendV115DPipelineCacheTraceLine("v115d_a7z41 scheduler_record_begin");
+    }
+
     scheduler.Record([this, is_dirty, pipeline_dirty, pipeline, use_extended_dynamic_state,
+                      a7z41_trace,
                       current_dynamic = current_info.dynamic, dynamic = info.dynamic,
                       descriptor_sets = bound_descriptor_sets, offsets = offsets,
                       current_rasterization = current_info.rasterization,
@@ -329,19 +425,52 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         }
 
         if (pipeline_dirty) {
+            if (a7z41_trace) {
+                AppendV115DPipelineCacheTraceLine("v115d_a7z41 record_pipeline_dirty_enter");
+                AppendV115DPipelineCacheTraceValue("record_pipeline_done_before_wait",
+                                                   pipeline->IsDone());
+            }
+
             if (!pipeline->IsDone()) {
+                if (a7z41_trace) {
+                    AppendV115DPipelineCacheTraceLine("v115d_a7z41 record_wait_done_begin");
+                }
                 pipeline->WaitDone();
+                if (a7z41_trace) {
+                    AppendV115DPipelineCacheTraceLine("v115d_a7z41 record_wait_done_end");
+                }
+            }
+
+            if (a7z41_trace) {
+                AppendV115DPipelineCacheTraceLine("v115d_a7z41 record_bind_pipeline_begin");
             }
             cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
+            if (a7z41_trace) {
+                AppendV115DPipelineCacheTraceLine("v115d_a7z41 record_bind_pipeline_end");
+            }
         }
 
+        if (a7z41_trace) {
+            AppendV115DPipelineCacheTraceLine("v115d_a7z41 record_bind_descriptor_sets_begin");
+        }
         cmdbuf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0,
                                   descriptor_sets, offsets);
+        if (a7z41_trace) {
+            AppendV115DPipelineCacheTraceLine("v115d_a7z41 record_bind_descriptor_sets_end");
+        }
     });
+
+    if (a7z41_trace) {
+        AppendV115DPipelineCacheTraceLine("v115d_a7z41 scheduler_record_end");
+    }
 
     current_info = info;
     current_pipeline = pipeline;
     scheduler.MarkStateNonDirty(StateFlags::Pipeline | StateFlags::DescriptorSets);
+
+    if (a7z41_trace) {
+        AppendV115DPipelineCacheTraceLine("v115d_a7z41 bind_pipeline_return_true");
+    }
 
     return true;
 }
