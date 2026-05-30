@@ -264,6 +264,16 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z36_PIPELINE_BIND_NOWAIT");
 }
 
+[[nodiscard]] bool IsV115DA7Z37PipelineReadyTraceEnabled() {
+    // v115-D-E-A7Z37:
+    // A7Z36 proved that BindPipeline(..., wait_built=false) returns cleanly to PICA at
+    // step 94/substep 7. This optional sidecar trace records whether the pipeline cache
+    // actually reports pipeline_ready on the same no-wait path before we advance to
+    // scheduler.Record / vertex-buffer bind / vkCmdDraw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z37_PIPELINE_READY_TRACE");
+}
+
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
     // v114 diagnostic fallback:
     // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
@@ -2730,6 +2740,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
         !a7z34_post_stage12_enabled;
     const bool a7z36_pipeline_bind_nowait = IsV115DA7Z36PipelineBindNoWaitEnabled();
+    const bool a7z37_pipeline_ready_trace = IsV115DA7Z37PipelineReadyTraceEnabled();
 
     // v115-D-A7Z27C: cache the fragile post-before_record gates at function entry.
     // The previous rebuild proved the A7Z27 flag is visible at accel entry, but the sidecar
@@ -2792,6 +2803,10 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
                                            static_cast<u64>(a7z34_post_stage12_step));
         V114ShaderMultiplexFileTraceNumber("v115d_a7z36 outer_pipeline_bind_nowait",
                                            static_cast<u64>(a7z36_pipeline_bind_nowait));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z37 outer_pipeline_ready_trace",
+                                           static_cast<u64>(a7z37_pipeline_ready_trace));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z37 outer_post_stage12_substep",
+                                           static_cast<u64>(a7z34_post_stage12_substep));
     }
     if (v114_file_trace && accel_id == 1) {
         V114ShaderMultiplexFileTraceReset();
@@ -3965,7 +3980,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
+            if (a7z37_pipeline_ready_trace && accel_id == 1) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z37 step94_wait_built",
+                                                   static_cast<u64>(wait_built));
+            }
             const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
+            if (a7z37_pipeline_ready_trace && accel_id == 1) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z37 step94_pipeline_ready",
+                                                   static_cast<u64>(pipeline_ready));
+            }
             if (a7z34_post_stage12_substep == 7) {
                 (void)final_indexed;
                 (void)final_count;
@@ -4039,7 +4062,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             }
             (void)selected_step;
 
+            if (a7z37_pipeline_ready_trace && accel_id == 1) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z37 step95_wait_built",
+                                                   static_cast<u64>(wait_built));
+            }
             const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
+            if (a7z37_pipeline_ready_trace && accel_id == 1) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z37 step95_pipeline_ready",
+                                                   static_cast<u64>(pipeline_ready));
+            }
             if (a7z34_post_stage12_substep == 0) {
                 (void)final_indexed;
                 (void)final_count;
@@ -4178,7 +4209,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                                                                        : 0u;
             const s32 final_vertex_offset = -static_cast<s32>(vertex_info.vs_input_index_min);
 
+            if (a7z37_pipeline_ready_trace && accel_id == 1) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z37 step96_wait_built",
+                                                   static_cast<u64>(wait_built));
+            }
             const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
+            if (a7z37_pipeline_ready_trace && accel_id == 1) {
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z37 step96_pipeline_ready",
+                                                   static_cast<u64>(pipeline_ready));
+            }
             if (!pipeline_ready) {
                 (void)final_indexed;
                 (void)final_count;
