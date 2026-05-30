@@ -295,6 +295,16 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z40_DRAW_WRAPPER_TRACE");
 }
 
+[[nodiscard]] bool IsV115DA7Z42InternalEntryTraceEnabled() {
+    // v115-D-E-A7Z42:
+    // A7Z41 force-nowait still stopped after the wrapper marker
+    // "before_accelerate_draw_batch_internal". This adds an absolute first breadcrumb
+    // at the top of AccelerateDrawBatchInternal(), before the A7Z34/step95 branch work,
+    // so we can prove whether the call enters the internal function at all.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z42_INTERNAL_ENTRY_TRACE");
+}
+
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
     // v114 diagnostic fallback:
     // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
@@ -3135,13 +3145,32 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
 }
 
 bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
+    const bool a7z42_internal_entry_trace = IsV115DA7Z42InternalEntryTraceEnabled();
+    if (a7z42_internal_entry_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z42 internal_enter_0");
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_is_indexed",
+                                           static_cast<u64>(is_indexed));
+    }
+
     const bool trace_accel = IsAccelStageTraceEnabled();
+    if (a7z42_internal_entry_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z42 after_trace_accel_flag");
+    }
+
     const u32 a7z33_checkpoint_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
     const u32 a7z34_post_stage12_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
     const u32 a7z34_post_stage12_substep =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
+    if (a7z42_internal_entry_trace) {
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z33_step",
+                                           static_cast<u64>(a7z33_checkpoint_step));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z34_step",
+                                           static_cast<u64>(a7z34_post_stage12_step));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z34_substep",
+                                           static_cast<u64>(a7z34_post_stage12_substep));
+    }
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
     const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_file_trace =
@@ -3150,6 +3179,14 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool a7z36_pipeline_bind_nowait = IsV115DA7Z36PipelineBindNoWaitEnabled();
     const bool a7z37_pipeline_ready_trace = IsV115DA7Z37PipelineReadyTraceEnabled();
     const bool a7z39_step95_skip_stage13 = IsV115DA7Z39Step95SkipStage13Enabled();
+    if (a7z42_internal_entry_trace) {
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z36_nowait",
+                                           static_cast<u64>(a7z36_pipeline_bind_nowait));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z37_ready_trace",
+                                           static_cast<u64>(a7z37_pipeline_ready_trace));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z39_skip_stage13",
+                                           static_cast<u64>(a7z39_step95_skip_stage13));
+    }
 
     // v115-D-A7Z27C2: cache the fragile post-before_record gates inside the internal
     // draw path as well. The previous patch cached them in AccelerateDrawBatch(),
@@ -4052,6 +4089,9 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         //   step 95 / substep 7: scheduler.Record(bindVertexBuffers + zero-count draw)
         //   step 95 / substep 8: scheduler.Record(bindVertexBuffers + selected final draw count)
         if (a7z34_post_stage12_step == 95) {
+            if (a7z42_internal_entry_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z42 step95_branch_enter_absolute");
+            }
             if (a7z37_pipeline_ready_trace) {
                 V114ShaderMultiplexFileTraceRaw("v115d_a7z38 step95_enter");
                 V114ShaderMultiplexFileTraceRaw("v115d_a7z38 step95_before_setup_index_array");
