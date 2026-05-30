@@ -274,6 +274,16 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z37_PIPELINE_READY_TRACE");
 }
 
+[[nodiscard]] bool IsV115DA7Z39Step95SkipStage13Enabled() {
+    // v115-D-E-A7Z39:
+    // A7Z38 proved step95 reaches after SetupIndexArray(), but the sidecar stops before
+    // the stage-13 consume result. This debug-only switch bypasses only that stage-limit
+    // helper inside the step95 probe so we can read BindPipeline(..., wait_built=false)
+    // pipeline_ready without touching scheduler.Record, vertex-buffer bind, or vkCmdDraw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z39_STEP95_SKIP_STAGE13");
+}
+
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
     // v114 diagnostic fallback:
     // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
@@ -2743,6 +2753,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         !a7z34_post_stage12_enabled;
     const bool a7z36_pipeline_bind_nowait = IsV115DA7Z36PipelineBindNoWaitEnabled();
     const bool a7z37_pipeline_ready_trace = IsV115DA7Z37PipelineReadyTraceEnabled();
+    const bool a7z39_step95_skip_stage13 = IsV115DA7Z39Step95SkipStage13Enabled();
 
     // v115-D-A7Z27C: cache the fragile post-before_record gates at function entry.
     // The previous rebuild proved the A7Z27 flag is visible at accel entry, but the sidecar
@@ -2807,6 +2818,8 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
                                            static_cast<u64>(a7z36_pipeline_bind_nowait));
         V114ShaderMultiplexFileTraceNumber("v115d_a7z37 outer_pipeline_ready_trace",
                                            static_cast<u64>(a7z37_pipeline_ready_trace));
+        V114ShaderMultiplexFileTraceNumber("v115d_a7z39 outer_step95_skip_stage13",
+                                           static_cast<u64>(a7z39_step95_skip_stage13));
         V114ShaderMultiplexFileTraceNumber("v115d_a7z37 outer_post_stage12_substep",
                                            static_cast<u64>(a7z34_post_stage12_substep));
     }
@@ -3125,6 +3138,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         !a7z34_post_stage12_enabled;
     const bool a7z36_pipeline_bind_nowait = IsV115DA7Z36PipelineBindNoWaitEnabled();
     const bool a7z37_pipeline_ready_trace = IsV115DA7Z37PipelineReadyTraceEnabled();
+    const bool a7z39_step95_skip_stage13 = IsV115DA7Z39Step95SkipStage13Enabled();
 
     // v115-D-A7Z27C2: cache the fragile post-before_record gates inside the internal
     // draw path as well. The previous patch cached them in AccelerateDrawBatch(),
@@ -4036,10 +4050,19 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 V114ShaderMultiplexFileTraceRaw("v115d_a7z38 step95_after_setup_index_array");
             }
 
-            const bool stage13_consumed = consume_if_stage_limited(
-                13, v115d_mux_zero_count_draw ? "zero_count_index_array_setup_done"
-                                              : "index_array_setup_done");
+            bool stage13_consumed = false;
             if (a7z37_pipeline_ready_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z39 step95_before_stage13_gate");
+                V114ShaderMultiplexFileTraceNumber("v115d_a7z39 step95_skip_stage13",
+                                                   static_cast<u64>(a7z39_step95_skip_stage13));
+            }
+            if (!a7z39_step95_skip_stage13) {
+                stage13_consumed = consume_if_stage_limited(
+                    13, v115d_mux_zero_count_draw ? "zero_count_index_array_setup_done"
+                                                  : "index_array_setup_done");
+            }
+            if (a7z37_pipeline_ready_trace) {
+                V114ShaderMultiplexFileTraceRaw("v115d_a7z39 step95_after_stage13_gate");
                 V114ShaderMultiplexFileTraceNumber("v115d_a7z38 step95_stage13_consumed",
                                                    static_cast<u64>(stage13_consumed));
             }
