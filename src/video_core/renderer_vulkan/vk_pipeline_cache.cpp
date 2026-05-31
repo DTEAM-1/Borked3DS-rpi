@@ -86,19 +86,19 @@ void AppendV115DPipelineCacheTraceLine(const std::string& line) {
     file << line << '\n';
 }
 
-void AppendV115DPipelineCacheTraceValue(const std::string& key, u64 value) {
+void AppendV115DPipelineCacheTraceU64(const std::string& key, u64 value) {
     AppendV115DPipelineCacheTraceLine("v115d_a7z41 " + key + "=" + std::to_string(value));
 }
 
-void AppendV115DPipelineCacheTraceValue(const std::string& key, bool value) {
+void AppendV115DPipelineCacheTraceBool(const std::string& key, bool value) {
     AppendV115DPipelineCacheTraceLine("v115d_a7z41 " + key + "=" + std::to_string(value ? 1 : 0));
 }
 
-void AppendV115DPipelineCacheTraceA7Z44Value(const std::string& key, u64 value) {
+void AppendV115DPipelineCacheTraceA7Z44U32(const std::string& key, u32 value) {
     AppendV115DPipelineCacheTraceLine("v115d_a7z44 " + key + "=" + std::to_string(value));
 }
 
-void AppendV115DPipelineCacheTraceA7Z44Value(const std::string& key, bool value) {
+void AppendV115DPipelineCacheTraceA7Z44Bool(const std::string& key, bool value) {
     AppendV115DPipelineCacheTraceLine("v115d_a7z44 " + key + "=" + std::to_string(value ? 1 : 0));
 }
 
@@ -282,12 +282,12 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
 
     if (a7z41_trace) {
         AppendV115DPipelineCacheTraceLine("v115d_a7z41 bind_pipeline_enter");
-        AppendV115DPipelineCacheTraceValue("wait_built_requested", wait_built);
-        AppendV115DPipelineCacheTraceValue("force_nowait_on_wait", a7z41_force_nowait_on_wait);
-        AppendV115DPipelineCacheTraceValue("effective_wait_built", effective_wait_built);
-        AppendV115DPipelineCacheTraceA7Z44Value("nowait_retry_enabled", a7z44_nowait_retry);
-        AppendV115DPipelineCacheTraceA7Z44Value("retry_count", a7z44_retry_count);
-        AppendV115DPipelineCacheTraceA7Z44Value("retry_sleep_ms", a7z44_retry_sleep_ms);
+        AppendV115DPipelineCacheTraceBool("wait_built_requested", wait_built);
+        AppendV115DPipelineCacheTraceBool("force_nowait_on_wait", a7z41_force_nowait_on_wait);
+        AppendV115DPipelineCacheTraceBool("effective_wait_built", effective_wait_built);
+        AppendV115DPipelineCacheTraceA7Z44Bool("nowait_retry_enabled", a7z44_nowait_retry);
+        AppendV115DPipelineCacheTraceA7Z44U32("retry_count", a7z44_retry_count);
+        AppendV115DPipelineCacheTraceA7Z44U32("retry_sleep_ms", a7z44_retry_sleep_ms);
     }
 
     u64 shader_hash = 0;
@@ -299,14 +299,14 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     const u64 pipeline_hash = Common::HashCombine(shader_hash, info_hash);
 
     if (a7z41_trace) {
-        AppendV115DPipelineCacheTraceValue("shader_hash", shader_hash);
-        AppendV115DPipelineCacheTraceValue("info_hash", info_hash);
-        AppendV115DPipelineCacheTraceValue("pipeline_hash", pipeline_hash);
+        AppendV115DPipelineCacheTraceU64("shader_hash", shader_hash);
+        AppendV115DPipelineCacheTraceU64("info_hash", info_hash);
+        AppendV115DPipelineCacheTraceU64("pipeline_hash", pipeline_hash);
     }
 
     auto [it, new_pipeline] = graphics_pipelines.try_emplace(pipeline_hash);
     if (a7z41_trace) {
-        AppendV115DPipelineCacheTraceValue("new_pipeline", new_pipeline);
+        AppendV115DPipelineCacheTraceBool("new_pipeline", new_pipeline);
     }
 
     if (new_pipeline) {
@@ -327,21 +327,21 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     const bool pipeline_done_before_try = pipeline->IsDone();
 
     if (a7z41_trace) {
-        AppendV115DPipelineCacheTraceValue("pipeline_done_before_try", pipeline_done_before_try);
+        AppendV115DPipelineCacheTraceBool("pipeline_done_before_try", pipeline_done_before_try);
     }
 
     if (!pipeline_done_before_try) {
         if (a7z41_trace) {
             AppendV115DPipelineCacheTraceLine("v115d_a7z41 try_build_begin");
-            AppendV115DPipelineCacheTraceValue("try_build_wait", effective_wait_built);
+            AppendV115DPipelineCacheTraceBool("try_build_wait", effective_wait_built);
         }
 
         bool try_build_result = pipeline->TryBuild(effective_wait_built);
 
         if (a7z41_trace) {
             AppendV115DPipelineCacheTraceLine("v115d_a7z41 try_build_end");
-            AppendV115DPipelineCacheTraceValue("try_build_result", try_build_result);
-            AppendV115DPipelineCacheTraceValue("pipeline_done_after_try", pipeline->IsDone());
+            AppendV115DPipelineCacheTraceBool("try_build_result", try_build_result);
+            AppendV115DPipelineCacheTraceBool("pipeline_done_after_try", pipeline->IsDone());
         }
 
         if (!try_build_result && a7z44_nowait_retry && !effective_wait_built) {
@@ -352,9 +352,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
 
                 const bool retry_done_before_try = pipeline->IsDone();
                 if (a7z41_trace) {
-                    AppendV115DPipelineCacheTraceA7Z44Value("retry_index", retry_index);
-                    AppendV115DPipelineCacheTraceA7Z44Value("retry_done_before_try",
-                                                            retry_done_before_try);
+                    AppendV115DPipelineCacheTraceA7Z44U32("retry_index", retry_index);
+                    AppendV115DPipelineCacheTraceA7Z44Bool("retry_done_before_try",
+                                                             retry_done_before_try);
                 }
 
                 if (retry_done_before_try) {
@@ -369,10 +369,10 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
                 const bool retry_try_build_result = pipeline->TryBuild(false);
                 const bool retry_done_after_try = pipeline->IsDone();
                 if (a7z41_trace) {
-                    AppendV115DPipelineCacheTraceA7Z44Value("retry_try_build_result",
-                                                            retry_try_build_result);
-                    AppendV115DPipelineCacheTraceA7Z44Value("retry_done_after_try",
-                                                            retry_done_after_try);
+                    AppendV115DPipelineCacheTraceA7Z44Bool("retry_try_build_result",
+                                                             retry_try_build_result);
+                    AppendV115DPipelineCacheTraceA7Z44Bool("retry_done_after_try",
+                                                             retry_done_after_try);
                 }
 
                 if (retry_try_build_result || retry_done_after_try) {
@@ -386,10 +386,10 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
             }
 
             if (a7z41_trace) {
-                AppendV115DPipelineCacheTraceA7Z44Value("final_try_build_result_after_retries",
-                                                        try_build_result);
-                AppendV115DPipelineCacheTraceA7Z44Value("final_pipeline_done_after_retries",
-                                                        pipeline->IsDone());
+                AppendV115DPipelineCacheTraceA7Z44Bool("final_try_build_result_after_retries",
+                                                         try_build_result);
+                AppendV115DPipelineCacheTraceA7Z44Bool("final_pipeline_done_after_retries",
+                                                         pipeline->IsDone());
             }
         }
 
@@ -409,8 +409,8 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     const bool pipeline_dirty = (current_pipeline != pipeline) || is_dirty;
 
     if (a7z41_trace) {
-        AppendV115DPipelineCacheTraceValue("state_dirty", is_dirty);
-        AppendV115DPipelineCacheTraceValue("pipeline_dirty", pipeline_dirty);
+        AppendV115DPipelineCacheTraceBool("state_dirty", is_dirty);
+        AppendV115DPipelineCacheTraceBool("pipeline_dirty", pipeline_dirty);
         AppendV115DPipelineCacheTraceLine("v115d_a7z41 scheduler_record_begin");
     }
 
@@ -515,8 +515,8 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         if (pipeline_dirty) {
             if (a7z41_trace) {
                 AppendV115DPipelineCacheTraceLine("v115d_a7z41 record_pipeline_dirty_enter");
-                AppendV115DPipelineCacheTraceValue("record_pipeline_done_before_wait",
-                                                   pipeline->IsDone());
+                AppendV115DPipelineCacheTraceBool("record_pipeline_done_before_wait",
+                                                  pipeline->IsDone());
             }
 
             if (!pipeline->IsDone()) {
