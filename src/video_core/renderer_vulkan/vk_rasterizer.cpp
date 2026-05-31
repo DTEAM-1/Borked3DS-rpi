@@ -317,6 +317,19 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z43_INTERNAL_RAW_ONLY_TRACE");
 }
 
+
+[[nodiscard]] bool IsV115DA7Z45InternalMinimalEntryTraceEnabled() {
+    // v115-D-E-A7Z45:
+    // A7Z44/A7Z43 on the new pipeline-cache build reached the raw indexed marker but
+    // stopped before the next raw breadcrumb (before_trace_accel_flag). This mode keeps
+    // the proven raw entry breadcrumbs, then bypasses the fragile early trace_accel/env
+    // breadcrumb spam. It reads the same flags silently and resumes at the step95 branch
+    // so we can reach PipelineCache::BindPipeline()/A7Z44 again without changing draw
+    // count, textures, GLES, depth, blend, stencil, or issuing vkCmdDraw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z45_INTERNAL_MINIMAL_ENTRY_TRACE");
+}
+
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
     // v114 diagnostic fallback:
     // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
@@ -3159,49 +3172,60 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
 bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool a7z42_internal_entry_trace = IsV115DA7Z42InternalEntryTraceEnabled();
     const bool a7z43_internal_raw_only_trace = IsV115DA7Z43InternalRawOnlyTraceEnabled();
+    const bool a7z45_internal_minimal_entry_trace =
+        IsV115DA7Z45InternalMinimalEntryTraceEnabled();
+    const bool a7z43_legacy_raw_only_trace =
+        a7z43_internal_raw_only_trace && !a7z45_internal_minimal_entry_trace;
+    const bool a7z_internal_raw_entry_trace =
+        a7z43_legacy_raw_only_trace || a7z45_internal_minimal_entry_trace;
     const bool a7z_internal_entry_trace =
-        a7z42_internal_entry_trace || a7z43_internal_raw_only_trace;
+        a7z42_internal_entry_trace || a7z_internal_raw_entry_trace;
 
     if (a7z_internal_entry_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z42 internal_enter_0");
     }
-    if (a7z43_internal_raw_only_trace) {
-        V114ShaderMultiplexFileTraceRaw("v115d_a7z43 internal_raw_only=1");
+    if (a7z_internal_raw_entry_trace) {
+        V114ShaderMultiplexFileTraceRaw(a7z45_internal_minimal_entry_trace
+                                            ? "v115d_a7z45 internal_minimal_entry=1"
+                                            : "v115d_a7z43 internal_raw_only=1");
         V114ShaderMultiplexFileTraceRaw(is_indexed ? "v115d_a7z43 internal_is_indexed_true"
                                                    : "v115d_a7z43 internal_is_indexed_false");
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_is_indexed_marker");
-    } else if (a7z42_internal_entry_trace) {
+    } else if (!a7z45_internal_minimal_entry_trace && a7z42_internal_entry_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_is_indexed",
                                            static_cast<u64>(is_indexed));
     }
 
-    if (a7z43_internal_raw_only_trace) {
-        V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_trace_accel_flag");
-    }
-    const bool trace_accel = IsAccelStageTraceEnabled();
-    if (a7z_internal_entry_trace) {
-        V114ShaderMultiplexFileTraceRaw("v115d_a7z42 after_trace_accel_flag");
-    }
-    if (a7z43_internal_raw_only_trace) {
-        V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_trace_accel_flag_raw");
-        V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_get_env_a7z33");
+    bool trace_accel = false;
+    if (!a7z45_internal_minimal_entry_trace) {
+        if (a7z43_legacy_raw_only_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_trace_accel_flag");
+        }
+        trace_accel = IsAccelStageTraceEnabled();
+        if (a7z_internal_entry_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z42 after_trace_accel_flag");
+        }
+        if (a7z43_legacy_raw_only_trace) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_trace_accel_flag_raw");
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_get_env_a7z33");
+        }
     }
 
     const u32 a7z33_checkpoint_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z33_CHECKPOINT_STEP", 0);
-    if (a7z43_internal_raw_only_trace) {
+    if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_get_env_a7z33");
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_get_env_a7z34_step");
     }
     const u32 a7z34_post_stage12_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
-    if (a7z43_internal_raw_only_trace) {
+    if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_get_env_a7z34_step");
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_get_env_a7z34_substep");
     }
     const u32 a7z34_post_stage12_substep =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
-    if (a7z43_internal_raw_only_trace) {
+    if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_get_env_a7z34_substep");
         V114ShaderMultiplexFileTraceRaw(a7z33_checkpoint_step == 0
                                             ? "v115d_a7z43 internal_a7z33_step_zero"
@@ -3212,7 +3236,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceRaw(a7z34_post_stage12_substep == 0
                                             ? "v115d_a7z43 internal_a7z34_substep_0"
                                             : "v115d_a7z43 internal_a7z34_substep_not_0");
-    } else if (a7z42_internal_entry_trace) {
+    } else if (!a7z45_internal_minimal_entry_trace && a7z42_internal_entry_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z33_step",
                                            static_cast<u64>(a7z33_checkpoint_step));
         V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z34_step",
@@ -3226,7 +3250,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     const bool v114_file_trace =
         IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
         !a7z34_post_stage12_enabled;
-    if (a7z43_internal_raw_only_trace) {
+    if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw(a7z33_checkpoint_enabled
                                             ? "v115d_a7z43 checkpoint_enabled_true"
                                             : "v115d_a7z43 checkpoint_enabled_false");
@@ -3239,32 +3263,35 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
 
     const bool a7z36_pipeline_bind_nowait = IsV115DA7Z36PipelineBindNoWaitEnabled();
-    if (a7z43_internal_raw_only_trace) {
+    if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw(a7z36_pipeline_bind_nowait
                                             ? "v115d_a7z43 internal_a7z36_nowait_true"
                                             : "v115d_a7z43 internal_a7z36_nowait_false");
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_helper_a7z37");
     }
     const bool a7z37_pipeline_ready_trace = IsV115DA7Z37PipelineReadyTraceEnabled();
-    if (a7z43_internal_raw_only_trace) {
+    if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw(a7z37_pipeline_ready_trace
                                             ? "v115d_a7z43 internal_a7z37_ready_trace_true"
                                             : "v115d_a7z43 internal_a7z37_ready_trace_false");
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_helper_a7z39");
     }
     const bool a7z39_step95_skip_stage13 = IsV115DA7Z39Step95SkipStage13Enabled();
-    if (a7z43_internal_raw_only_trace) {
+    if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw(a7z39_step95_skip_stage13
                                             ? "v115d_a7z43 internal_a7z39_skip_stage13_true"
                                             : "v115d_a7z43 internal_a7z39_skip_stage13_false");
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_helper_flags");
-    } else if (a7z42_internal_entry_trace) {
+    } else if (!a7z45_internal_minimal_entry_trace && a7z42_internal_entry_trace) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z36_nowait",
                                            static_cast<u64>(a7z36_pipeline_bind_nowait));
         V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z37_ready_trace",
                                            static_cast<u64>(a7z37_pipeline_ready_trace));
         V114ShaderMultiplexFileTraceNumber("v115d_a7z42 internal_a7z39_skip_stage13",
                                            static_cast<u64>(a7z39_step95_skip_stage13));
+    }
+    if (a7z45_internal_minimal_entry_trace) {
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z45 after_minimal_helper_flags");
     }
 
     // v115-D-A7Z27C2: cache the fragile post-before_record gates inside the internal
