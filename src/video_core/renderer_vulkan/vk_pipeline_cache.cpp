@@ -3,11 +3,14 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <boost/container/static_vector.hpp>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "common/common_paths.h"
 #include "common/file_util.h"
@@ -51,6 +54,26 @@ namespace {
     return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z41_PIPELINE_FORCE_NOWAIT_ON_WAIT");
 }
 
+[[nodiscard]] bool IsV115DA7Z44PipelineNoWaitRetryEnabled() {
+    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z44_PIPELINE_NOWAIT_RETRY");
+}
+
+[[nodiscard]] u32 GetEnvU32Limited(const char* name, u32 default_value, u32 max_value) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+    if (end == value) {
+        return default_value;
+    }
+
+    const u32 limited = static_cast<u32>(std::min<unsigned long>(parsed, max_value));
+    return limited;
+}
+
 void AppendV115DPipelineCacheTraceLine(const std::string& line) {
     static std::mutex trace_mutex;
     std::lock_guard<std::mutex> lock{trace_mutex};
@@ -69,6 +92,14 @@ void AppendV115DPipelineCacheTraceValue(const std::string& key, u64 value) {
 
 void AppendV115DPipelineCacheTraceValue(const std::string& key, bool value) {
     AppendV115DPipelineCacheTraceLine("v115d_a7z41 " + key + "=" + std::to_string(value ? 1 : 0));
+}
+
+void AppendV115DPipelineCacheTraceA7Z44Value(const std::string& key, u64 value) {
+    AppendV115DPipelineCacheTraceLine("v115d_a7z44 " + key + "=" + std::to_string(value));
+}
+
+void AppendV115DPipelineCacheTraceA7Z44Value(const std::string& key, bool value) {
+    AppendV115DPipelineCacheTraceLine("v115d_a7z44 " + key + "=" + std::to_string(value ? 1 : 0));
 }
 
 } // namespace
@@ -242,6 +273,11 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
 
     const bool a7z41_trace = IsV115DA7Z41PipelineCacheTraceEnabled();
     const bool a7z41_force_nowait_on_wait = IsV115DA7Z41PipelineForceNoWaitOnWaitEnabled();
+    const bool a7z44_nowait_retry = IsV115DA7Z44PipelineNoWaitRetryEnabled();
+    const u32 a7z44_retry_count =
+        GetEnvU32Limited("BORKED3DS_V3DV_A7Z44_PIPELINE_NOWAIT_RETRY_COUNT", 4, 16);
+    const u32 a7z44_retry_sleep_ms =
+        GetEnvU32Limited("BORKED3DS_V3DV_A7Z44_PIPELINE_NOWAIT_RETRY_SLEEP_MS", 1, 10);
     const bool effective_wait_built = wait_built && !a7z41_force_nowait_on_wait;
 
     if (a7z41_trace) {
@@ -249,6 +285,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         AppendV115DPipelineCacheTraceValue("wait_built_requested", wait_built);
         AppendV115DPipelineCacheTraceValue("force_nowait_on_wait", a7z41_force_nowait_on_wait);
         AppendV115DPipelineCacheTraceValue("effective_wait_built", effective_wait_built);
+        AppendV115DPipelineCacheTraceA7Z44Value("nowait_retry_enabled", a7z44_nowait_retry);
+        AppendV115DPipelineCacheTraceA7Z44Value("retry_count", a7z44_retry_count);
+        AppendV115DPipelineCacheTraceA7Z44Value("retry_sleep_ms", a7z44_retry_sleep_ms);
     }
 
     u64 shader_hash = 0;
@@ -297,12 +336,61 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
             AppendV115DPipelineCacheTraceValue("try_build_wait", effective_wait_built);
         }
 
-        const bool try_build_result = pipeline->TryBuild(effective_wait_built);
+        bool try_build_result = pipeline->TryBuild(effective_wait_built);
 
         if (a7z41_trace) {
             AppendV115DPipelineCacheTraceLine("v115d_a7z41 try_build_end");
             AppendV115DPipelineCacheTraceValue("try_build_result", try_build_result);
             AppendV115DPipelineCacheTraceValue("pipeline_done_after_try", pipeline->IsDone());
+        }
+
+        if (!try_build_result && a7z44_nowait_retry && !effective_wait_built) {
+            for (u32 retry_index = 1; retry_index <= a7z44_retry_count; ++retry_index) {
+                if (a7z44_retry_sleep_ms > 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(a7z44_retry_sleep_ms));
+                }
+
+                const bool retry_done_before_try = pipeline->IsDone();
+                if (a7z41_trace) {
+                    AppendV115DPipelineCacheTraceA7Z44Value("retry_index", retry_index);
+                    AppendV115DPipelineCacheTraceA7Z44Value("retry_done_before_try",
+                                                            retry_done_before_try);
+                }
+
+                if (retry_done_before_try) {
+                    try_build_result = true;
+                    if (a7z41_trace) {
+                        AppendV115DPipelineCacheTraceLine(
+                            "v115d_a7z44 retry_done_before_try_accept_ready");
+                    }
+                    break;
+                }
+
+                const bool retry_try_build_result = pipeline->TryBuild(false);
+                const bool retry_done_after_try = pipeline->IsDone();
+                if (a7z41_trace) {
+                    AppendV115DPipelineCacheTraceA7Z44Value("retry_try_build_result",
+                                                            retry_try_build_result);
+                    AppendV115DPipelineCacheTraceA7Z44Value("retry_done_after_try",
+                                                            retry_done_after_try);
+                }
+
+                if (retry_try_build_result || retry_done_after_try) {
+                    try_build_result = true;
+                    if (a7z41_trace) {
+                        AppendV115DPipelineCacheTraceLine(
+                            "v115d_a7z44 retry_accept_ready_after_try");
+                    }
+                    break;
+                }
+            }
+
+            if (a7z41_trace) {
+                AppendV115DPipelineCacheTraceA7Z44Value("final_try_build_result_after_retries",
+                                                        try_build_result);
+                AppendV115DPipelineCacheTraceA7Z44Value("final_pipeline_done_after_retries",
+                                                        pipeline->IsDone());
+            }
         }
 
         if (!try_build_result) {
