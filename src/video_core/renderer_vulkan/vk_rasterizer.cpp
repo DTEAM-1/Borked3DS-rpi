@@ -228,6 +228,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z31c2 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z31c3 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z43 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z49 shader_file_trace_reset\n", fp);
     std::fclose(fp);
 }
 
@@ -351,6 +352,18 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // breadcrumbs. It still returns before scheduler.Record, vertex buffer binding, and vkCmdDraw.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z47_DIRECT_STEP95_BIND_ONLY");
+}
+
+[[nodiscard]] bool IsV115DA7Z49DirectBindSkipSetupIndexArrayEnabled() {
+    // v115-D-E-A7Z49:
+    // A7Z48 proved the direct A7Z47 branch is active again, but the log stopped immediately
+    // after direct_step95_enter, before before_bind_pipeline. In the A7Z47 branch the only
+    // operation between those two markers is SetupIndexArray(). This switch skips that already
+    // validated indexed setup only for the direct bind-only probe so the test can reach
+    // PipelineCache::BindPipeline()/GraphicsPipeline::TryBuild() and continue diagnosing
+    // pipeline_ready without issuing scheduler.Record, vertex buffer binding, or vkCmdDraw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z49_DIRECT_BIND_SKIP_SETUP_INDEX_ARRAY");
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
@@ -3201,6 +3214,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         IsV115DA7Z46Step95UltraSilentToBindEnabled();
     const bool a7z47_direct_step95_bind_only =
         IsV115DA7Z47DirectStep95BindOnlyEnabled();
+    const bool a7z49_direct_bind_skip_setup_index_array =
+        IsV115DA7Z49DirectBindSkipSetupIndexArrayEnabled();
     const bool a7z43_legacy_raw_only_trace =
         a7z43_internal_raw_only_trace && !a7z45_internal_minimal_entry_trace;
     const bool a7z_internal_raw_entry_trace =
@@ -3327,7 +3342,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         // below this point; the previous log stopped before reaching the step95 branch.
         V114ShaderMultiplexFileTraceRaw("v115d_a7z47 direct_step95_enter");
 
-        SetupIndexArray();
+        if (a7z49_direct_bind_skip_setup_index_array) {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z49 skip_setup_index_array=1");
+        } else {
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z49 before_setup_index_array");
+            SetupIndexArray();
+            V114ShaderMultiplexFileTraceRaw("v115d_a7z49 after_setup_index_array");
+        }
 
         // A7Z47 compile-fix:
         // This direct branch is intentionally placed before the internal
