@@ -390,6 +390,16 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z52_FORCE_STEP95_SUBSTEP5");
 }
 
+[[nodiscard]] bool IsV115DA7Z53ForceStep95Substep5LateEnabled() {
+    // v115-D-E-A7Z53:
+    // A7Z52 compiled, but the runtime log produced an empty shader_probe and the PICA gate
+    // stopped at early_direct_before_accelerate_draw_batch. Keep A7Z52 available as a
+    // rollback flag, but add this later force path so step 95 can be treated as substep 5
+    // inside the step 95 corridor, with a main-log breadcrumb before the sidecar can fail.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z53_FORCE_STEP95_SUBSTEP5_LATE");
+}
+
 [[nodiscard]] u32 GetV115DA7Z34PostStage12Substep(u32 step) {
     const u32 substep = GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
     if (step == 95 && IsV115DA7Z52ForceStep95Substep5Enabled()) {
@@ -2855,6 +2865,13 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
     const u32 a7z34_post_stage12_substep =
         GetV115DA7Z34PostStage12Substep(a7z34_post_stage12_step);
+    const bool a7z53_force_step95_substep5_late =
+        IsV115DA7Z53ForceStep95Substep5LateEnabled();
+    if (a7z53_force_step95_substep5_late && a7z34_post_stage12_step == 95) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v115d_a7z53 outer_force_step95_substep5_late original_substep={}",
+                    a7z34_post_stage12_substep);
+    }
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
     const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_a7z33_file_trace =
@@ -3301,6 +3318,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
     const u32 a7z34_post_stage12_substep =
         GetV115DA7Z34PostStage12Substep(a7z34_post_stage12_step);
+    const bool a7z53_force_step95_substep5_late =
+        IsV115DA7Z53ForceStep95Substep5LateEnabled();
+    if (a7z53_force_step95_substep5_late && a7z34_post_stage12_step == 95) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v115d_a7z53 internal_force_step95_substep5_late original_substep={}",
+                    a7z34_post_stage12_substep);
+    }
     if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_get_env_a7z34_substep");
         V114ShaderMultiplexFileTraceRaw(a7z33_checkpoint_step == 0
@@ -4326,6 +4350,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         //   step 95 / substep 7: scheduler.Record(bindVertexBuffers + zero-count draw)
         //   step 95 / substep 8: scheduler.Record(bindVertexBuffers + selected final draw count)
         if (a7z34_post_stage12_step == 95) {
+            const u32 a7z34_step95_substep =
+                a7z53_force_step95_substep5_late ? 5u : a7z34_post_stage12_substep;
+            if (a7z53_force_step95_substep5_late) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW strict_compat v115d_a7z53 step95_effective_substep={}",
+                            a7z34_step95_substep);
+            }
             if (a7z42_internal_entry_trace && !a7z46_step95_ultra_silent_to_bind) {
                 V114ShaderMultiplexFileTraceRaw("v115d_a7z42 step95_branch_enter_absolute");
             }
@@ -4403,7 +4434,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 V114ShaderMultiplexFileTraceNumber("v115d_a7z37 step95_pipeline_ready",
                                                    static_cast<u64>(pipeline_ready));
             }
-            if (a7z34_post_stage12_substep == 0) {
+            if (a7z34_step95_substep == 0) {
                 (void)final_indexed;
                 (void)final_count;
                 (void)final_vertex_offset;
@@ -4415,7 +4446,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
-            if (a7z34_post_stage12_substep == 1) {
+            if (a7z34_step95_substep == 1) {
                 (void)final_indexed;
                 (void)final_count;
                 (void)final_vertex_offset;
@@ -4427,7 +4458,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                     "v115d_a7z34i after_bind_pipeline_before_record");
             }
 
-            if (a7z34_post_stage12_substep == 2) {
+            if (a7z34_step95_substep == 2) {
                 (void)final_indexed;
                 (void)final_count;
                 (void)final_vertex_offset;
@@ -4439,7 +4470,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
-            if (a7z34_post_stage12_substep == 3) {
+            if (a7z34_step95_substep == 3) {
                 (void)final_indexed;
                 (void)final_count;
                 (void)final_vertex_offset;
@@ -4452,7 +4483,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                            a7z34i_real_offsets.begin(),
                            [](u32 offset) { return static_cast<vk::DeviceSize>(offset); });
 
-            if (a7z34_post_stage12_substep == 4) {
+            if (a7z34_step95_substep == 4) {
                 (void)final_indexed;
                 (void)final_count;
                 (void)final_vertex_offset;
@@ -4461,12 +4492,12 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
-            if (a7z34_post_stage12_substep == 5) {
+            if (a7z34_step95_substep == 5) {
                 scheduler.Record([](vk::CommandBuffer cmdbuf) { (void)cmdbuf; });
                 return false;
             }
 
-            if (a7z34_post_stage12_substep == 6) {
+            if (a7z34_step95_substep == 6) {
                 scheduler.Record([this, a7z34i_binding_count,
                                   a7z34i_real_offsets](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34i_binding_count, vertex_buffers.data(),
@@ -4475,7 +4506,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return false;
             }
 
-            if (a7z34_post_stage12_substep == 7) {
+            if (a7z34_step95_substep == 7) {
                 scheduler.Record([this, a7z34i_binding_count, a7z34i_real_offsets, final_indexed,
                                   final_vertex_offset](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34i_binding_count, vertex_buffers.data(),
@@ -4489,7 +4520,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
                 return true;
             }
 
-            if (a7z34_post_stage12_substep == 8) {
+            if (a7z34_step95_substep == 8) {
                 scheduler.Record([this, a7z34i_binding_count, a7z34i_real_offsets, final_indexed,
                                   final_count, final_vertex_offset](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindVertexBuffers(0, a7z34i_binding_count, vertex_buffers.data(),
