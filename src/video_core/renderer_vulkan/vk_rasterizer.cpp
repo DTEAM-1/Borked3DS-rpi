@@ -229,6 +229,7 @@ void V114ShaderMultiplexFileTraceReset() {
     std::fputs("v115d_a7z31c3 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z43 shader_file_trace_reset\n", fp);
     std::fputs("v115d_a7z49 shader_file_trace_reset\n", fp);
+    std::fputs("v115d_a7z50 shader_file_trace_reset\n", fp);
     std::fclose(fp);
 }
 
@@ -364,6 +365,17 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // pipeline_ready without issuing scheduler.Record, vertex buffer binding, or vkCmdDraw.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z49_DIRECT_BIND_SKIP_SETUP_INDEX_ARRAY");
+}
+
+[[nodiscard]] bool IsV115DA7Z50DirectBindNoBreadcrumbEnabled() {
+    // v115-D-E-A7Z50:
+    // A7Z49 confirmed the direct branch is compiled and reaches direct_step95_enter, but the
+    // next breadcrumb can still stop the probe before BindPipeline. This mode is the minimal
+    // bind-only corridor: after the already validated A7Z45 entry it skips SetupIndexArray(),
+    // skips all A7Z47/A7Z49 breadcrumbs, calls PipelineCache::BindPipeline() directly, and
+    // returns false before scheduler.Record, vertex buffer binding, or vkCmdDraw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z50_DIRECT_BIND_NO_BREADCRUMB");
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
@@ -3216,6 +3228,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         IsV115DA7Z47DirectStep95BindOnlyEnabled();
     const bool a7z49_direct_bind_skip_setup_index_array =
         IsV115DA7Z49DirectBindSkipSetupIndexArrayEnabled();
+    const bool a7z50_direct_bind_no_breadcrumb =
+        IsV115DA7Z50DirectBindNoBreadcrumbEnabled();
     const bool a7z43_legacy_raw_only_trace =
         a7z43_internal_raw_only_trace && !a7z45_internal_minimal_entry_trace;
     const bool a7z_internal_raw_entry_trace =
@@ -3334,6 +3348,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
     if (a7z45_internal_minimal_entry_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z45 after_minimal_helper_flags");
+    }
+
+    if (a7z50_direct_bind_no_breadcrumb && a7z34_post_stage12_step == 95 &&
+        a7z34_post_stage12_substep == 0) {
+        // A7Z50: ultra-minimal bind-only corridor. Do not write any extra breadcrumbs before
+        // PipelineCache::BindPipeline(); A7Z41/A7Z48 will prove whether the call is reached.
+        const bool wait_built = !a7z36_pipeline_bind_nowait;
+        (void)pipeline_cache.BindPipeline(pipeline_info, wait_built);
+        return false;
     }
 
     if (a7z47_direct_step95_bind_only && a7z34_post_stage12_step == 95 &&
