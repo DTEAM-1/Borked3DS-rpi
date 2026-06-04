@@ -3329,10 +3329,14 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
 
         SetupIndexArray();
 
+        // A7Z47 compile-fix:
+        // This direct branch is intentionally placed before the internal
+        // consume_if_stage_limited lambda is declared. Do not call that lambda here.
+        // The expected A7Z47 line uses A7Z39_STEP95_SKIP_STAGE13=1. If the gate is not
+        // active, return false cleanly instead of falling into the older fragile stage13
+        // helper path.
         if (!a7z39_step95_skip_stage13) {
-            if (consume_if_stage_limited(13, "a7z47_index_array_setup_done")) {
-                return true;
-            }
+            return false;
         }
 
         const bool local_step_a = IsV115DAMuxRealVertexBindDrawZeroEnabled();
