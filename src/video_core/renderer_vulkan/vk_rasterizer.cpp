@@ -342,6 +342,17 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z46_STEP95_ULTRA_SILENT_TO_BIND");
 }
 
+[[nodiscard]] bool IsV115DA7Z47DirectStep95BindOnlyEnabled() {
+    // v115-D-E-A7Z47:
+    // A7Z46 proved the legacy internal pre-step95 flag cache can still stop immediately after
+    // after_minimal_helper_flags, before the step95 branch can reach BindPipeline. This mode
+    // jumps directly from the validated minimal entry into the validated step95/substep=0
+    // BindPipeline corridor, bypassing the old A7Z23/A7Z26 flag cache and all early step95
+    // breadcrumbs. It still returns before scheduler.Record, vertex buffer binding, and vkCmdDraw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z47_DIRECT_STEP95_BIND_ONLY");
+}
+
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
     // v114 diagnostic fallback:
     // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
@@ -3188,6 +3199,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         IsV115DA7Z45InternalMinimalEntryTraceEnabled();
     const bool a7z46_step95_ultra_silent_to_bind =
         IsV115DA7Z46Step95UltraSilentToBindEnabled();
+    const bool a7z47_direct_step95_bind_only =
+        IsV115DA7Z47DirectStep95BindOnlyEnabled();
     const bool a7z43_legacy_raw_only_trace =
         a7z43_internal_raw_only_trace && !a7z45_internal_minimal_entry_trace;
     const bool a7z_internal_raw_entry_trace =
@@ -3306,6 +3319,42 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
     }
     if (a7z45_internal_minimal_entry_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z45 after_minimal_helper_flags");
+    }
+
+    if (a7z47_direct_step95_bind_only && a7z34_post_stage12_step == 95 &&
+        a7z34_post_stage12_substep == 0) {
+        // A7Z47: direct minimal corridor. Do not evaluate the legacy A7Z23/A7Z26 flag cache
+        // below this point; the previous log stopped before reaching the step95 branch.
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z47 direct_step95_enter");
+
+        SetupIndexArray();
+
+        if (!a7z39_step95_skip_stage13) {
+            if (consume_if_stage_limited(13, "a7z47_index_array_setup_done")) {
+                return true;
+            }
+        }
+
+        const bool local_step_a = IsV115DAMuxRealVertexBindDrawZeroEnabled();
+        const bool local_step_b = IsV115DBMuxRealVertexBindDraw3Enabled();
+        const bool local_step_c = IsV115DCMuxRealVertexBindDraw6Enabled();
+        const bool local_step_d = IsV115DDMuxRealVertexBindDrawIndexedZeroEnabled();
+        const bool local_step_e = IsV115DEMuxRealVertexBindDrawIndexed3Enabled();
+        const bool local_any_step =
+            local_step_a || local_step_b || local_step_c || local_step_d || local_step_e;
+        const bool local_real_vertex_bind_path =
+            IsFirstVkCmdDrawZeroCountMinimalProbeOnlyEnabled() || local_any_step;
+        if (!local_real_vertex_bind_path) {
+            return false;
+        }
+
+        const bool wait_built = !a7z36_pipeline_bind_nowait;
+        V114ShaderMultiplexFileTraceRaw("v115d_a7z47 before_bind_pipeline");
+        const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, wait_built);
+        V114ShaderMultiplexFileTraceRaw(pipeline_ready ? "v115d_a7z47 pipeline_ready_true"
+                                                       : "v115d_a7z47 pipeline_ready_false");
+
+        return false;
     }
 
     // v115-D-A7Z27C2: cache the fragile post-before_record gates inside the internal
