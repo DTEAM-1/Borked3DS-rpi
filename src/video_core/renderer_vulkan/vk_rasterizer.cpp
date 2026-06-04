@@ -378,6 +378,24 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z50_DIRECT_BIND_NO_BREADCRUMB");
 }
 
+[[nodiscard]] bool IsV115DA7Z52ForceStep95Substep5Enabled() {
+    // v115-D-E-A7Z52:
+    // Several logs proved the pipeline-ready wait path is unlocked, but the generic
+    // BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP value can still remain at 0 at runtime.
+    // This boolean switch forces only step 95 to substep 5 so the next probe can validate
+    // scheduler.Record(empty lambda) without relying on the fragile numeric substep env.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z52_FORCE_STEP95_SUBSTEP5");
+}
+
+[[nodiscard]] u32 GetV115DA7Z34PostStage12Substep(u32 step) {
+    const u32 substep = GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
+    if (step == 95 && IsV115DA7Z52ForceStep95Substep5Enabled()) {
+        return 5;
+    }
+    return substep;
+}
+
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateProbeEnabled() {
     // v114 diagnostic fallback:
     // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
@@ -2834,7 +2852,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const u32 a7z34_post_stage12_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
     const u32 a7z34_post_stage12_substep =
-        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
+        GetV115DA7Z34PostStage12Substep(a7z34_post_stage12_step);
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
     const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_a7z33_file_trace =
@@ -3280,7 +3298,7 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 before_get_env_a7z34_substep");
     }
     const u32 a7z34_post_stage12_substep =
-        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
+        GetV115DA7Z34PostStage12Substep(a7z34_post_stage12_step);
     if (a7z43_legacy_raw_only_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z43 after_get_env_a7z34_substep");
         V114ShaderMultiplexFileTraceRaw(a7z33_checkpoint_step == 0
@@ -6422,7 +6440,7 @@ void RasterizerVulkan::SetupIndexArray() {
     const u32 a7z34_post_stage12_step =
         GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0);
     const u32 a7z34_post_stage12_substep =
-        GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0);
+        GetV115DA7Z34PostStage12Substep(a7z34_post_stage12_step);
 
     const bool index_u8 = regs.pipeline.index_array.format == 0;
     const bool native_u8 = index_u8 && instance.IsIndexTypeUint8Supported();
@@ -6575,7 +6593,8 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         V114ShaderMultiplexFileTraceNumber("v115d_a7z40 draw_wrapper_step",
                                            static_cast<u64>(GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0)));
         V114ShaderMultiplexFileTraceNumber("v115d_a7z40 draw_wrapper_substep",
-                                           static_cast<u64>(GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP", 0)));
+                                           static_cast<u64>(GetV115DA7Z34PostStage12Substep(
+                                               GetEnvU32("BORKED3DS_V3DV_A7Z34_POST_STAGE12_STEP", 0))));
     }
     if (IsDrawTraceEnabled()) {
         const u64 draw_index = ++g_vk_draw_counter;
