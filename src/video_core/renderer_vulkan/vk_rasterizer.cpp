@@ -378,6 +378,8 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z50_DIRECT_BIND_NO_BREADCRUMB");
 }
 
+[[nodiscard]] u32 GetEnvU32(const char* name, u32 fallback);
+
 [[nodiscard]] bool IsV115DA7Z52ForceStep95Substep5Enabled() {
     // v115-D-E-A7Z52:
     // Several logs proved the pipeline-ready wait path is unlocked, but the generic
