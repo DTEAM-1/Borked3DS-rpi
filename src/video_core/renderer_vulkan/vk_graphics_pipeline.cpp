@@ -5,6 +5,7 @@
 
 #include <boost/container/static_vector.hpp>
 #include <cstdlib>
+#include <fstream>
 
 #include "common/hash.h"
 #include "common/profiling.h"
@@ -27,6 +28,41 @@ namespace {
 [[nodiscard]] bool IsDrawTraceEnabled() {
     const char* value = std::getenv("BORKED3DS_V3DV_TRACE_DRAW");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+
+[[nodiscard]] bool IsV115DA7Z48GraphicsPipelineTraceEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_A7Z48_GRAPHICS_PIPELINE_TRACE");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+[[nodiscard]] bool IsV115DA7Z51GraphicsPipelineForceTraceEnabled() {
+    const char* value = std::getenv("BORKED3DS_V3DV_A7Z51_GRAPHICS_PIPELINE_FORCE_TRACE");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+void AppendV115DA7Z48GraphicsPipelineTrace(const char* message) {
+    std::ofstream out{"/tmp/borked3ds_v115d_mux_shader_probe.log", std::ios::app};
+    if (!out) {
+        return;
+    }
+    out << message << '\n';
+}
+
+void AppendV115DA7Z48GraphicsPipelineTraceBool(const char* message, bool value) {
+    std::ofstream out{"/tmp/borked3ds_v115d_mux_shader_probe.log", std::ios::app};
+    if (!out) {
+        return;
+    }
+    out << message << '=' << (value ? 1 : 0) << '\n';
+}
+
+void AppendV115DA7Z48GraphicsPipelineTraceU32(const char* message, u32 value) {
+    std::ofstream out{"/tmp/borked3ds_v115d_mux_shader_probe.log", std::ios::app};
+    if (!out) {
+        return;
+    }
+    out << message << '=' << value << '\n';
 }
 
 } // namespace
@@ -89,36 +125,162 @@ GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& ren
                                    vk::PipelineLayout layout_, std::array<Shader*, 3> stages_,
                                    Common::ThreadWorker* worker_)
     : instance{instance_}, renderpass_cache{renderpass_cache_}, worker{worker_},
-      pipeline_layout{layout_}, pipeline_cache{pipeline_cache_}, info{info_}, stages{stages_} {}
+      pipeline_layout{layout_}, pipeline_cache{pipeline_cache_}, info{info_}, stages{stages_} {
+    if (IsV115DA7Z51GraphicsPipelineForceTraceEnabled()) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 graphics_pipeline_constructor_enter");
+    }
+}
 
 GraphicsPipeline::~GraphicsPipeline() = default;
 
 bool GraphicsPipeline::TryBuild(bool wait_built) {
+    const bool a7z51_trace = IsV115DA7Z51GraphicsPipelineForceTraceEnabled();
+    const bool a7z48_trace = IsV115DA7Z48GraphicsPipelineTraceEnabled() || a7z51_trace;
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 trybuild_enter");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 trybuild_wait_built", wait_built);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 trybuild_is_pending_before", is_pending);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 trybuild_is_done_before", IsDone());
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_enter");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 trybuild_wait_built", wait_built);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 trybuild_is_pending_before", is_pending);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 trybuild_is_done_before", IsDone());
+    }
+
     if (is_pending) {
+        if (a7z51_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 trybuild_pending_branch");
+            AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 trybuild_pending_return", wait_built);
+        }
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_pending_branch");
+            AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 trybuild_pending_return", wait_built);
+        }
         return wait_built;
     }
 
-    const bool shaders_pending = std::any_of(
-        stages.begin(), stages.end(), [](Shader* shader) { return shader && !shader->IsDone(); });
+    u32 present_shader_count = 0;
+    u32 pending_shader_count = 0;
+    for (Shader* shader : stages) {
+        if (!shader) {
+            continue;
+        }
+        present_shader_count++;
+        if (!shader->IsDone()) {
+            pending_shader_count++;
+        }
+    }
+
+    const bool shaders_pending = pending_shader_count != 0;
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z51 trybuild_present_shader_count", present_shader_count);
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z51 trybuild_pending_shader_count", pending_shader_count);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 trybuild_shaders_pending", shaders_pending);
+        AppendV115DA7Z48GraphicsPipelineTraceBool(
+            "v115d_a7z51 trybuild_cache_control_supported",
+            instance.IsPipelineCreationCacheControlSupported());
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 trybuild_present_shader_count", present_shader_count);
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 trybuild_pending_shader_count", pending_shader_count);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 trybuild_shaders_pending", shaders_pending);
+        AppendV115DA7Z48GraphicsPipelineTraceBool(
+            "v115d_a7z48 trybuild_cache_control_supported",
+            instance.IsPipelineCreationCacheControlSupported());
+    }
+
     if (!wait_built && shaders_pending) {
+        if (a7z51_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 trybuild_return_false_shaders_pending_nowait");
+        }
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_return_false_shaders_pending_nowait");
+        }
         return false;
     }
 
-    if (!shaders_pending && instance.IsPipelineCreationCacheControlSupported() && Build(true)) {
-        return true;
+    if (!shaders_pending && instance.IsPipelineCreationCacheControlSupported()) {
+        if (a7z51_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 trybuild_before_build_fail_on_compile_required");
+        }
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_before_build_fail_on_compile_required");
+        }
+        const bool built_with_fail_on_compile_required = Build(true);
+        if (a7z51_trace) {
+            AppendV115DA7Z48GraphicsPipelineTraceBool(
+                "v115d_a7z51 trybuild_build_fail_on_compile_required_result",
+                built_with_fail_on_compile_required);
+            AppendV115DA7Z48GraphicsPipelineTraceBool(
+                "v115d_a7z51 trybuild_is_done_after_fail_on_compile_required", IsDone());
+        }
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTraceBool(
+                "v115d_a7z48 trybuild_build_fail_on_compile_required_result",
+                built_with_fail_on_compile_required);
+            AppendV115DA7Z48GraphicsPipelineTraceBool(
+                "v115d_a7z48 trybuild_is_done_after_fail_on_compile_required", IsDone());
+        }
+        if (built_with_fail_on_compile_required) {
+            if (a7z51_trace) {
+                AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 trybuild_return_true_sync_build");
+            }
+            if (a7z48_trace) {
+                AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_return_true_sync_build");
+            }
+            return true;
+        }
     }
 
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 trybuild_before_queue_worker_build");
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_before_queue_worker_build");
+    }
     worker->QueueWork([this] { Build(); });
     is_pending = true;
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 trybuild_after_queue_worker_build");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 trybuild_is_pending_after_queue", is_pending);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 trybuild_return_after_queue", wait_built);
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_after_queue_worker_build");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 trybuild_is_pending_after_queue", is_pending);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 trybuild_return_after_queue", wait_built);
+    }
     return wait_built;
 }
 
 bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     BORKED3DS_PROFILE("Vulkan", "Pipeline Building");
+    const bool a7z51_trace = IsV115DA7Z51GraphicsPipelineForceTraceEnabled();
+    const bool a7z48_trace = IsV115DA7Z48GraphicsPipelineTraceEnabled() || a7z51_trace;
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 build_enter");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_fail_on_compile_required", fail_on_compile_required);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_is_done_before", IsDone());
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 build_enter");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_fail_on_compile_required", fail_on_compile_required);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_is_done_before", IsDone());
+    }
     const vk::Device device = instance.GetDevice();
     const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
     const bool use_extended_dynamic_state =
         instance.IsExtendedDynamicStateSupported() && !pi5_strict_compat;
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_pi5_strict_compat", pi5_strict_compat);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_use_extended_dynamic_state", use_extended_dynamic_state);
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_pi5_strict_compat", pi5_strict_compat);
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_use_extended_dynamic_state", use_extended_dynamic_state);
+    }
 
     std::array<vk::VertexInputBindingDescription, MAX_VERTEX_BINDINGS> bindings;
     for (u32 i = 0; i < info.vertex_layout.binding_count; i++) {
@@ -278,12 +440,33 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
             continue;
         }
 
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 build_shader_index", static_cast<u32>(i));
+            AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_shader_done_before_wait", shader->IsDone());
+        }
         shader->WaitDone();
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_shader_done_after_wait", shader->IsDone());
+        }
         shader_stages[shader_count++] = vk::PipelineShaderStageCreateInfo{
             .stage = MakeShaderStage(i),
             .module = shader->Handle(),
             .pName = "main",
         };
+    }
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z51 build_shader_count", shader_count);
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z51 build_vertex_binding_count", info.vertex_layout.binding_count);
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z51 build_vertex_attribute_count", info.vertex_layout.attribute_count);
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z51 build_color_attachment", static_cast<u32>(info.attachments.color));
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z51 build_depth_attachment", static_cast<u32>(info.attachments.depth));
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 build_shader_count", shader_count);
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 build_vertex_binding_count", info.vertex_layout.binding_count);
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 build_vertex_attribute_count", info.vertex_layout.attribute_count);
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 build_color_attachment", static_cast<u32>(info.attachments.color));
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 build_depth_attachment", static_cast<u32>(info.attachments.depth));
     }
 
     vk::GraphicsPipelineCreateInfo pipeline_info = {
@@ -320,16 +503,58 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         pipeline_info.flags |= vk::PipelineCreateFlagBits::eFailOnPipelineCompileRequiredEXT;
     }
 
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 build_before_create_graphics_pipeline");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_create_fail_on_compile_required", fail_on_compile_required);
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 build_before_create_graphics_pipeline");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_create_fail_on_compile_required", fail_on_compile_required);
+    }
     auto result = device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z51 build_vk_result", static_cast<u32>(result.result));
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTraceU32("v115d_a7z48 build_vk_result", static_cast<u32>(result.result));
+    }
     if (result.result == vk::Result::eSuccess) {
+        if (a7z51_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 build_result_success");
+        }
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 build_result_success");
+        }
         pipeline = std::move(result.value);
     } else if (result.result == vk::Result::eErrorPipelineCompileRequiredEXT) {
+        if (a7z51_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 build_result_error_compile_required");
+            AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_is_done_on_compile_required", IsDone());
+        }
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 build_result_error_compile_required");
+            AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_is_done_on_compile_required", IsDone());
+        }
         return false;
     } else {
+        if (a7z51_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 build_result_unreachable_error");
+        }
+        if (a7z48_trace) {
+            AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 build_result_unreachable_error");
+        }
         UNREACHABLE_MSG("Graphics pipeline creation failed!");
     }
 
     MarkDone();
+    if (a7z51_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 build_mark_done");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_is_done_after_mark", IsDone());
+    }
+    if (a7z48_trace) {
+        AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 build_mark_done");
+        AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_is_done_after_mark", IsDone());
+    }
     return true;
 }
 
