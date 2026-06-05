@@ -70,6 +70,10 @@ namespace {
     return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z56_PIPELINE_CACHE_PLAIN_MARKERS");
 }
 
+[[nodiscard]] bool IsV115DA7Z58PipelineCacheSplitTryEmplaceEnabled() {
+    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z58_PIPELINE_CACHE_SPLIT_TRY_EMPLACE");
+}
+
 [[nodiscard]] u32 GetEnvU32Limited(const char* name, u32 default_value, u32 max_value) {
     const char* value = std::getenv(name);
     if (value == nullptr || value[0] == '\0') {
@@ -295,15 +299,18 @@ void PipelineCache::SaveDiskCache() {
 bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     BORKED3DS_PROFILE("Vulkan", "Pipeline Bind");
 
-    const bool a7z56_plain_markers = IsV115DA7Z56PipelineCachePlainMarkersEnabled();
+    const bool a7z58_split_try_emplace = IsV115DA7Z58PipelineCacheSplitTryEmplaceEnabled();
+    const bool a7z56_plain_markers =
+        IsV115DA7Z56PipelineCachePlainMarkersEnabled() && !a7z58_split_try_emplace;
     const bool a7z55_mainlog_only =
-        IsV115DA7Z55PipelineCacheMainLogOnlyEnabled() && !a7z56_plain_markers;
+        IsV115DA7Z55PipelineCacheMainLogOnlyEnabled() && !a7z56_plain_markers &&
+        !a7z58_split_try_emplace;
     const bool a7z54_minimal_safe =
         IsV115DA7Z54PipelineCacheMinimalSafeEnabled() && !a7z55_mainlog_only &&
-        !a7z56_plain_markers;
+        !a7z56_plain_markers && !a7z58_split_try_emplace;
     const bool a7z41_trace =
         IsV115DA7Z41PipelineCacheTraceEnabled() && !a7z54_minimal_safe &&
-        !a7z55_mainlog_only && !a7z56_plain_markers;
+        !a7z55_mainlog_only && !a7z56_plain_markers && !a7z58_split_try_emplace;
     const bool a7z41_force_nowait_on_wait = IsV115DA7Z41PipelineForceNoWaitOnWaitEnabled();
     const bool a7z44_nowait_retry = IsV115DA7Z44PipelineNoWaitRetryEnabled();
     const u32 a7z44_retry_count =
@@ -343,6 +350,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 bind_pipeline_enter");
     }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 bind_pipeline_enter");
+    }
 
     u64 shader_hash = 0;
     for (u32 i = 0; i < MAX_SHADER_STAGES; i++) {
@@ -361,6 +371,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 before_info_hash");
     }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 before_info_hash");
+    }
 
     const u64 info_hash = info.Hash(instance);
 
@@ -375,6 +388,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     }
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 after_info_hash");
+    }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 after_info_hash");
     }
 
     const u64 pipeline_hash = Common::HashCombine(shader_hash, info_hash);
@@ -397,8 +413,26 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 before_try_emplace");
     }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 before_find");
+    }
 
-    auto [it, new_pipeline] = graphics_pipelines.try_emplace(pipeline_hash);
+    auto it = graphics_pipelines.find(pipeline_hash);
+    bool new_pipeline = it == graphics_pipelines.end();
+
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 after_find");
+    }
+
+    if (new_pipeline) {
+        if (a7z58_split_try_emplace) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 before_emplace_null");
+        }
+        it = graphics_pipelines.emplace(pipeline_hash, nullptr).first;
+        if (a7z58_split_try_emplace) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 after_emplace_null");
+        }
+    }
 
     if (a7z54_minimal_safe) {
         AppendV115DPipelineCacheTraceA7Z54Bool("new_pipeline", new_pipeline);
@@ -410,6 +444,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     }
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 after_try_emplace");
+    }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 after_try_emplace_split");
     }
     if (a7z41_trace) {
         AppendV115DPipelineCacheTraceBool("new_pipeline", new_pipeline);
@@ -428,6 +465,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         if (a7z56_plain_markers) {
             LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 new_graphics_pipeline_begin");
         }
+        if (a7z58_split_try_emplace) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 new_graphics_pipeline_begin");
+        }
 
         it.value() =
             std::make_unique<GraphicsPipeline>(instance, renderpass_cache, info, *pipeline_cache,
@@ -445,9 +485,16 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         if (a7z56_plain_markers) {
             LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 new_graphics_pipeline_end");
         }
+        if (a7z58_split_try_emplace) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 new_graphics_pipeline_end");
+        }
     }
 
     GraphicsPipeline* const pipeline{it->second.get()};
+    if (pipeline == nullptr) {
+        LOG_ERROR(Render_Vulkan, "TRACE_DRAW v115d_a7z58 null_pipeline_after_emplace");
+        return false;
+    }
     const bool pipeline_done_before_try = pipeline->IsDone();
 
     if (a7z41_trace) {
@@ -464,6 +511,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     }
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 pipeline_done_before_try");
+    }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 pipeline_done_before_try");
     }
 
     if (!pipeline_done_before_try) {
@@ -483,6 +533,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         }
         if (a7z56_plain_markers) {
             LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 try_build_begin");
+        }
+        if (a7z58_split_try_emplace) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 try_build_begin");
         }
 
         bool try_build_result = pipeline->TryBuild(effective_wait_built);
@@ -507,6 +560,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         }
         if (a7z56_plain_markers) {
             LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 try_build_end");
+        }
+        if (a7z58_split_try_emplace) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 try_build_end");
         }
 
         if (!try_build_result && a7z44_nowait_retry && !effective_wait_built) {
@@ -573,6 +629,10 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
                 LOG_WARNING(Render_Vulkan,
                             "TRACE_DRAW v115d_a7z56 bind_pipeline_return_false_not_ready");
             }
+            if (a7z58_split_try_emplace) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW v115d_a7z58 bind_pipeline_return_false_not_ready");
+            }
             return false;
         }
     }
@@ -602,6 +662,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     }
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 scheduler_record_begin");
+    }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 scheduler_record_begin");
     }
 
     scheduler.Record([this, is_dirty, pipeline_dirty, pipeline, use_extended_dynamic_state,
@@ -750,6 +813,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 scheduler_record_end");
     }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 scheduler_record_end");
+    }
 
     current_info = info;
     current_pipeline = pipeline;
@@ -766,6 +832,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     }
     if (a7z56_plain_markers) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 bind_pipeline_return_true");
+    }
+    if (a7z58_split_try_emplace) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z58 bind_pipeline_return_true");
     }
 
     return true;
