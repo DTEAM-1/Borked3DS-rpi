@@ -66,6 +66,10 @@ namespace {
     return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z55_PIPELINE_CACHE_MAINLOG_ONLY");
 }
 
+[[nodiscard]] bool IsV115DA7Z56PipelineCachePlainMarkersEnabled() {
+    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z56_PIPELINE_CACHE_PLAIN_MARKERS");
+}
+
 [[nodiscard]] u32 GetEnvU32Limited(const char* name, u32 default_value, u32 max_value) {
     const char* value = std::getenv(name);
     if (value == nullptr || value[0] == '\0') {
@@ -291,11 +295,15 @@ void PipelineCache::SaveDiskCache() {
 bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     BORKED3DS_PROFILE("Vulkan", "Pipeline Bind");
 
-    const bool a7z55_mainlog_only = IsV115DA7Z55PipelineCacheMainLogOnlyEnabled();
+    const bool a7z56_plain_markers = IsV115DA7Z56PipelineCachePlainMarkersEnabled();
+    const bool a7z55_mainlog_only =
+        IsV115DA7Z55PipelineCacheMainLogOnlyEnabled() && !a7z56_plain_markers;
     const bool a7z54_minimal_safe =
-        IsV115DA7Z54PipelineCacheMinimalSafeEnabled() && !a7z55_mainlog_only;
+        IsV115DA7Z54PipelineCacheMinimalSafeEnabled() && !a7z55_mainlog_only &&
+        !a7z56_plain_markers;
     const bool a7z41_trace =
-        IsV115DA7Z41PipelineCacheTraceEnabled() && !a7z54_minimal_safe && !a7z55_mainlog_only;
+        IsV115DA7Z41PipelineCacheTraceEnabled() && !a7z54_minimal_safe &&
+        !a7z55_mainlog_only && !a7z56_plain_markers;
     const bool a7z41_force_nowait_on_wait = IsV115DA7Z41PipelineForceNoWaitOnWaitEnabled();
     const bool a7z44_nowait_retry = IsV115DA7Z44PipelineNoWaitRetryEnabled();
     const u32 a7z44_retry_count =
@@ -332,6 +340,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
                     wait_built ? 1 : 0, a7z41_force_nowait_on_wait ? 1 : 0,
                     effective_wait_built ? 1 : 0);
     }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 bind_pipeline_enter");
+    }
 
     u64 shader_hash = 0;
     for (u32 i = 0; i < MAX_SHADER_STAGES; i++) {
@@ -347,6 +358,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z55 before_info_hash shader_hash={}",
                     shader_hash);
     }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 before_info_hash");
+    }
 
     const u64 info_hash = info.Hash(instance);
 
@@ -358,6 +372,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     if (a7z55_mainlog_only) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z55 after_info_hash info_hash={}",
                     info_hash);
+    }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 after_info_hash");
     }
 
     const u64 pipeline_hash = Common::HashCombine(shader_hash, info_hash);
@@ -377,6 +394,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
                     "TRACE_DRAW v115d_a7z55 before_try_emplace pipeline_hash={}",
                     pipeline_hash);
     }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 before_try_emplace");
+    }
 
     auto [it, new_pipeline] = graphics_pipelines.try_emplace(pipeline_hash);
 
@@ -387,6 +407,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     if (a7z55_mainlog_only) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z55 after_try_emplace new_pipeline={}",
                     new_pipeline ? 1 : 0);
+    }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 after_try_emplace");
     }
     if (a7z41_trace) {
         AppendV115DPipelineCacheTraceBool("new_pipeline", new_pipeline);
@@ -402,6 +425,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         if (a7z55_mainlog_only) {
             LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z55 new_graphics_pipeline_begin");
         }
+        if (a7z56_plain_markers) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 new_graphics_pipeline_begin");
+        }
 
         it.value() =
             std::make_unique<GraphicsPipeline>(instance, renderpass_cache, info, *pipeline_cache,
@@ -415,6 +441,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         }
         if (a7z55_mainlog_only) {
             LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z55 new_graphics_pipeline_end");
+        }
+        if (a7z56_plain_markers) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 new_graphics_pipeline_end");
         }
     }
 
@@ -433,6 +462,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
                     "TRACE_DRAW v115d_a7z55 pipeline_done_before_try={}",
                     pipeline_done_before_try ? 1 : 0);
     }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 pipeline_done_before_try");
+    }
 
     if (!pipeline_done_before_try) {
         if (a7z41_trace) {
@@ -448,6 +480,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         if (a7z55_mainlog_only) {
             LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z55 try_build_begin wait={}",
                         effective_wait_built ? 1 : 0);
+        }
+        if (a7z56_plain_markers) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 try_build_begin");
         }
 
         bool try_build_result = pipeline->TryBuild(effective_wait_built);
@@ -469,6 +504,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
             LOG_WARNING(Render_Vulkan,
                         "TRACE_DRAW v115d_a7z55 try_build_end result={} done={}",
                         try_build_result ? 1 : 0, pipeline->IsDone() ? 1 : 0);
+        }
+        if (a7z56_plain_markers) {
+            LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 try_build_end");
         }
 
         if (!try_build_result && a7z44_nowait_retry && !effective_wait_built) {
@@ -531,6 +569,10 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
                 LOG_WARNING(Render_Vulkan,
                             "TRACE_DRAW v115d_a7z55 bind_pipeline_return_false_not_ready");
             }
+            if (a7z56_plain_markers) {
+                LOG_WARNING(Render_Vulkan,
+                            "TRACE_DRAW v115d_a7z56 bind_pipeline_return_false_not_ready");
+            }
             return false;
         }
     }
@@ -557,6 +599,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
                     "TRACE_DRAW v115d_a7z55 scheduler_record_begin state_dirty={} "
                     "pipeline_dirty={}",
                     is_dirty ? 1 : 0, pipeline_dirty ? 1 : 0);
+    }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 scheduler_record_begin");
     }
 
     scheduler.Record([this, is_dirty, pipeline_dirty, pipeline, use_extended_dynamic_state,
@@ -702,6 +747,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     if (a7z55_mainlog_only) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z55 scheduler_record_end");
     }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 scheduler_record_end");
+    }
 
     current_info = info;
     current_pipeline = pipeline;
@@ -715,6 +763,9 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     }
     if (a7z55_mainlog_only) {
         LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z55 bind_pipeline_return_true");
+    }
+    if (a7z56_plain_markers) {
+        LOG_WARNING(Render_Vulkan, "TRACE_DRAW v115d_a7z56 bind_pipeline_return_true");
     }
 
     return true;
