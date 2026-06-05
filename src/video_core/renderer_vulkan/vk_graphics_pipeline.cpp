@@ -46,6 +46,12 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+[[nodiscard]] bool IsV115DA7Z61GraphicsPipelineUltraQuietTryBuildEnabled() {
+    const char* value =
+        std::getenv("BORKED3DS_V3DV_A7Z61_GRAPHICS_PIPELINE_ULTRA_QUIET_TRYBUILD");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 void LogV115DA7Z57GraphicsPipeline(const char* message) {
     LOG_WARNING(Render_Vulkan, "TRACE_DRAW {}", message);
 }
@@ -135,7 +141,9 @@ GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& ren
                                    Common::ThreadWorker* worker_)
     : instance{instance_}, renderpass_cache{renderpass_cache_}, worker{worker_},
       pipeline_layout{layout_}, pipeline_cache{pipeline_cache_}, info{info_}, stages{stages_} {
-    const bool a7z57_trace = IsV115DA7Z57GraphicsPipelineMainLogOnlyEnabled();
+    const bool a7z61_ultra_quiet = IsV115DA7Z61GraphicsPipelineUltraQuietTryBuildEnabled();
+    const bool a7z57_trace =
+        IsV115DA7Z57GraphicsPipelineMainLogOnlyEnabled() && !a7z61_ultra_quiet;
     if (a7z57_trace) {
         LogV115DA7Z57GraphicsPipeline("v115d_a7z57 graphics_pipeline_constructor_enter");
     }
@@ -150,10 +158,14 @@ GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& ren
 GraphicsPipeline::~GraphicsPipeline() = default;
 
 bool GraphicsPipeline::TryBuild(bool wait_built) {
-    const bool a7z57_trace = IsV115DA7Z57GraphicsPipelineMainLogOnlyEnabled();
-    const bool a7z51_trace = IsV115DA7Z51GraphicsPipelineForceTraceEnabled() && !a7z57_trace;
+    const bool a7z61_ultra_quiet = IsV115DA7Z61GraphicsPipelineUltraQuietTryBuildEnabled();
+    const bool a7z57_trace =
+        IsV115DA7Z57GraphicsPipelineMainLogOnlyEnabled() && !a7z61_ultra_quiet;
+    const bool a7z51_trace = IsV115DA7Z51GraphicsPipelineForceTraceEnabled() &&
+                             !a7z57_trace && !a7z61_ultra_quiet;
     const bool a7z48_trace =
-        (IsV115DA7Z48GraphicsPipelineTraceEnabled() || a7z51_trace) && !a7z57_trace;
+        (IsV115DA7Z48GraphicsPipelineTraceEnabled() || a7z51_trace) && !a7z57_trace &&
+        !a7z61_ultra_quiet;
     if (a7z57_trace) {
         LogV115DA7Z57GraphicsPipeline("v115d_a7z57 trybuild_enter");
     }
@@ -331,10 +343,14 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
 
 bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     BORKED3DS_PROFILE("Vulkan", "Pipeline Building");
-    const bool a7z57_trace = IsV115DA7Z57GraphicsPipelineMainLogOnlyEnabled();
-    const bool a7z51_trace = IsV115DA7Z51GraphicsPipelineForceTraceEnabled() && !a7z57_trace;
+    const bool a7z61_ultra_quiet = IsV115DA7Z61GraphicsPipelineUltraQuietTryBuildEnabled();
+    const bool a7z57_trace =
+        IsV115DA7Z57GraphicsPipelineMainLogOnlyEnabled() && !a7z61_ultra_quiet;
+    const bool a7z51_trace = IsV115DA7Z51GraphicsPipelineForceTraceEnabled() &&
+                             !a7z57_trace && !a7z61_ultra_quiet;
     const bool a7z48_trace =
-        (IsV115DA7Z48GraphicsPipelineTraceEnabled() || a7z51_trace) && !a7z57_trace;
+        (IsV115DA7Z48GraphicsPipelineTraceEnabled() || a7z51_trace) && !a7z57_trace &&
+        !a7z61_ultra_quiet;
     if (a7z57_trace) {
         LogV115DA7Z57GraphicsPipeline("v115d_a7z57 build_enter");
     }
