@@ -211,6 +211,15 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z62_PICA_PREDRAW_LIVENESS");
 }
 
+[[nodiscard]] bool IsV115DA7Z63PicaTriggerUltraQuietBoundaryEnabled() {
+    // v115-D-E-A7Z63: A7Z62 proved that PICA reaches WriteInternalReg(0x22F) and the
+    // trigger-draw case, but the main log cuts while formatting the detailed
+    // trigger_draw_case_enter line. This mode bypasses all detailed console formatting at
+    // the trigger boundary and emits only short static breadcrumbs before/after DrawArrays.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z63_PICA_TRIGGER_ULTRA_QUIET_BOUNDARY");
+}
+
 [[nodiscard]] bool IsV115DA7Z62InterestingReg(u32 id) {
     return id == PICA_REG_INDEX(pipeline.trigger_draw) ||
            id == PICA_REG_INDEX(pipeline.trigger_draw_indexed) ||
@@ -380,6 +389,8 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
                                 static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_E_INDEXED_SETUP_DRAWINDEXED_3")));
     V114C6PicaGateFileTraceU32("v115d_a7z62 constructor_predraw_liveness",
                                 static_cast<u32>(IsV115DA7Z62PicaPredrawLivenessEnabled()));
+    V114C6PicaGateFileTraceU32("v115d_a7z63 constructor_trigger_ultra_quiet",
+                                static_cast<u32>(IsV115DA7Z63PicaTriggerUltraQuietBoundaryEnabled()));
     V115DA7XPicaTraceRaw("v115d_a7x pica_core_constructor_marker");
     V115DA7XPicaTraceU32("v115d_a7x constructor_d_a_draw0",
                          static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT")));
@@ -414,6 +425,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
                         static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF_NO_PRELOG")),
                         static_cast<u32>(IsSafePicaHwEnterAllowed()), GetSafePicaHwDrawBudget(),
                         GetSafePicaHwMaxVertices());
+        }
+        if (IsV115DA7Z63PicaTriggerUltraQuietBoundaryEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z63 constructor_trigger_ultra_quiet active=1");
         }
         if (IsV115DA7XTraceExpected()) {
             LOG_WARNING(HW_GPU,
@@ -639,7 +654,8 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 }
 
 void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
-    const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled();
+    const bool trace_a7z63 = IsV115DA7Z63PicaTriggerUltraQuietBoundaryEnabled();
+    const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled() && !trace_a7z63;
     const bool a7z62_interesting_reg = trace_a7z62 && IsV115DA7Z62InterestingReg(id);
     const u64 a7z62_write_index =
         a7z62_interesting_reg ? ++g_v115d_a7z62_write_reg_counter : 0;
@@ -752,6 +768,34 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     case PICA_REG_INDEX(pipeline.trigger_draw):
     case PICA_REG_INDEX(pipeline.trigger_draw_indexed): {
         const bool is_indexed = (id == PICA_REG_INDEX(pipeline.trigger_draw_indexed));
+        if (trace_a7z63) {
+            V114C6PicaGateFileTraceRaw("v115d_a7z63 trigger_case_enter");
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z63 trigger_case_enter");
+            V114C6PicaGateFileTraceRaw("v115d_mux trigger_draw_pre_predraw_trace");
+            V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_pre_predraw_id", id);
+            V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_pre_predraw_indexed",
+                                        static_cast<u32>(is_indexed));
+            V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_pre_predraw_num_vertices",
+                                        regs.internal.pipeline.num_vertices);
+            V114C6PicaGateFileTraceU32(
+                "v115d_mux trigger_draw_pre_predraw_topology",
+                static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()));
+            V114C6PicaGateFileTraceRaw("v115d_mux trigger_draw_before_drawarrays");
+            V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_id", id);
+            V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_indexed",
+                                        static_cast<u32>(is_indexed));
+            V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_num_vertices",
+                                        regs.internal.pipeline.num_vertices);
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z63 trigger_before_drawarrays_call");
+            DrawArrays(is_indexed);
+            V114C6PicaGateFileTraceRaw("v115d_mux trigger_draw_after_drawarrays");
+            V114C6PicaGateFileTraceRaw("v115d_a7z63 trigger_after_drawarrays_call");
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z63 trigger_after_drawarrays_call");
+            break;
+        }
         if (a7z62_interesting_reg) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z62 trigger_draw_case_enter write_index={} id=0x{:03X} indexed={} num_vertices={} vertex_offset={} topology={} use_gs={} color_addr=0x{:08X} depth_addr=0x{:08X}",
