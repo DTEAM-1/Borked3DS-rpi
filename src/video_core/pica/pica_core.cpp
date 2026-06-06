@@ -202,6 +202,24 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z22_TRIGGER_DRAWARRAYS_CALL_BOUNDARY_PROBE");
 }
 
+[[nodiscard]] bool IsV115DA7Z62PicaPredrawLivenessEnabled() {
+    // v115-D-E-A7Z62: pre-draw liveness probe. Recent A7Z61 tests boot, initialize Vulkan,
+    // and arm the D-E safe draw corridor, but sometimes stop after /network_id.dat before
+    // trigger_draw_pre_predraw_trace. This mode traces the PICA command stream and draw-trigger
+    // boundary before any Vulkan backend call. It intentionally does not launch a new draw.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z62_PICA_PREDRAW_LIVENESS");
+}
+
+[[nodiscard]] bool IsV115DA7Z62InterestingReg(u32 id) {
+    return id == PICA_REG_INDEX(pipeline.trigger_draw) ||
+           id == PICA_REG_INDEX(pipeline.trigger_draw_indexed) ||
+           id == PICA_REG_INDEX(pipeline.command_buffer.trigger[0]) ||
+           id == PICA_REG_INDEX(pipeline.command_buffer.trigger[1]) ||
+           id == PICA_REG_INDEX(pipeline.triangle_topology) ||
+           IsInterestingPicaStateReg(id);
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -329,6 +347,9 @@ void LogMainConfigTransition(const RegsInternal& regs, u32 id, u32 old_value, u3
 
 std::atomic<u64> g_pica_draw_counter{0};
 std::atomic<u64> g_pica_safe_hw_draw_counter{0};
+std::atomic<u64> g_v115d_a7z62_cmd_list_counter{0};
+std::atomic<u64> g_v115d_a7z62_cmd_counter{0};
+std::atomic<u64> g_v115d_a7z62_write_reg_counter{0};
 std::atomic<bool> g_logged_strict_accel_gate{false};
 
 PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> debug_context_)
@@ -357,6 +378,8 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
                                 static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_D_INDEXED_SETUP_DRAWINDEXED_ZEROCOUNT")));
     V114C6PicaGateFileTraceU32("v115d_mux constructor_d_e_drawindexed3_probe",
                                 static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_E_INDEXED_SETUP_DRAWINDEXED_3")));
+    V114C6PicaGateFileTraceU32("v115d_a7z62 constructor_predraw_liveness",
+                                static_cast<u32>(IsV115DA7Z62PicaPredrawLivenessEnabled()));
     V115DA7XPicaTraceRaw("v115d_a7x pica_core_constructor_marker");
     V115DA7XPicaTraceU32("v115d_a7x constructor_d_a_draw0",
                          static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT")));
@@ -383,6 +406,15 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
                     static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_D_INDEXED_SETUP_DRAWINDEXED_ZEROCOUNT")),
                     static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_E_INDEXED_SETUP_DRAWINDEXED_3")),
                     GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0));
+        if (IsV115DA7Z62PicaPredrawLivenessEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 constructor_predraw_liveness active=1 d_e_drawindexed3={} direct_handoff={} no_prelog={} safe_enter={} safe_budget={} safe_max_vertices={}",
+                        static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_E_INDEXED_SETUP_DRAWINDEXED_3")),
+                        static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF")),
+                        static_cast<u32>(IsEnvEnabled("BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF_NO_PRELOG")),
+                        static_cast<u32>(IsSafePicaHwEnterAllowed()), GetSafePicaHwDrawBudget(),
+                        GetSafePicaHwMaxVertices());
+        }
         if (IsV115DA7XTraceExpected()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7x pica_core_constructor_marker d_a_draw0={} generate_guarded={} stage_stop_after={}",
@@ -449,6 +481,14 @@ void PicaCore::SetInterruptHandler(Service::GSP::InterruptHandler& signal_interr
 
 void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     const bool trace_hotpath = IsPicaHotpathTraceEnabled();
+    const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled();
+    const u64 a7z62_list_index = trace_a7z62 ? ++g_v115d_a7z62_cmd_list_counter : 0;
+
+    if (trace_a7z62) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_cmd_list_begin list_index={} list=0x{:08X} size={} ignore_list={}",
+                    a7z62_list_index, list, size, static_cast<u32>(ignore_list));
+    }
 
     if (trace_hotpath) {
         LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList begin list={:#010X} size={} ignore_list={}",
@@ -456,6 +496,11 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     }
 
     if (ignore_list) {
+        if (trace_a7z62) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_cmd_list_ignored list_index={} list=0x{:08X}",
+                        a7z62_list_index, list);
+        }
         if (trace_hotpath) {
             LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList ignored list={:#010X}", list);
         }
@@ -464,7 +509,17 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     }
 
     const u8* head = memory.GetPhysicalPointer(list);
+    if (trace_a7z62) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_cmd_list_after_get_pointer list_index={} head_nonnull={}",
+                    a7z62_list_index, static_cast<u32>(head != nullptr));
+    }
     cmd_list.Reset(list, head, size);
+    if (trace_a7z62) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_cmd_list_after_reset list_index={} length={}",
+                    a7z62_list_index, cmd_list.length);
+    }
 
     while (cmd_list.current_index < cmd_list.length) {
         if (cmd_list.current_index % 2 != 0) {
@@ -473,6 +528,37 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
         const u32 value = cmd_list.head[cmd_list.current_index++];
         const CommandHeader header{cmd_list.head[cmd_list.current_index++]};
+        const bool a7z62_draw_trigger =
+            header.cmd_id == PICA_REG_INDEX(pipeline.trigger_draw) ||
+            header.cmd_id == PICA_REG_INDEX(pipeline.trigger_draw_indexed);
+        const bool a7z62_command_buffer_trigger =
+            header.cmd_id == PICA_REG_INDEX(pipeline.command_buffer.trigger[0]) ||
+            header.cmd_id == PICA_REG_INDEX(pipeline.command_buffer.trigger[1]);
+        const bool a7z62_interesting = IsV115DA7Z62InterestingReg(header.cmd_id);
+
+        if (trace_a7z62) {
+            const u64 cmd_index = ++g_v115d_a7z62_cmd_counter;
+            if (cmd_index <= 96 || a7z62_draw_trigger || a7z62_command_buffer_trigger ||
+                a7z62_interesting) {
+                LOG_WARNING(HW_GPU,
+                            "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_cmd list_index={} cmd_index={} current_index={} id=0x{:03X} value=0x{:08X} mask=0x{:X} extra_len={} grouped={} draw_trigger={} cmdbuf_trigger={} interesting={}",
+                            a7z62_list_index, cmd_index, cmd_list.current_index,
+                            header.cmd_id.Value(), value, header.parameter_mask.Value(),
+                            header.extra_data_length.Value(), header.group_commands.Value(),
+                            static_cast<u32>(a7z62_draw_trigger),
+                            static_cast<u32>(a7z62_command_buffer_trigger),
+                            static_cast<u32>(a7z62_interesting));
+            }
+            if (a7z62_draw_trigger) {
+                LOG_WARNING(HW_GPU,
+                            "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_before_write_draw_trigger list_index={} id=0x{:03X} indexed={} num_vertices={} vertex_offset={} topology={} use_gs={}",
+                            a7z62_list_index, header.cmd_id.Value(),
+                            static_cast<u32>(header.cmd_id == PICA_REG_INDEX(pipeline.trigger_draw_indexed)),
+                            regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
+                            static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()),
+                            static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
+            }
+        }
 
         if (trace_hotpath) {
             LOG_DEBUG(HW_GPU,
@@ -483,9 +569,46 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
         WriteInternalReg(header.cmd_id, value, header.parameter_mask);
 
+        if (trace_a7z62 && a7z62_draw_trigger) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_after_write_draw_trigger list_index={} id=0x{:03X}",
+                        a7z62_list_index, header.cmd_id.Value());
+        }
+
         for (u32 i = 0; i < header.extra_data_length; ++i) {
             const u32 cmd = header.cmd_id + (header.group_commands ? i + 1 : 0);
             const u32 extra_value = cmd_list.head[cmd_list.current_index++];
+            const bool a7z62_extra_draw_trigger =
+                cmd == PICA_REG_INDEX(pipeline.trigger_draw) ||
+                cmd == PICA_REG_INDEX(pipeline.trigger_draw_indexed);
+            const bool a7z62_extra_command_buffer_trigger =
+                cmd == PICA_REG_INDEX(pipeline.command_buffer.trigger[0]) ||
+                cmd == PICA_REG_INDEX(pipeline.command_buffer.trigger[1]);
+            const bool a7z62_extra_interesting = IsV115DA7Z62InterestingReg(cmd);
+
+            if (trace_a7z62) {
+                const u64 cmd_index = ++g_v115d_a7z62_cmd_counter;
+                if (cmd_index <= 96 || a7z62_extra_draw_trigger ||
+                    a7z62_extra_command_buffer_trigger || a7z62_extra_interesting) {
+                    LOG_WARNING(HW_GPU,
+                                "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_extra_cmd list_index={} cmd_index={} current_index={} id=0x{:03X} value=0x{:08X} mask=0x{:X} extra_i={} draw_trigger={} cmdbuf_trigger={} interesting={}",
+                                a7z62_list_index, cmd_index, cmd_list.current_index, cmd,
+                                extra_value, header.parameter_mask.Value(), i,
+                                static_cast<u32>(a7z62_extra_draw_trigger),
+                                static_cast<u32>(a7z62_extra_command_buffer_trigger),
+                                static_cast<u32>(a7z62_extra_interesting));
+                }
+                if (a7z62_extra_draw_trigger) {
+                    LOG_WARNING(HW_GPU,
+                                "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_before_write_extra_draw_trigger list_index={} id=0x{:03X} indexed={} num_vertices={} vertex_offset={} topology={} use_gs={}",
+                                a7z62_list_index, cmd,
+                                static_cast<u32>(cmd == PICA_REG_INDEX(pipeline.trigger_draw_indexed)),
+                                regs.internal.pipeline.num_vertices,
+                                regs.internal.pipeline.vertex_offset,
+                                static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()),
+                                static_cast<u32>(regs.internal.pipeline.use_gs.Value()));
+                }
+            }
 
             if (trace_hotpath) {
                 LOG_DEBUG(HW_GPU,
@@ -494,7 +617,19 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
             }
 
             WriteInternalReg(cmd, extra_value, header.parameter_mask);
+
+            if (trace_a7z62 && a7z62_extra_draw_trigger) {
+                LOG_WARNING(HW_GPU,
+                            "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_after_write_extra_draw_trigger list_index={} id=0x{:03X}",
+                            a7z62_list_index, cmd);
+            }
         }
+    }
+
+    if (trace_a7z62) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z62 process_cmd_list_end list_index={} processed_words={} length={}",
+                    a7z62_list_index, cmd_list.current_index, cmd_list.length);
     }
 
     if (trace_hotpath) {
@@ -504,10 +639,26 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 }
 
 void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
+    const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled();
+    const bool a7z62_interesting_reg = trace_a7z62 && IsV115DA7Z62InterestingReg(id);
+    const u64 a7z62_write_index =
+        a7z62_interesting_reg ? ++g_v115d_a7z62_write_reg_counter : 0;
+
+    if (a7z62_interesting_reg) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z62 write_reg_enter write_index={} id=0x{:03X} value=0x{:08X} mask=0x{:X}",
+                    a7z62_write_index, id, value, mask);
+    }
+
     if (id >= RegsInternal::NUM_REGS) {
         LOG_ERROR(HW_GPU,
                   "Commandlist tried to write to invalid register 0x{:03X} (value: {:08X}, mask: {:X})",
                   id, value, mask);
+        if (a7z62_interesting_reg) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 write_reg_invalid_return write_index={} id=0x{:03X}",
+                        a7z62_write_index, id);
+        }
         return;
     }
 
@@ -521,6 +672,12 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     const u32 old_value = regs.internal.reg_array[id];
     const u32 write_mask = ExpandBitsToBytes[mask];
     regs.internal.reg_array[id] = (old_value & ~write_mask) | (value & write_mask);
+
+    if (a7z62_interesting_reg) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z62 write_reg_after_state_update write_index={} id=0x{:03X} old=0x{:08X} new=0x{:08X} write_mask=0x{:08X}",
+                    a7z62_write_index, id, old_value, regs.internal.reg_array[id], write_mask);
+    }
 
     LogMainConfigTransition(regs.internal, id, old_value, regs.internal.reg_array[id], mask);
     DebugUtils::OnPicaRegWrite(id, mask, regs.internal.reg_array[id]);
@@ -577,6 +734,11 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         const u32 index = static_cast<u32>(id - PICA_REG_INDEX(pipeline.command_buffer.trigger[0]));
         const PAddr addr = regs.internal.pipeline.command_buffer.GetPhysicalAddress(index);
         const u32 size = regs.internal.pipeline.command_buffer.GetSize(index);
+        if (a7z62_interesting_reg) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 command_buffer_trigger write_index={} index={} addr=0x{:08X} size={}",
+                        a7z62_write_index, index, addr, size);
+        }
         if (IsPicaHotpathTraceEnabled()) {
             LOG_DEBUG(HW_GPU,
                       "PicaCore::WriteInternalReg command_buffer.trigger index={} addr={:#010X} size={}",
@@ -590,6 +752,16 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     case PICA_REG_INDEX(pipeline.trigger_draw):
     case PICA_REG_INDEX(pipeline.trigger_draw_indexed): {
         const bool is_indexed = (id == PICA_REG_INDEX(pipeline.trigger_draw_indexed));
+        if (a7z62_interesting_reg) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 trigger_draw_case_enter write_index={} id=0x{:03X} indexed={} num_vertices={} vertex_offset={} topology={} use_gs={} color_addr=0x{:08X} depth_addr=0x{:08X}",
+                        a7z62_write_index, id, static_cast<u32>(is_indexed),
+                        regs.internal.pipeline.num_vertices, regs.internal.pipeline.vertex_offset,
+                        static_cast<u32>(regs.internal.pipeline.triangle_topology.Value()),
+                        static_cast<u32>(regs.internal.pipeline.use_gs.Value()),
+                        regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                        regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        }
         if (IsPicaHotpathTraceEnabled()) {
             LOG_DEBUG(HW_GPU,
                       "PicaCore::WriteInternalReg trigger_draw id=0x{:03X} indexed={} num_vertices={} vertex_offset={} topology={} use_gs={}",
@@ -635,6 +807,11 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
             }
         }
 
+        if (a7z62_interesting_reg) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 trigger_draw_before_optional_texture_trace write_index={} trace_draw={}",
+                        a7z62_write_index, static_cast<u32>(IsPicaDrawTraceEnabled()));
+        }
         if (IsPicaDrawTraceEnabled()) {
             LOG_INFO(HW_GPU,
                      "TRACE_DRAW_PICA trigger_draw id=0x{:03X} indexed={} num_vertices={} vertex_offset={} topology={} use_gs={} color_addr=0x{:08X} depth_addr=0x{:08X}",
@@ -645,6 +822,11 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
                      regs.internal.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
                      regs.internal.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
             LogPicaTextureState(regs.internal, "pre_draw");
+        }
+        if (a7z62_interesting_reg) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 trigger_draw_after_optional_texture_trace write_index={}",
+                        a7z62_write_index);
         }
         V114C6PicaGateFileTraceRaw("v115d_mux trigger_draw_before_drawarrays");
         V114C6PicaGateFileTraceU32("v115d_mux trigger_draw_id", id);
@@ -682,7 +864,17 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
             V114C6PicaGateFileTraceRaw("v115d_a7z22 trigger_drawarrays_call_boundary_return");
             return;
         }
+        if (a7z62_interesting_reg) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 trigger_draw_before_drawarrays_call write_index={} indexed={}",
+                        a7z62_write_index, static_cast<u32>(is_indexed));
+        }
         DrawArrays(is_indexed);
+        if (a7z62_interesting_reg) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 trigger_draw_after_drawarrays_call write_index={} indexed={}",
+                        a7z62_write_index, static_cast<u32>(is_indexed));
+        }
         V115DA7XPicaTraceRaw("v115d_a7x pica_trigger_after_drawarrays");
         V114C6PicaGateFileTraceRaw("v115d_mux trigger_draw_after_drawarrays");
 
@@ -992,6 +1184,18 @@ void PicaCore::DrawArrays(bool is_indexed) {
     const u64 draw_index = ++g_pica_draw_counter;
     const bool trace_hotpath = IsPicaHotpathTraceEnabled();
     const bool trace_draw = IsPicaDrawTraceEnabled();
+    const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled();
+
+    if (trace_a7z62) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z62 drawarrays_enter draw_index={} indexed={} num_vertices={} vertex_offset={} use_hw_shader={} topology={} use_gs={} primitive_empty={}",
+                    draw_index, static_cast<u32>(is_indexed), regs.internal.pipeline.num_vertices,
+                    regs.internal.pipeline.vertex_offset,
+                    static_cast<u32>(Settings::values.use_hw_shader.GetValue()),
+                    static_cast<u32>(primitive_assembler.GetTopology()),
+                    static_cast<u32>(regs.internal.pipeline.use_gs.Value()),
+                    static_cast<u32>(primitive_assembler.IsEmpty()));
+    }
 
     V114C6PicaGateFileTraceRaw("v115d_mux drawarrays_enter");
     V114C6PicaGateFileTraceU64("v115d_mux draw_index", draw_index);
@@ -1031,6 +1235,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
     // AccelerateDrawBatch stage 1..7.
     if (IsStrictCompatEnabled() && IsSafePicaHwDrawAllowed() && IsSafePicaHwEnterAllowed() &&
         IsDirectSafePicaHwHandoffEnabled() && !IsPicaAccelAllowed() && !IsPicaAccelForcedOff()) {
+        if (trace_a7z62) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 early_direct_gate_enter draw_index={} indexed={}",
+                        draw_index, static_cast<u32>(is_indexed));
+        }
         V114C6PicaGateFileTraceRaw("v115d_mux early_direct_accel_begin");
         V114C6PicaGateFileTraceRaw("v115d_mux early_predecision_begin");
         V115DA7XPicaTraceRaw("v115d_a7x early_direct_accel_begin");
@@ -1077,6 +1286,16 @@ void PicaCore::DrawArrays(bool is_indexed) {
                         GetSafePicaHwDrawBudget(), v115d_mux_early_max_vertices);
         }
 
+        if (trace_a7z62) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z62 early_direct_candidate draw_index={} candidate={} hw_shader={} textures_disabled={} topology={} use_gs={} num_vertices={} max_vertices={}",
+                        draw_index, static_cast<u32>(v115d_mux_early_safe_candidate),
+                        static_cast<u32>(v115d_mux_early_hw_shader),
+                        static_cast<u32>(v115d_mux_early_textures_disabled),
+                        v115d_mux_early_topology, v115d_mux_early_use_gs,
+                        regs.internal.pipeline.num_vertices, v115d_mux_early_max_vertices);
+        }
+
         if (v115d_mux_early_safe_candidate) {
             const u64 v115d_mux_early_hw_index = ++g_pica_safe_hw_draw_counter;
             const bool v115d_mux_early_budget_ok =
@@ -1090,6 +1309,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
             if (v115d_mux_early_budget_ok) {
                 V114C6PicaGateFileTraceU64("v115d_mux early_direct_safe_hw_index", v115d_mux_early_hw_index);
                 V114C6PicaGateFileTraceRaw("v115d_mux early_direct_before_accelerate_draw_batch");
+                if (trace_a7z62) {
+                    LOG_WARNING(HW_GPU,
+                                "TRACE_DRAW_PICA strict_compat v115d_a7z62 early_direct_before_accelerate_draw_batch draw_index={} safe_hw_index={}",
+                                draw_index, v115d_mux_early_hw_index);
+                }
                 V115DA7XPicaTraceU64("v115d_a7x early_direct_safe_hw_index", v115d_mux_early_hw_index);
                 V115DA7XPicaTraceRaw("v115d_a7x early_direct_before_accelerate_draw_batch");
 
@@ -1159,6 +1383,11 @@ void PicaCore::DrawArrays(bool is_indexed) {
                 V115DA7XPicaTraceRaw("v115d_a7x early_direct_after_accelerate_draw_batch");
                 V115DA7XPicaTraceU32("v115d_a7x early_direct_accelerate_draw_batch_result",
                                      static_cast<u32>(v115d_mux_early_accelerated));
+                if (trace_a7z62) {
+                    LOG_WARNING(HW_GPU,
+                                "TRACE_DRAW_PICA strict_compat v115d_a7z62 early_direct_after_accelerate_draw_batch draw_index={} result={}",
+                                draw_index, static_cast<u32>(v115d_mux_early_accelerated));
+                }
                 LOG_WARNING(HW_GPU,
                             "TRACE_DRAW_PICA strict_compat v115d_mux early_direct_after_accelerate_draw_batch draw_index={} result={}",
                             draw_index, static_cast<u32>(v115d_mux_early_accelerated));
