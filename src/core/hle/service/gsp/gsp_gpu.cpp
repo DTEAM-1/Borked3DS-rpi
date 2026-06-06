@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
 #include <span>
 #include <vector>
 #include <boost/serialization/base_object.hpp>
@@ -40,6 +41,24 @@ enum {
     FirstInitialization = 519,
 };
 }
+
+namespace {
+
+bool IsTruthyEnv(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+bool IsStrictCompatEnabled() {
+    return IsTruthyEnv("BORKED3DS_V3DV_STRICT_COMPAT");
+}
+
+bool IsA7Z66GspCmdListLivenessEnabled() {
+    return IsStrictCompatEnabled() &&
+           IsTruthyEnv("BORKED3DS_V3DV_A7Z66_GSP_CMDLIST_LIVENESS");
+}
+
+} // Anonymous namespace
 
 constexpr Result ResultFirstInitialization(ErrCodes::FirstInitialization, ErrorModule::GX,
                                            ErrorSummary::Success, ErrorLevel::Success);
@@ -415,26 +434,84 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
     auto* command_buffer = GetCommandBuffer(active_thread_id);
     auto& gpu = system.GPU();
 
+    const bool a7z66_liveness = IsA7Z66GspCmdListLivenessEnabled();
+    if (a7z66_liveness) {
+        LOG_WARNING(Service_GSP,
+                    "TRACE_GSP strict_compat v115d_a7z66 trigger_enter active_thread_id={} "
+                    "number_commands={} index={} status={} should_stop={}",
+                    active_thread_id, static_cast<u32>(command_buffer->number_commands),
+                    static_cast<u32>(command_buffer->index),
+                    static_cast<u32>(command_buffer->status),
+                    static_cast<u32>(command_buffer->should_stop));
+    }
+
     bool requires_delay = false;
+    u32 a7z66_loop_count = 0;
 
     while (command_buffer->number_commands) {
         if (command_buffer->should_stop) {
+            if (a7z66_liveness) {
+                LOG_WARNING(Service_GSP,
+                            "TRACE_GSP strict_compat v115d_a7z66 loop_should_stop seq={} "
+                            "number_commands={} index={} status={}",
+                            a7z66_loop_count, static_cast<u32>(command_buffer->number_commands),
+                            static_cast<u32>(command_buffer->index),
+                            static_cast<u32>(command_buffer->status));
+            }
             command_buffer->status.Assign(CommandBuffer::STATUS_STOPPED);
             break;
         }
         if (command_buffer->status == CommandBuffer::STATUS_STOPPED) {
+            if (a7z66_liveness) {
+                LOG_WARNING(Service_GSP,
+                            "TRACE_GSP strict_compat v115d_a7z66 loop_status_stopped seq={} "
+                            "number_commands={} index={}",
+                            a7z66_loop_count, static_cast<u32>(command_buffer->number_commands),
+                            static_cast<u32>(command_buffer->index));
+            }
             break;
         }
 
         Command command = command_buffer->commands[command_buffer->index];
-        if (command.id == CommandId::SubmitCmdList && !requires_delay &&
+        const CommandId command_id = command.id;
+        const bool is_submit_cmd_list = command_id == CommandId::SubmitCmdList;
+        const bool should_trace_command = a7z66_liveness &&
+                                          (is_submit_cmd_list || a7z66_loop_count < 4);
+
+        if (should_trace_command) {
+            LOG_WARNING(Service_GSP,
+                        "TRACE_GSP strict_compat v115d_a7z66 before_command seq={} cmd_id={} "
+                        "is_submit={} stop={} number_commands={} index={} status={} should_stop={}",
+                        a7z66_loop_count, static_cast<u32>(command_id), is_submit_cmd_list ? 1 : 0,
+                        static_cast<u32>(command.stop),
+                        static_cast<u32>(command_buffer->number_commands),
+                        static_cast<u32>(command_buffer->index),
+                        static_cast<u32>(command_buffer->status),
+                        static_cast<u32>(command_buffer->should_stop));
+        }
+
+        if (is_submit_cmd_list && !requires_delay &&
             Settings::values.delay_game_render_thread_us.GetValue() != 0) {
             requires_delay = true;
+            if (a7z66_liveness) {
+                LOG_WARNING(Service_GSP,
+                            "TRACE_GSP strict_compat v115d_a7z66 submit_requires_delay seq={}",
+                            a7z66_loop_count);
+            }
         }
 
         // Decrease the number of commands remaining and increase the current index
         command_buffer->number_commands.Assign(command_buffer->number_commands - 1);
         command_buffer->index.Assign((command_buffer->index + 1) % 0xF);
+
+        if (should_trace_command) {
+            LOG_WARNING(Service_GSP,
+                        "TRACE_GSP strict_compat v115d_a7z66 before_execute seq={} cmd_id={} "
+                        "is_submit={} remaining={} next_index={}",
+                        a7z66_loop_count, static_cast<u32>(command_id), is_submit_cmd_list ? 1 : 0,
+                        static_cast<u32>(command_buffer->number_commands),
+                        static_cast<u32>(command_buffer->index));
+        }
 
         if (Settings::values.renderer_debug) {
             gpu.Debugger().GXCommandProcessed(command);
@@ -443,9 +520,37 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
         // Decode and execute command
         gpu.Execute(command);
 
+        if (should_trace_command) {
+            LOG_WARNING(Service_GSP,
+                        "TRACE_GSP strict_compat v115d_a7z66 after_execute seq={} cmd_id={} "
+                        "is_submit={} remaining={} index={} should_stop={}",
+                        a7z66_loop_count, static_cast<u32>(command_id), is_submit_cmd_list ? 1 : 0,
+                        static_cast<u32>(command_buffer->number_commands),
+                        static_cast<u32>(command_buffer->index),
+                        static_cast<u32>(command_buffer->should_stop));
+        }
+
         if (command.stop) {
             command_buffer->should_stop.Assign(1);
+            if (a7z66_liveness) {
+                LOG_WARNING(Service_GSP,
+                            "TRACE_GSP strict_compat v115d_a7z66 command_stop_set seq={}",
+                            a7z66_loop_count);
+            }
         }
+
+        ++a7z66_loop_count;
+    }
+
+    if (a7z66_liveness) {
+        LOG_WARNING(Service_GSP,
+                    "TRACE_GSP strict_compat v115d_a7z66 trigger_leave loop_count={} "
+                    "requires_delay={} remaining={} index={} status={} should_stop={}",
+                    a7z66_loop_count, requires_delay ? 1 : 0,
+                    static_cast<u32>(command_buffer->number_commands),
+                    static_cast<u32>(command_buffer->index),
+                    static_cast<u32>(command_buffer->status),
+                    static_cast<u32>(command_buffer->should_stop));
     }
 
     if (requires_delay) {
@@ -729,6 +834,12 @@ void GSP_GPU::serialize(Archive& ar, const unsigned int) {
 SERIALIZE_IMPL(GSP_GPU)
 
 GSP_GPU::GSP_GPU(Core::System& system) : ServiceFramework("gsp::Gpu", 4), system(system) {
+    if (IsA7Z66GspCmdListLivenessEnabled()) {
+        LOG_WARNING(Service_GSP,
+                    "TRACE_GSP strict_compat v115d_a7z66 constructor_gsp_cmdlist_liveness "
+                    "active=1");
+    }
+
     static const FunctionInfo functions[] = {
         // clang-format off
         {0x0001, &GSP_GPU::WriteHWRegs, "WriteHWRegs"},
