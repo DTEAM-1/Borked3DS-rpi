@@ -3,7 +3,9 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <array>
 #include <cstdlib>
+#include <cstring>
 #include <span>
 #include <vector>
 #include <boost/serialization/base_object.hpp>
@@ -56,6 +58,26 @@ bool IsStrictCompatEnabled() {
 bool IsA7Z66GspCmdListLivenessEnabled() {
     return IsStrictCompatEnabled() &&
            IsTruthyEnv("BORKED3DS_V3DV_A7Z66_GSP_CMDLIST_LIVENESS");
+}
+
+bool IsA7Z67GspSubmitRawWordsEnabled() {
+    return IsStrictCompatEnabled() &&
+           IsTruthyEnv("BORKED3DS_V3DV_A7Z67_GSP_SUBMIT_RAW_WORDS");
+}
+
+template <typename CommandT>
+void LogA7Z67SubmitRawWords(const char* tag, u32 seq, u32 index, const CommandT& command) {
+    std::array<u32, 8> words{};
+    const std::size_t copy_bytes =
+        sizeof(command) < sizeof(words) ? sizeof(command) : sizeof(words);
+    std::memcpy(words.data(), &command, copy_bytes);
+
+    LOG_WARNING(Service_GSP,
+                "TRACE_GSP strict_compat v115d_a7z67 {} seq={} index={} sizeof_command={} "
+                "w0=0x{:08X} w1=0x{:08X} w2=0x{:08X} w3=0x{:08X} "
+                "w4=0x{:08X} w5=0x{:08X} w6=0x{:08X} w7=0x{:08X}",
+                tag, seq, index, static_cast<u32>(sizeof(command)), words[0], words[1],
+                words[2], words[3], words[4], words[5], words[6], words[7]);
 }
 
 } // Anonymous namespace
@@ -435,6 +457,7 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
     auto& gpu = system.GPU();
 
     const bool a7z66_liveness = IsA7Z66GspCmdListLivenessEnabled();
+    const bool a7z67_raw_submit = IsA7Z67GspSubmitRawWordsEnabled();
     if (a7z66_liveness) {
         LOG_WARNING(Service_GSP,
                     "TRACE_GSP strict_compat v115d_a7z66 trigger_enter active_thread_id={} "
@@ -475,6 +498,10 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
         Command command = command_buffer->commands[command_buffer->index];
         const CommandId command_id = command.id;
         const bool is_submit_cmd_list = command_id == CommandId::SubmitCmdList;
+        if (a7z67_raw_submit && is_submit_cmd_list) {
+            LogA7Z67SubmitRawWords("submit_raw_before_index_advance", a7z66_loop_count,
+                                   static_cast<u32>(command_buffer->index), command);
+        }
         const bool should_trace_command = a7z66_liveness &&
                                           (is_submit_cmd_list || a7z66_loop_count < 4);
 
@@ -511,6 +538,11 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
                         a7z66_loop_count, static_cast<u32>(command_id), is_submit_cmd_list ? 1 : 0,
                         static_cast<u32>(command_buffer->number_commands),
                         static_cast<u32>(command_buffer->index));
+        }
+
+        if (a7z67_raw_submit && is_submit_cmd_list) {
+            LogA7Z67SubmitRawWords("submit_raw_before_execute", a7z66_loop_count,
+                                   static_cast<u32>(command_buffer->index), command);
         }
 
         if (Settings::values.renderer_debug) {
@@ -837,6 +869,11 @@ GSP_GPU::GSP_GPU(Core::System& system) : ServiceFramework("gsp::Gpu", 4), system
     if (IsA7Z66GspCmdListLivenessEnabled()) {
         LOG_WARNING(Service_GSP,
                     "TRACE_GSP strict_compat v115d_a7z66 constructor_gsp_cmdlist_liveness "
+                    "active=1");
+    }
+    if (IsA7Z67GspSubmitRawWordsEnabled()) {
+        LOG_WARNING(Service_GSP,
+                    "TRACE_GSP strict_compat v115d_a7z67 constructor_submit_raw_words "
                     "active=1");
     }
 
