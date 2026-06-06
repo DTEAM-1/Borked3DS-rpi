@@ -3,6 +3,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
+
 #include "common/archives.h"
 #include "common/common_types.h"
 #include "common/hacks/hack_manager.h"
@@ -36,6 +38,18 @@ static bool last_skip_frame;
 /// Total number of frames drawn
 static u64 frame_count;
 
+namespace {
+
+bool IsA7Z68GpuExecuteSubmitTraceEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_A7Z68_GPU_EXECUTE_SUBMIT_TRACE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+} // namespace
+
 GPU::GPU(Core::System& system, Frontend::EmuWindow& emu_window,
          Frontend::EmuWindow* secondary_window)
     : right_eye_disabler{std::make_unique<RightEyeDisabler>(*this)},
@@ -50,6 +64,12 @@ GPU::GPU(Core::System& system, Frontend::EmuWindow& emu_window,
 
     // Bind the rasterizer to the PICA GPU
     impl->pica.BindRasterizer(impl->rasterizer);
+
+    if (IsA7Z68GpuExecuteSubmitTraceEnabled()) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_GPU strict_compat v115d_a7z68 "
+                    "constructor_gpu_execute_submit_trace active=1");
+    }
 }
 
 GPU::~GPU() = default;
@@ -99,6 +119,14 @@ void GPU::ClearAll(bool flush) {
 void GPU::Execute(const Service::GSP::Command& command) {
     using Service::GSP::CommandId;
     auto& regs = impl->pica.regs;
+    const bool a7z68_trace = IsA7Z68GpuExecuteSubmitTraceEnabled();
+
+    if (a7z68_trace) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_GPU strict_compat v115d_a7z68 "
+                    "execute_enter cmd_id={} is_submit={}",
+                    command.id.Value(), command.id == CommandId::SubmitCmdList ? 1 : 0);
+    }
 
     switch (command.id) {
     case CommandId::RequestDma: {
@@ -119,14 +147,38 @@ void GPU::Execute(const Service::GSP::Command& command) {
     case CommandId::SubmitCmdList: {
         auto& params = command.submit_gpu_cmdlist;
         auto& cmdbuffer = regs.internal.pipeline.command_buffer;
+        const PAddr physical_address = VirtualToPhysicalAddress(params.address);
+        const u32 command_list_size = params.size;
+
+        if (a7z68_trace) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_GPU strict_compat v115d_a7z68 "
+                        "submit_case_enter vaddr={:#010X} paddr={:#010X} size={:#010X} "
+                        "size_words={}",
+                        params.address, physical_address, command_list_size, command_list_size >> 3);
+        }
 
         // Write to the command buffer GPU registers
-        cmdbuffer.addr[0].Assign(VirtualToPhysicalAddress(params.address) >> 3);
-        cmdbuffer.size[0].Assign(params.size >> 3);
+        cmdbuffer.addr[0].Assign(physical_address >> 3);
+        cmdbuffer.size[0].Assign(command_list_size >> 3);
         cmdbuffer.trigger[0] = 1;
+
+        if (a7z68_trace) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_GPU strict_compat v115d_a7z68 "
+                        "submit_before_submitcmdlist index=0 paddr={:#010X} size={:#010X}",
+                        physical_address, command_list_size);
+        }
 
         // Trigger processing of the command list
         SubmitCmdList(0);
+
+        if (a7z68_trace) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_GPU strict_compat v115d_a7z68 "
+                        "submit_after_submitcmdlist index=0 paddr={:#010X} size={:#010X}",
+                        physical_address, command_list_size);
+        }
         break;
     }
     case CommandId::MemoryFill: {
@@ -190,6 +242,13 @@ void GPU::Execute(const Service::GSP::Command& command) {
     }
     default:
         LOG_ERROR(HW_GPU, "Unknown command {:#08X}", command.id.Value());
+    }
+
+    if (a7z68_trace) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_GPU strict_compat v115d_a7z68 "
+                    "execute_leave cmd_id={} is_submit={}",
+                    command.id.Value(), command.id == CommandId::SubmitCmdList ? 1 : 0);
     }
 
     // Notify debugger that a GSP command was processed.
@@ -347,7 +406,14 @@ void GPU::ReportLoadingProgramID(u64 program_ID) {
 void GPU::SubmitCmdList(u32 index) {
     // Check if a command list was triggered.
     auto& config = impl->pica.regs.internal.pipeline.command_buffer;
+    const bool a7z68_trace = IsA7Z68GpuExecuteSubmitTraceEnabled();
     if (!config.trigger[index]) {
+        if (a7z68_trace) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_GPU strict_compat v115d_a7z68 "
+                        "submitcmdlist_no_trigger index={}",
+                        index);
+        }
         return;
     }
 
@@ -356,9 +422,37 @@ void GPU::SubmitCmdList(u32 index) {
     // Forward command list processing to the PICA core.
     const PAddr addr = config.GetPhysicalAddress(index);
     const u32 size = config.GetSize(index);
-    impl->pica.ProcessCmdList(addr, size,
-                              !right_eye_disabler->ShouldAllowCmdQueueTrigger(addr, size));
+    const bool skip_cmd_queue = !right_eye_disabler->ShouldAllowCmdQueueTrigger(addr, size);
+
+    if (a7z68_trace) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_GPU strict_compat v115d_a7z68 "
+                    "submitcmdlist_enter index={} paddr={:#010X} size={:#010X} "
+                    "skip_cmd_queue={}",
+                    index, addr, size, skip_cmd_queue ? 1 : 0);
+        LOG_WARNING(HW_GPU,
+                    "TRACE_GPU strict_compat v115d_a7z68 "
+                    "before_process_cmd_list index={} paddr={:#010X} size={:#010X}",
+                    index, addr, size);
+    }
+
+    impl->pica.ProcessCmdList(addr, size, skip_cmd_queue);
+
+    if (a7z68_trace) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_GPU strict_compat v115d_a7z68 "
+                    "after_process_cmd_list index={} paddr={:#010X} size={:#010X}",
+                    index, addr, size);
+    }
+
     config.trigger[index] = 0;
+
+    if (a7z68_trace) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_GPU strict_compat v115d_a7z68 "
+                    "submitcmdlist_trigger_reset index={} paddr={:#010X} size={:#010X}",
+                    index, addr, size);
+    }
 }
 
 void GPU::MemoryFill(u32 index) {
