@@ -61,6 +61,11 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     return IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
 }
 
+[[nodiscard]] bool IsPicaTriggerDrawDryRunEnabled() {
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z63_PICA_TRIGGER_DRY_RUN_RETURN");
+}
+
 [[nodiscard]] bool IsPicaAccelAllowed() {
     return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_PICA_ACCEL");
 }
