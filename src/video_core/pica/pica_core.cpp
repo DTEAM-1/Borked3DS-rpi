@@ -292,6 +292,28 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z78_PICA_TRIGGER_SINGLE_PRE_DRAWARRAYS_MARKER");
 }
 
+[[nodiscard]] bool IsV115DA7Z79PicaProcessSingleDrawTriggerMarkerEnabled() {
+    // v115-D-E-A7Z79: A7Z78 proved the trigger-side pre-DrawArrays marker is armed,
+    // but it does not appear in the quiet run. Emit exactly one fixed breadcrumb from
+    // ProcessCmdList when a draw trigger command is parsed, immediately before the
+    // command is handed to WriteInternalReg. This distinguishes "no draw trigger in
+    // this quiet pass" from "trigger reaches WriteInternalReg but the silent branch is
+    // not reached", without restoring broad A7Z66/A7Z69 logging.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z79_PICA_PROCESS_SINGLE_DRAW_TRIGGER_MARKER");
+}
+
+void V115DA7Z79EmitProcessDrawTriggerOnce() {
+    if (!IsV115DA7Z79PicaProcessSingleDrawTriggerMarkerEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z79_process_draw_trigger_counter{0};
+    if (++a7z79_process_draw_trigger_counter == 1) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z79 process_draw_trigger_once");
+    }
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -525,6 +547,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z78 constructor_trigger_single_pre_drawarrays_marker active=1");
         }
+        if (IsV115DA7Z79PicaProcessSingleDrawTriggerMarkerEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z79 constructor_process_single_draw_trigger_marker active=1");
+        }
     }
 
     const auto submit_vertex = [this](const AttributeBuffer& buffer) {
@@ -701,6 +727,11 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
                       header.extra_data_length.Value(), header.group_commands.Value());
         }
 
+        if (header_cmd_id == PICA_REG_INDEX(pipeline.trigger_draw) ||
+            header_cmd_id == PICA_REG_INDEX(pipeline.trigger_draw_indexed)) {
+            V115DA7Z79EmitProcessDrawTriggerOnce();
+        }
+
         WriteInternalReg(header.cmd_id, value, header.parameter_mask);
 
         for (u32 i = 0; i < header.extra_data_length; ++i) {
@@ -722,6 +753,11 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
                 LOG_DEBUG(HW_GPU,
                           "PicaCore::ProcessCmdList extra cmd id=0x{:03X} value=0x{:08X} mask=0x{:X}",
                           cmd, extra_value, header.parameter_mask.Value());
+            }
+
+            if (cmd == PICA_REG_INDEX(pipeline.trigger_draw) ||
+                cmd == PICA_REG_INDEX(pipeline.trigger_draw_indexed)) {
+                V115DA7Z79EmitProcessDrawTriggerOnce();
             }
 
             WriteInternalReg(cmd, extra_value, header.parameter_mask);
