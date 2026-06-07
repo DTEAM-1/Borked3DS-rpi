@@ -138,6 +138,16 @@ struct DrawParams {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z73_SUPPRESS_RAW_ENTER_SIMPLE_LOG");
 }
 
+[[nodiscard]] bool IsV115DA7Z74SilentOuterEntryToStageEnabled() {
+    // v115-D-E-A7Z74:
+    // A7Z73 proved that raw_enter_simple is suppressed, but the log still stops immediately after
+    // raw_enter_noargs. Keep the backend path identical, but make the outer AccelerateDrawBatch
+    // entry fully silent: no raw_enter_noargs console log, no raw_enter_simple console log, and no
+    // auxiliary sidecar breadcrumbs before the real stage/shader/pipeline path.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z74_SILENT_OUTER_ENTRY_TO_STAGE");
+}
+
 [[nodiscard]] bool IsV114ShaderMultiplexEntrySafeEnabled() {
     // v114-C/v114-C2 corrective probe:
     // A/B passed, but the first C attempt cut the log immediately after the safe micro-HW
@@ -1996,6 +2006,11 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
                     "TRACE_DRAW strict_compat v115d_a7z73 constructor_suppress_raw_enter_simple_log active=1");
     }
 
+    if (IsV115DA7Z74SilentOuterEntryToStageEnabled()) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v115d_a7z74 constructor_silent_outer_entry_to_stage active=1");
+    }
+
     uniform_buffer_alignment = instance.UniformMinAlignment();
     uniform_size_aligned_vs_pica =
         Common::AlignUp<u32>(sizeof(VSPicaUniformData), uniform_buffer_alignment);
@@ -2860,13 +2875,16 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     // v110 proved raw_enter_noargs is safe. Now emit raw_enter_noargs plus raw_enter_simple,
     // then return before stage=1. No shader setup, no SPIR-V, no pipeline, no descriptors,
     // and no Vulkan draw command are reached.
-    V115DA7Z2ShaderTraceRaw("v115d_a7z2 accelerate_draw_batch_enter_pre_silent_gate");
-    V115DA7Z2ShaderTraceNumber("v115d_a7z2 accelerate_draw_batch_indexed_pre_silent_gate",
-                               static_cast<u64>(is_indexed));
-    V115DA7Z2ShaderTraceNumber("v115d_a7z2 accelerate_draw_batch_num_vertices_pre_silent_gate",
-                               regs.pipeline.num_vertices);
-    V115DA7Z2ShaderTraceNumber("v115d_a7z2 accelerate_draw_batch_stop_after_pre_silent_gate",
-                               GetAccelStageStopAfter());
+    const bool a7z74_silent_outer_entry = IsV115DA7Z74SilentOuterEntryToStageEnabled();
+    if (!a7z74_silent_outer_entry) {
+        V115DA7Z2ShaderTraceRaw("v115d_a7z2 accelerate_draw_batch_enter_pre_silent_gate");
+        V115DA7Z2ShaderTraceNumber("v115d_a7z2 accelerate_draw_batch_indexed_pre_silent_gate",
+                                   static_cast<u64>(is_indexed));
+        V115DA7Z2ShaderTraceNumber("v115d_a7z2 accelerate_draw_batch_num_vertices_pre_silent_gate",
+                                   regs.pipeline.num_vertices);
+        V115DA7Z2ShaderTraceNumber("v115d_a7z2 accelerate_draw_batch_stop_after_pre_silent_gate",
+                                   GetAccelStageStopAfter());
+    }
     if (IsAccelSilentEntryReturnEnabled()) {
         V115DA7Z2ShaderTraceRaw("v115d_a7z2 accelerate_draw_batch_silent_entry_return_true");
         return true;
@@ -2890,13 +2908,14 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const bool a7z33_checkpoint_enabled = a7z33_checkpoint_step != 0;
     const bool a7z34_post_stage12_enabled = a7z34_post_stage12_step != 0;
     const bool v114_a7z33_file_trace =
-        IsV114ShaderMultiplexFileTraceEnabled() && a7z33_checkpoint_enabled;
+        !a7z74_silent_outer_entry && IsV114ShaderMultiplexFileTraceEnabled() &&
+        a7z33_checkpoint_enabled;
     const bool v114_a7z34_file_trace =
-        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
-        a7z34_post_stage12_enabled;
+        !a7z74_silent_outer_entry && IsV114ShaderMultiplexFileTraceEnabled() &&
+        !a7z33_checkpoint_enabled && a7z34_post_stage12_enabled;
     const bool v114_file_trace =
-        IsV114ShaderMultiplexFileTraceEnabled() && !a7z33_checkpoint_enabled &&
-        !a7z34_post_stage12_enabled;
+        !a7z74_silent_outer_entry && IsV114ShaderMultiplexFileTraceEnabled() &&
+        !a7z33_checkpoint_enabled && !a7z34_post_stage12_enabled;
     const bool a7z36_pipeline_bind_nowait = IsV115DA7Z36PipelineBindNoWaitEnabled();
     const bool a7z37_pipeline_ready_trace = IsV115DA7Z37PipelineReadyTraceEnabled();
     const bool a7z39_step95_skip_stage13 = IsV115DA7Z39Step95SkipStage13Enabled();
@@ -2933,7 +2952,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     const bool a7z27_return_false_before_binding_count_number =
         IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled();
 
-    if (!v114_entry_safe) {
+    if (!v114_entry_safe && !a7z74_silent_outer_entry) {
         LOG_WARNING(Render_Vulkan, "TRACE_ACCEL_STAGE v114 raw_enter_noargs");
     }
 
@@ -2942,12 +2961,14 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     }
 
     const u64 accel_id = ++g_vk_accel_draw_counter;
-    V115DA7Z2ShaderTraceRaw("v115d_a7z2 accelerate_draw_batch_after_accel_id");
-    V115DA7Z2ShaderTraceNumber("v115d_a7z2 accel_id", accel_id);
-    V115DA7Z2ShaderTraceNumber("v115d_a7z2 indexed", static_cast<u64>(is_indexed));
-    V115DA7Z2ShaderTraceNumber("v115d_a7z2 num_vertices", regs.pipeline.num_vertices);
-    V115DA7Z2ShaderTraceNumber("v115d_a7z2 topology",
-                               static_cast<u64>(regs.pipeline.triangle_topology.Value()));
+    if (!a7z74_silent_outer_entry) {
+        V115DA7Z2ShaderTraceRaw("v115d_a7z2 accelerate_draw_batch_after_accel_id");
+        V115DA7Z2ShaderTraceNumber("v115d_a7z2 accel_id", accel_id);
+        V115DA7Z2ShaderTraceNumber("v115d_a7z2 indexed", static_cast<u64>(is_indexed));
+        V115DA7Z2ShaderTraceNumber("v115d_a7z2 num_vertices", regs.pipeline.num_vertices);
+        V115DA7Z2ShaderTraceNumber("v115d_a7z2 topology",
+                                   static_cast<u64>(regs.pipeline.triangle_topology.Value()));
+    }
 
     if (v114_a7z33_file_trace && accel_id == 1) {
         V114ShaderMultiplexFileTraceReset();
@@ -3022,7 +3043,8 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceRaw("v115d_mux flags_cached_for_post_before_record");
     }
 
-    if (!v114_entry_safe && !IsV115DA7Z73SuppressRawEnterSimpleLogEnabled()) {
+    if (!v114_entry_safe && !a7z74_silent_outer_entry &&
+        !IsV115DA7Z73SuppressRawEnterSimpleLogEnabled()) {
         LOG_WARNING(Render_Vulkan,
                     "TRACE_ACCEL_STAGE v114 raw_enter_simple accel_id={} indexed={} stop_after={} force_stage_trace={} entry_only_probe={}",
                     accel_id, is_indexed, GetAccelStageStopAfter(),
@@ -3035,7 +3057,9 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         return true;
     }
 
-    V115DA7Z2ShaderTraceRaw("v115d_a7z2 before_stage_lambda_setup");
+    if (!a7z74_silent_outer_entry) {
+        V115DA7Z2ShaderTraceRaw("v115d_a7z2 before_stage_lambda_setup");
+    }
 
     if (IsAccelEntryOnlyProbeEnabled()) {
         // Entry-only probe: prove the call boundary and return before stage=1. Keep this log
