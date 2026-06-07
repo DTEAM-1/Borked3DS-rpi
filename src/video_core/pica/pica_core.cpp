@@ -243,6 +243,15 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z70_PICA_TRIGGER_DIRECT_DRAWARRAYS");
 }
 
+[[nodiscard]] bool IsV115DA7Z71PicaTriggerSilentDrawArraysEnabled() {
+    // v115-D-E-A7Z71: A7Z70 proved that even a fixed pre-DrawArrays breadcrumb can be
+    // the last visible output (the log cuts at TRACE_DRAW_). For this micro-pass, do
+    // not emit any trigger-case breadcrumb at all. Once WriteInternalReg has updated
+    // the trigger register, jump directly to DrawArrays() and return.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z71_PICA_TRIGGER_SILENT_DRAWARRAYS");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -455,6 +464,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         if (IsV115DA7Z70PicaTriggerDirectDrawArraysEnabled()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z70 constructor_trigger_direct_drawarrays active=1");
+        }
+        if (IsV115DA7Z71PicaTriggerSilentDrawArraysEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z71 constructor_trigger_silent_drawarrays active=1");
         }
     }
 
@@ -763,6 +776,10 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     case PICA_REG_INDEX(pipeline.trigger_draw):
     case PICA_REG_INDEX(pipeline.trigger_draw_indexed): {
         const bool is_indexed = (id == PICA_REG_INDEX(pipeline.trigger_draw_indexed));
+        if (IsV115DA7Z71PicaTriggerSilentDrawArraysEnabled()) {
+            DrawArrays(is_indexed);
+            return;
+        }
         if (IsV115DA7Z64PicaDrawArraysUltraQuietBoundaryEnabled()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z64 trigger_case_enter id=0x{:03X} indexed={} num_vertices={} vertex_offset={}",
