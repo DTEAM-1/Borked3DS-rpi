@@ -303,6 +303,28 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z79_PICA_PROCESS_SINGLE_DRAW_TRIGGER_MARKER");
 }
 
+[[nodiscard]] bool IsV115DA7Z80PicaProcessSingleEntryMarkerEnabled() {
+    // v115-D-E-A7Z80: A7Z79 is armed, but no draw-trigger breadcrumb appears in the
+    // quiet run. Emit exactly one fixed marker at the very beginning of ProcessCmdList,
+    // before memory lookup, reset, command parsing, or draw-trigger filtering. This
+    // distinguishes "PICA command-list entry is not reached" from "PICA is entered,
+    // but the submitted list does not contain the useful draw trigger" without
+    // re-enabling broad GSP/GPU/PICA logging.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z80_PICA_PROCESS_SINGLE_ENTRY_MARKER");
+}
+
+void V115DA7Z80EmitProcessEntryOnce() {
+    if (!IsV115DA7Z80PicaProcessSingleEntryMarkerEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z80_process_entry_counter{0};
+    if (++a7z80_process_entry_counter == 1) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z80 process_cmd_list_entry_once");
+    }
+}
+
 void V115DA7Z79EmitProcessDrawTriggerOnce() {
     if (!IsV115DA7Z79PicaProcessSingleDrawTriggerMarkerEnabled()) {
         return;
@@ -551,6 +573,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z79 constructor_process_single_draw_trigger_marker active=1");
         }
+        if (IsV115DA7Z80PicaProcessSingleEntryMarkerEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z80 constructor_process_single_entry_marker active=1");
+        }
     }
 
     const auto submit_vertex = [this](const AttributeBuffer& buffer) {
@@ -609,6 +635,8 @@ void PicaCore::SetInterruptHandler(Service::GSP::InterruptHandler& signal_interr
 }
 
 void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
+    V115DA7Z80EmitProcessEntryOnce();
+
     const bool trace_hotpath = IsPicaHotpathTraceEnabled();
     const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled();
     const bool trace_a7z69 = IsV115DA7Z69PicaProcessCmdListUltraEarlyEnabled();
