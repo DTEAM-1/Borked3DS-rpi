@@ -314,6 +314,16 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z80_PICA_PROCESS_SINGLE_ENTRY_MARKER");
 }
 
+[[nodiscard]] bool IsV115DA7Z81PicaProcessSingleLeaveMarkerEnabled() {
+    // v115-D-E-A7Z81: A7Z80 proves ProcessCmdList is entered once in the quiet run,
+    // but A7Z79 does not see a draw trigger. Emit exactly one fixed marker when
+    // ProcessCmdList returns, including the ignore-list return path, to distinguish
+    // "first quiet command list completed without draw" from "parser stalls/cuts
+    // inside the first command list before reaching a draw trigger".
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z81_PICA_PROCESS_SINGLE_LEAVE_MARKER");
+}
+
 void V115DA7Z80EmitProcessEntryOnce() {
     if (!IsV115DA7Z80PicaProcessSingleEntryMarkerEnabled()) {
         return;
@@ -322,6 +332,17 @@ void V115DA7Z80EmitProcessEntryOnce() {
     if (++a7z80_process_entry_counter == 1) {
         LOG_WARNING(HW_GPU,
                     "TRACE_DRAW_PICA strict_compat v115d_a7z80 process_cmd_list_entry_once");
+    }
+}
+
+void V115DA7Z81EmitProcessLeaveOnce() {
+    if (!IsV115DA7Z81PicaProcessSingleLeaveMarkerEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z81_process_leave_counter{0};
+    if (++a7z81_process_leave_counter == 1) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z81 process_cmd_list_leave_once");
     }
 }
 
@@ -577,6 +598,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z80 constructor_process_single_entry_marker active=1");
         }
+        if (IsV115DA7Z81PicaProcessSingleLeaveMarkerEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z81 constructor_process_single_leave_marker active=1");
+        }
     }
 
     const auto submit_vertex = [this](const AttributeBuffer& buffer) {
@@ -681,6 +706,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         if (trace_hotpath) {
             LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList ignored list={:#010X}", list);
         }
+        V115DA7Z81EmitProcessLeaveOnce();
         signal_interrupt(Service::GSP::InterruptId::P3D);
         return;
     }
@@ -807,6 +833,8 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList end list={:#010X} processed_words={} length={}",
                   list, cmd_list.current_index, cmd_list.length);
     }
+
+    V115DA7Z81EmitProcessLeaveOnce();
 }
 
 void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
