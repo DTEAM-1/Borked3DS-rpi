@@ -128,6 +128,16 @@ struct DrawParams {
     return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_RAW_ENTER_SIMPLE_RETURN");
 }
 
+[[nodiscard]] bool IsV115DA7Z73SuppressRawEnterSimpleLogEnabled() {
+    // v115-D-E-A7Z73:
+    // A7Z72 proved that PICA can silently jump into the Vulkan backend again. The new log cuts
+    // while formatting the raw_enter_simple TRACE_ACCEL_STAGE line, after raw_enter_noargs and
+    // after the A7Z53 outer_force marker. Keep the backend path identical, but suppress only this
+    // fragile formatted console line so execution can continue toward shader setup / step95.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z73_SUPPRESS_RAW_ENTER_SIMPLE_LOG");
+}
+
 [[nodiscard]] bool IsV114ShaderMultiplexEntrySafeEnabled() {
     // v114-C/v114-C2 corrective probe:
     // A/B passed, but the first C attempt cut the log immediately after the safe micro-HW
@@ -1981,6 +1991,11 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 
     vertex_buffers.fill(stream_buffer.Handle());
 
+    if (IsV115DA7Z73SuppressRawEnterSimpleLogEnabled()) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v115d_a7z73 constructor_suppress_raw_enter_simple_log active=1");
+    }
+
     uniform_buffer_alignment = instance.UniformMinAlignment();
     uniform_size_aligned_vs_pica =
         Common::AlignUp<u32>(sizeof(VSPicaUniformData), uniform_buffer_alignment);
@@ -3007,7 +3022,7 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceRaw("v115d_mux flags_cached_for_post_before_record");
     }
 
-    if (!v114_entry_safe) {
+    if (!v114_entry_safe && !IsV115DA7Z73SuppressRawEnterSimpleLogEnabled()) {
         LOG_WARNING(Render_Vulkan,
                     "TRACE_ACCEL_STAGE v114 raw_enter_simple accel_id={} indexed={} stop_after={} force_stage_trace={} entry_only_probe={}",
                     accel_id, is_indexed, GetAccelStageStopAfter(),
