@@ -232,6 +232,17 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z69_PICA_PROCESS_CMDLIST_ULTRA_EARLY");
 }
 
+[[nodiscard]] bool IsV115DA7Z70PicaTriggerDirectDrawArraysEnabled() {
+    // v115-D-E-A7Z70: A7Z69 proved that ProcessCmdList reaches trigger 0x22F and
+    // WriteInternalReg reaches the trigger case, then the main log cuts while emitting
+    // the legacy trigger/pre-draw trace. Skip all formatted/sidecar trigger breadcrumbs
+    // between trigger_case_enter and DrawArrays(), then return immediately after the
+    // DrawArrays() call so the next visible marker must come from DrawArrays/A7Z65 or
+    // the Vulkan backend.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z70_PICA_TRIGGER_DIRECT_DRAWARRAYS");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -440,6 +451,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         if (IsV115DA7Z69PicaProcessCmdListUltraEarlyEnabled()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z69 constructor_process_cmdlist_ultra_early active=1");
+        }
+        if (IsV115DA7Z70PicaTriggerDirectDrawArraysEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z70 constructor_trigger_direct_drawarrays active=1");
         }
     }
 
@@ -759,6 +774,12 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
                         "TRACE_DRAW_PICA strict_compat v115d_a7z65 trigger_case_enter id=0x{:03X} indexed={} num_vertices={} vertex_offset={}",
                         id, static_cast<u32>(is_indexed), regs.internal.pipeline.num_vertices,
                         regs.internal.pipeline.vertex_offset);
+        }
+        if (IsV115DA7Z70PicaTriggerDirectDrawArraysEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z70 trigger_direct_before_drawarrays_call");
+            DrawArrays(is_indexed);
+            return;
         }
         if (IsPicaHotpathTraceEnabled()) {
             LOG_DEBUG(HW_GPU,
