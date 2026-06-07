@@ -273,6 +273,15 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z76_PICA_SINGLE_BACKEND_CALL_MARKER");
 }
 
+[[nodiscard]] bool IsV115DA7Z77PicaDrawArraysSingleEntryMarkerEnabled() {
+    // v115-D-E-A7Z77: A7Z76 proved the PICA-side backend-call marker is armed, but
+    // it does not appear. Add exactly one fixed DrawArrays entry breadcrumb, before
+    // the A7Z72 safe-candidate filters, to determine whether the silent trigger path
+    // reaches DrawArrays at all without re-enabling broad GSP/GPU/PICA logging.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z77_PICA_DRAWARRAYS_SINGLE_ENTRY_MARKER");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -497,6 +506,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         if (IsV115DA7Z76PicaSingleBackendCallMarkerEnabled()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z76 constructor_single_backend_call_marker active=1");
+        }
+        if (IsV115DA7Z77PicaDrawArraysSingleEntryMarkerEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z77 constructor_drawarrays_single_entry_marker active=1");
         }
     }
 
@@ -1242,6 +1255,15 @@ void PicaCore::DrawArrays(bool is_indexed) {
     const bool a7z64_ultra_quiet = IsV115DA7Z64PicaDrawArraysUltraQuietBoundaryEnabled();
     const bool a7z65_no_prebackend = IsV115DA7Z65PicaEarlyDirectNoPrebackendLogEnabled();
     const bool a7z72_silent_early_backend = IsV115DA7Z72PicaDrawArraysSilentEarlyBackendEnabled();
+    const bool a7z77_single_entry_marker = IsV115DA7Z77PicaDrawArraysSingleEntryMarkerEnabled();
+
+    if (a7z77_single_entry_marker) {
+        static std::atomic<u64> a7z77_drawarrays_entry_counter{0};
+        if (++a7z77_drawarrays_entry_counter == 1) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z77 drawarrays_entry_once");
+        }
+    }
 
     if (a7z72_silent_early_backend && IsSafePicaHwDrawAllowed() && IsSafePicaHwEnterAllowed() &&
         IsDirectSafePicaHwHandoffEnabled() && !IsPicaAccelAllowed() && !IsPicaAccelForcedOff()) {
