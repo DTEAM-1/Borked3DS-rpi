@@ -252,6 +252,17 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z71_PICA_TRIGGER_SILENT_DRAWARRAYS");
 }
 
+
+[[nodiscard]] bool IsV115DA7Z72PicaDrawArraysSilentEarlyBackendEnabled() {
+    // v115-D-E-A7Z72: A7Z71 proved that WriteInternalReg(0x22F) reaches DrawArrays(),
+    // then the main log cuts at the next fixed DrawArrays/early-direct breadcrumb.
+    // This mode performs the same strict safe-candidate gate, but with zero console/file
+    // breadcrumbs inside DrawArrays before the backend call. The next visible proof must
+    // therefore come from vk_rasterizer::AccelerateDrawBatch().
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z72_PICA_DRAWARRAYS_SILENT_EARLY_BACKEND");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -468,6 +479,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         if (IsV115DA7Z71PicaTriggerSilentDrawArraysEnabled()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z71 constructor_trigger_silent_drawarrays active=1");
+        }
+        if (IsV115DA7Z72PicaDrawArraysSilentEarlyBackendEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z72 constructor_drawarrays_silent_early_backend active=1");
         }
     }
 
@@ -1212,6 +1227,38 @@ void PicaCore::DrawArrays(bool is_indexed) {
     const bool trace_draw = IsPicaDrawTraceEnabled();
     const bool a7z64_ultra_quiet = IsV115DA7Z64PicaDrawArraysUltraQuietBoundaryEnabled();
     const bool a7z65_no_prebackend = IsV115DA7Z65PicaEarlyDirectNoPrebackendLogEnabled();
+    const bool a7z72_silent_early_backend = IsV115DA7Z72PicaDrawArraysSilentEarlyBackendEnabled();
+
+    if (a7z72_silent_early_backend && IsSafePicaHwDrawAllowed() && IsSafePicaHwEnterAllowed() &&
+        IsDirectSafePicaHwHandoffEnabled() && !IsPicaAccelAllowed() && !IsPicaAccelForcedOff()) {
+        const bool v115d_a7z72_hw_shader = Settings::values.use_hw_shader.GetValue();
+        const bool v115d_a7z72_primitive_empty = primitive_assembler.IsEmpty();
+        const u32 v115d_a7z72_max_vertices = GetSafePicaHwMaxVertices();
+        const bool v115d_a7z72_textures_disabled = ArePrimaryTexturesDisabled(regs.internal);
+        const bool v115d_a7z72_accelerate_shape =
+            v115d_a7z72_hw_shader && v115d_a7z72_primitive_empty &&
+            regs.internal.pipeline.use_gs != PipelineRegs::UseGS::Yes &&
+            regs.internal.pipeline.num_vertices > 0 &&
+            regs.internal.pipeline.num_vertices <= v115d_a7z72_max_vertices &&
+            (primitive_assembler.GetTopology() == PipelineRegs::TriangleTopology::Shader ||
+             primitive_assembler.GetTopology() == PipelineRegs::TriangleTopology::List
+                 ? ((regs.internal.pipeline.num_vertices % 3) == 0)
+                 : true);
+        const bool v115d_a7z72_safe_candidate =
+            v115d_a7z72_accelerate_shape && v115d_a7z72_textures_disabled;
+        const u32 v115d_a7z72_budget = GetSafePicaHwDrawBudget();
+
+        if (v115d_a7z72_safe_candidate && v115d_a7z72_budget != 0) {
+            const u64 v115d_a7z72_hw_index = ++g_pica_safe_hw_draw_counter;
+            if (v115d_a7z72_hw_index <= v115d_a7z72_budget) {
+                if (IsSafePicaHwDryRunEnabled()) {
+                    return;
+                }
+                (void)rasterizer->AccelerateDrawBatch(is_indexed);
+                return;
+            }
+        }
+    }
 
     if (a7z64_ultra_quiet) {
         LOG_WARNING(HW_GPU,
