@@ -263,6 +263,16 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z72_PICA_DRAWARRAYS_SILENT_EARLY_BACKEND");
 }
 
+[[nodiscard]] bool IsV115DA7Z76PicaSingleBackendCallMarkerEnabled() {
+    // v115-D-E-A7Z76: A7Z75 proved the Vulkan-side internal-boundary marker is armed,
+    // but the silent run did not show it. Emit exactly one fixed, no-argument marker
+    // from the PICA side immediately before calling rasterizer->AccelerateDrawBatch().
+    // This distinguishes a missed/false safe-candidate gate from a crash/stop inside
+    // the backend call transition itself, without re-enabling the heavy GSP/PICA logs.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z76_PICA_SINGLE_BACKEND_CALL_MARKER");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -483,6 +493,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         if (IsV115DA7Z72PicaDrawArraysSilentEarlyBackendEnabled()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z72 constructor_drawarrays_silent_early_backend active=1");
+        }
+        if (IsV115DA7Z76PicaSingleBackendCallMarkerEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z76 constructor_single_backend_call_marker active=1");
         }
     }
 
@@ -1253,6 +1267,10 @@ void PicaCore::DrawArrays(bool is_indexed) {
             if (v115d_a7z72_hw_index <= v115d_a7z72_budget) {
                 if (IsSafePicaHwDryRunEnabled()) {
                     return;
+                }
+                if (IsV115DA7Z76PicaSingleBackendCallMarkerEnabled()) {
+                    LOG_WARNING(HW_GPU,
+                                "TRACE_DRAW_PICA strict_compat v115d_a7z76 before_accelerate_draw_batch_call");
                 }
                 (void)rasterizer->AccelerateDrawBatch(is_indexed);
                 return;
