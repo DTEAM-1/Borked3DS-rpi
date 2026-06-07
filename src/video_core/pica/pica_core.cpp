@@ -282,6 +282,16 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z77_PICA_DRAWARRAYS_SINGLE_ENTRY_MARKER");
 }
 
+[[nodiscard]] bool IsV115DA7Z78PicaTriggerSinglePreDrawArraysMarkerEnabled() {
+    // v115-D-E-A7Z78: A7Z77 proved the DrawArrays entry marker is armed, but it does
+    // not appear. Add exactly one fixed trigger-side breadcrumb immediately before
+    // the A7Z71 silent DrawArrays() call. This determines whether the silent trigger
+    // branch reaches the DrawArrays call site without re-enabling broad GSP/GPU/PICA
+    // logging.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z78_PICA_TRIGGER_SINGLE_PRE_DRAWARRAYS_MARKER");
+}
+
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
     // v114 follows plan de travail 1, with the result from the v110 runtime log:
     // v110 proved the backend can emit raw_enter_noargs and continue until hotkey exit.
@@ -510,6 +520,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         if (IsV115DA7Z77PicaDrawArraysSingleEntryMarkerEnabled()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z77 constructor_drawarrays_single_entry_marker active=1");
+        }
+        if (IsV115DA7Z78PicaTriggerSinglePreDrawArraysMarkerEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z78 constructor_trigger_single_pre_drawarrays_marker active=1");
         }
     }
 
@@ -819,6 +833,13 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     case PICA_REG_INDEX(pipeline.trigger_draw_indexed): {
         const bool is_indexed = (id == PICA_REG_INDEX(pipeline.trigger_draw_indexed));
         if (IsV115DA7Z71PicaTriggerSilentDrawArraysEnabled()) {
+            if (IsV115DA7Z78PicaTriggerSinglePreDrawArraysMarkerEnabled()) {
+                static std::atomic<u64> a7z78_trigger_pre_drawarrays_counter{0};
+                if (++a7z78_trigger_pre_drawarrays_counter == 1) {
+                    LOG_WARNING(HW_GPU,
+                                "TRACE_DRAW_PICA strict_compat v115d_a7z78 trigger_pre_drawarrays_once");
+                }
+            }
             DrawArrays(is_indexed);
             return;
         }
