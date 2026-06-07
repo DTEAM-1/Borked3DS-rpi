@@ -148,6 +148,17 @@ struct DrawParams {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z74_SILENT_OUTER_ENTRY_TO_STAGE");
 }
 
+[[nodiscard]] bool IsV115DA7Z75SingleInternalBoundaryMarkerEnabled() {
+    // v115-D-E-A7Z75:
+    // The A7Z71/A7Z72/A7Z73/A7Z74 silent runtime line removes the noisy GSP/PICA/outer-entry
+    // probes, but the resulting log no longer proves whether the HW path reaches the real
+    // AccelerateDrawBatchInternal() call. Emit exactly one fixed, no-argument marker immediately
+    // before that call. No PICA tracing, no shader state formatting, no Vulkan command recording,
+    // and no changed rendering behavior.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z75_SINGLE_INTERNAL_BOUNDARY_MARKER");
+}
+
 [[nodiscard]] bool IsV114ShaderMultiplexEntrySafeEnabled() {
     // v114-C/v114-C2 corrective probe:
     // A/B passed, but the first C attempt cut the log immediately after the safe micro-HW
@@ -2009,6 +2020,10 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
     if (IsV115DA7Z74SilentOuterEntryToStageEnabled()) {
         LOG_WARNING(Render_Vulkan,
                     "TRACE_DRAW strict_compat v115d_a7z74 constructor_silent_outer_entry_to_stage active=1");
+    }
+    if (IsV115DA7Z75SingleInternalBoundaryMarkerEnabled()) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v115d_a7z75 constructor_single_internal_boundary_marker active=1");
     }
 
     uniform_buffer_alignment = instance.UniformMinAlignment();
@@ -7387,6 +7402,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
         if (a7z40_draw_wrapper_trace) {
             V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_accelerate_draw_batch_internal");
+        }
+        if (IsV115DA7Z75SingleInternalBoundaryMarkerEnabled()) {
+            LOG_WARNING(Render_Vulkan,
+                        "TRACE_DRAW strict_compat v115d_a7z75 before_accelerate_draw_batch_internal");
         }
         succeeded = AccelerateDrawBatchInternal(is_indexed);
         if (a7z40_draw_wrapper_trace) {
