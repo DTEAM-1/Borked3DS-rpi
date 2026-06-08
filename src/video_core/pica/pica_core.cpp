@@ -333,6 +333,29 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z82_PICA_PROCESS_ENTRY_LEAVE_WINDOW");
 }
 
+[[nodiscard]] bool IsV115DA7Z83PicaProcessSingleCommandBufferTriggerMarkerEnabled() {
+    // v115-D-E-A7Z83: A7Z82 proved several quiet ProcessCmdList calls enter and leave
+    // cleanly without a direct draw trigger. Emit exactly one fixed breadcrumb when a
+    // PICA command-buffer trigger register is parsed. This checks whether the quiet
+    // lists are scheduling/arming later GPU command buffers rather than issuing
+    // trigger_draw/trigger_draw_indexed directly, without returning to broad logs.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z83_PICA_PROCESS_SINGLE_CMDBUF_TRIGGER_MARKER");
+}
+
+[[nodiscard]] bool IsV115DA7Z84PicaProcessExtendedWindowEnabled() {
+    // v115-D-E-A7Z84: A7Z82 showed 8 command lists enter and leave without draw_trigger
+    // or command_buffer.trigger. The log does NOT crash after list 8 — the game continues
+    // running (APT/FS activity at t=2.5s after the last A7Z82 marker at t=1.977s). This
+    // means the draw trigger arrives in a later command list beyond the 8-list window.
+    // Extend the entry/leave window to 32 lists to determine which list first contains
+    // the useful draw trigger. This replaces A7Z82's 8-list switch with a 32-list switch,
+    // allowing us to see exactly which command list number first triggers A7Z79/A7Z83.
+    // A7Z84 must be combined with A7Z79 and A7Z83 in the same run.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z84_PICA_PROCESS_EXTENDED_WINDOW");
+}
+
 void V115DA7Z80EmitProcessEntryOnce() {
     if (!IsV115DA7Z80PicaProcessSingleEntryMarkerEnabled()) {
         return;
@@ -451,6 +474,41 @@ void V115DA7Z79EmitProcessDrawTriggerOnce() {
     if (++a7z79_process_draw_trigger_counter == 1) {
         LOG_WARNING(HW_GPU,
                     "TRACE_DRAW_PICA strict_compat v115d_a7z79 process_draw_trigger_once");
+    }
+}
+
+void V115DA7Z83EmitProcessCommandBufferTriggerOnce() {
+    if (!IsV115DA7Z83PicaProcessSingleCommandBufferTriggerMarkerEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z83_process_command_buffer_trigger_counter{0};
+    if (++a7z83_process_command_buffer_trigger_counter == 1) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z83 process_command_buffer_trigger_once");
+    }
+}
+
+void V115DA7Z84EmitProcessEntryWindow() {
+    if (!IsV115DA7Z84PicaProcessExtendedWindowEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z84_process_entry_counter{0};
+    const u64 index = ++a7z84_process_entry_counter;
+    if (index <= 32) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z84 process_cmd_list_entry_{}", index);
+    }
+}
+
+void V115DA7Z84EmitProcessLeaveWindow() {
+    if (!IsV115DA7Z84PicaProcessExtendedWindowEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z84_process_leave_counter{0};
+    const u64 index = ++a7z84_process_leave_counter;
+    if (index <= 32) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z84 process_cmd_list_leave_{}", index);
     }
 }
 
@@ -703,6 +761,14 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z82 constructor_process_entry_leave_window active=1");
         }
+        if (IsV115DA7Z83PicaProcessSingleCommandBufferTriggerMarkerEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z83 constructor_process_single_cmdbuf_trigger_marker active=1");
+        }
+        if (IsV115DA7Z84PicaProcessExtendedWindowEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z84 constructor_process_extended_window active=1 window_size=32");
+        }
     }
 
     const auto submit_vertex = [this](const AttributeBuffer& buffer) {
@@ -763,6 +829,7 @@ void PicaCore::SetInterruptHandler(Service::GSP::InterruptHandler& signal_interr
 void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     V115DA7Z80EmitProcessEntryOnce();
     V115DA7Z82EmitProcessEntryWindow();
+    V115DA7Z84EmitProcessEntryWindow();
 
     const bool trace_hotpath = IsPicaHotpathTraceEnabled();
     const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled();
@@ -810,6 +877,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
         }
         V115DA7Z81EmitProcessLeaveOnce();
         V115DA7Z82EmitProcessLeaveWindow();
+        V115DA7Z84EmitProcessLeaveWindow();
         signal_interrupt(Service::GSP::InterruptId::P3D);
         return;
     }
@@ -888,6 +956,10 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
             header_cmd_id == PICA_REG_INDEX(pipeline.trigger_draw_indexed)) {
             V115DA7Z79EmitProcessDrawTriggerOnce();
         }
+        if (header_cmd_id == PICA_REG_INDEX(pipeline.command_buffer.trigger[0]) ||
+            header_cmd_id == PICA_REG_INDEX(pipeline.command_buffer.trigger[1])) {
+            V115DA7Z83EmitProcessCommandBufferTriggerOnce();
+        }
 
         WriteInternalReg(header.cmd_id, value, header.parameter_mask);
 
@@ -916,6 +988,10 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
                 cmd == PICA_REG_INDEX(pipeline.trigger_draw_indexed)) {
                 V115DA7Z79EmitProcessDrawTriggerOnce();
             }
+            if (cmd == PICA_REG_INDEX(pipeline.command_buffer.trigger[0]) ||
+                cmd == PICA_REG_INDEX(pipeline.command_buffer.trigger[1])) {
+                V115DA7Z83EmitProcessCommandBufferTriggerOnce();
+            }
 
             WriteInternalReg(cmd, extra_value, header.parameter_mask);
         }
@@ -939,6 +1015,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
     V115DA7Z81EmitProcessLeaveOnce();
     V115DA7Z82EmitProcessLeaveWindow();
+    V115DA7Z84EmitProcessLeaveWindow();
 }
 
 void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
