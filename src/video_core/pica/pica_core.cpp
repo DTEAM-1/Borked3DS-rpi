@@ -324,6 +324,15 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z81_PICA_PROCESS_SINGLE_LEAVE_MARKER");
 }
 
+[[nodiscard]] bool IsV115DA7Z82PicaProcessEntryLeaveWindowEnabled() {
+    // v115-D-E-A7Z82: A7Z80/A7Z81 proved the first quiet ProcessCmdList enters and
+    // leaves, but A7Z79 does not see a draw trigger. Emit a tiny fixed window for the
+    // next few ProcessCmdList calls so we can determine whether later command lists
+    // are reached before the crash, without restoring the broad A7Z66/A7Z69 logging.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z82_PICA_PROCESS_ENTRY_LEAVE_WINDOW");
+}
+
 void V115DA7Z80EmitProcessEntryOnce() {
     if (!IsV115DA7Z80PicaProcessSingleEntryMarkerEnabled()) {
         return;
@@ -343,6 +352,94 @@ void V115DA7Z81EmitProcessLeaveOnce() {
     if (++a7z81_process_leave_counter == 1) {
         LOG_WARNING(HW_GPU,
                     "TRACE_DRAW_PICA strict_compat v115d_a7z81 process_cmd_list_leave_once");
+    }
+}
+
+void V115DA7Z82EmitProcessEntryWindow() {
+    if (!IsV115DA7Z82PicaProcessEntryLeaveWindowEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z82_process_entry_counter{0};
+    const u64 index = ++a7z82_process_entry_counter;
+    switch (index) {
+    case 1:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_entry_1");
+        break;
+    case 2:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_entry_2");
+        break;
+    case 3:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_entry_3");
+        break;
+    case 4:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_entry_4");
+        break;
+    case 5:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_entry_5");
+        break;
+    case 6:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_entry_6");
+        break;
+    case 7:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_entry_7");
+        break;
+    case 8:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_entry_8");
+        break;
+    default:
+        break;
+    }
+}
+
+void V115DA7Z82EmitProcessLeaveWindow() {
+    if (!IsV115DA7Z82PicaProcessEntryLeaveWindowEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z82_process_leave_counter{0};
+    const u64 index = ++a7z82_process_leave_counter;
+    switch (index) {
+    case 1:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_leave_1");
+        break;
+    case 2:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_leave_2");
+        break;
+    case 3:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_leave_3");
+        break;
+    case 4:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_leave_4");
+        break;
+    case 5:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_leave_5");
+        break;
+    case 6:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_leave_6");
+        break;
+    case 7:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_leave_7");
+        break;
+    case 8:
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z82 process_cmd_list_leave_8");
+        break;
+    default:
+        break;
     }
 }
 
@@ -602,6 +699,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z81 constructor_process_single_leave_marker active=1");
         }
+        if (IsV115DA7Z82PicaProcessEntryLeaveWindowEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z82 constructor_process_entry_leave_window active=1");
+        }
     }
 
     const auto submit_vertex = [this](const AttributeBuffer& buffer) {
@@ -661,6 +762,7 @@ void PicaCore::SetInterruptHandler(Service::GSP::InterruptHandler& signal_interr
 
 void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     V115DA7Z80EmitProcessEntryOnce();
+    V115DA7Z82EmitProcessEntryWindow();
 
     const bool trace_hotpath = IsPicaHotpathTraceEnabled();
     const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled();
@@ -707,6 +809,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
             LOG_DEBUG(HW_GPU, "PicaCore::ProcessCmdList ignored list={:#010X}", list);
         }
         V115DA7Z81EmitProcessLeaveOnce();
+        V115DA7Z82EmitProcessLeaveWindow();
         signal_interrupt(Service::GSP::InterruptId::P3D);
         return;
     }
@@ -835,6 +938,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     }
 
     V115DA7Z81EmitProcessLeaveOnce();
+    V115DA7Z82EmitProcessLeaveWindow();
 }
 
 void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
