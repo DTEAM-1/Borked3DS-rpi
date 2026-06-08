@@ -344,16 +344,26 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
 }
 
 [[nodiscard]] bool IsV115DA7Z84PicaProcessExtendedWindowEnabled() {
-    // v115-D-E-A7Z84: A7Z82 showed 8 command lists enter and leave without draw_trigger
-    // or command_buffer.trigger. The log does NOT crash after list 8 — the game continues
-    // running (APT/FS activity at t=2.5s after the last A7Z82 marker at t=1.977s). This
-    // means the draw trigger arrives in a later command list beyond the 8-list window.
-    // Extend the entry/leave window to 32 lists to determine which list first contains
-    // the useful draw trigger. This replaces A7Z82's 8-list switch with a 32-list switch,
-    // allowing us to see exactly which command list number first triggers A7Z79/A7Z83.
-    // A7Z84 must be combined with A7Z79 and A7Z83 in the same run.
+    // v115-D-E-A7Z84 run2: run1 showed 32 lists, all clean entry/leave, no draw trigger,
+    // no command_buffer trigger. Session alive after list 32 (APT/FS at t=3.4s after last
+    // A7Z84 at t=2.99s). The 32 lists are pure PICA register config (~4 per loading frame).
+    // Window extended to 64 for run2. Must be combined with A7Z79, A7Z83, and A7Z85.
     return IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z84_PICA_PROCESS_EXTENDED_WINDOW");
+}
+
+[[nodiscard]] bool IsV115DA7Z85PicaDrawArraysBackendOnceEnabled() {
+    // v115-D-E-A7Z85: emit exactly one fixed breadcrumb the first time DrawArrays
+    // reaches the AccelerateDrawBatch() call site in the active mux path. This fires
+    // before the actual backend call, regardless of which sub-path is taken.
+    // Combined with A7Z84 run2, this distinguishes three outcomes:
+    // (a) A7Z79/A7Z83 + A7Z85 appear: draw trigger reaches backend. Crash is inside
+    //     AccelerateDrawBatch or in the Vulkan pipeline immediately after.
+    // (b) A7Z79/A7Z83 appear, A7Z85 absent: draw trigger is parsed but safe-candidate
+    //     gate blocks the backend call (budget=0 or vertex count mismatch).
+    // (c) A7Z84 exhausted at 64, A7Z85 absent: draw trigger is beyond list 64.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z85_PICA_DRAWARRAYS_BACKEND_ONCE");
 }
 
 void V115DA7Z80EmitProcessEntryOnce() {
@@ -494,7 +504,7 @@ void V115DA7Z84EmitProcessEntryWindow() {
     }
     static std::atomic<u64> a7z84_process_entry_counter{0};
     const u64 index = ++a7z84_process_entry_counter;
-    if (index <= 32) {
+    if (index <= 64) {
         LOG_WARNING(HW_GPU,
                     "TRACE_DRAW_PICA strict_compat v115d_a7z84 process_cmd_list_entry_{}", index);
     }
@@ -506,9 +516,20 @@ void V115DA7Z84EmitProcessLeaveWindow() {
     }
     static std::atomic<u64> a7z84_process_leave_counter{0};
     const u64 index = ++a7z84_process_leave_counter;
-    if (index <= 32) {
+    if (index <= 64) {
         LOG_WARNING(HW_GPU,
                     "TRACE_DRAW_PICA strict_compat v115d_a7z84 process_cmd_list_leave_{}", index);
+    }
+}
+
+void V115DA7Z85EmitDrawArraysBackendOnce() {
+    if (!IsV115DA7Z85PicaDrawArraysBackendOnceEnabled()) {
+        return;
+    }
+    static std::atomic<u64> a7z85_backend_counter{0};
+    if (++a7z85_backend_counter == 1) {
+        LOG_WARNING(HW_GPU,
+                    "TRACE_DRAW_PICA strict_compat v115d_a7z85 drawarrays_backend_once");
     }
 }
 
@@ -767,7 +788,11 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         }
         if (IsV115DA7Z84PicaProcessExtendedWindowEnabled()) {
             LOG_WARNING(HW_GPU,
-                        "TRACE_DRAW_PICA strict_compat v115d_a7z84 constructor_process_extended_window active=1 window_size=32");
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z84 constructor_process_extended_window active=1 window_size=64");
+        }
+        if (IsV115DA7Z85PicaDrawArraysBackendOnceEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z85 constructor_drawarrays_backend_once active=1");
         }
     }
 
@@ -1588,6 +1613,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                     LOG_WARNING(HW_GPU,
                                 "TRACE_DRAW_PICA strict_compat v115d_a7z76 before_accelerate_draw_batch_call");
                 }
+                V115DA7Z85EmitDrawArraysBackendOnce();
                 (void)rasterizer->AccelerateDrawBatch(is_indexed);
                 return;
             }
@@ -1791,6 +1817,7 @@ void PicaCore::DrawArrays(bool is_indexed) {
                     return;
                 }
 
+                V115DA7Z85EmitDrawArraysBackendOnce();
                 const bool v115d_mux_early_accelerated = rasterizer->AccelerateDrawBatch(is_indexed);
                 V114C6PicaGateFileTraceRaw("v115d_mux early_direct_after_accelerate_draw_batch");
                 V114C6PicaGateFileTraceU32("v115d_mux early_direct_accelerate_draw_batch_result",
