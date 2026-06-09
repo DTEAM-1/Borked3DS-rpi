@@ -1448,7 +1448,16 @@ void RendererVulkan::SwapBuffers() {
         if (second_window) {
             second_window->WaitPresent();
         }
-        scheduler.Finish();
+        // v115-D Pi5/V3DV fix: scheduler.Finish() removed here for the same reason
+        // as RenderToWindow. With use_hw_shader=true, the GPU scheduler may have
+        // pending vertex buffer uploads or pipeline state work that depends on the
+        // CPU IPC thread to advance. Calling Finish() here serializes the render
+        // thread against GPU work that can never complete because the CPU thread
+        // (Sonic's ARM code) is waiting for the render thread to release resources —
+        // a GPU/CPU deadlock. The result is that ProcessCmdList after list 64
+        // never completes, the ARM thread times out, and the process crashes silently.
+        // PrepareRendertarget() and DrawScreens() below provide sufficient
+        // GPU synchronization without a blocking full-drain here.
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
                      "TRACE_PRESENT strict_compat serialized_before_prepare layout={}x{}",
