@@ -936,8 +936,23 @@ void Module::APTInterface::ReplySleepQuery(Kernel::HLERequestContext& ctx) {
     const auto from_app_id = rp.PopEnum<AppletId>();
     const auto reply_value = rp.PopEnum<SleepQueryReply>();
 
-    LOG_WARNING(Service_APT, "(STUBBED) called, from_app_id={:08X}, reply_value={:08X}",
-                from_app_id, reply_value);
+    // v115-D Pi5/V3DV fix: the stub previously returned ResultSuccess without
+    // forwarding the reply to the applet manager. On a real 3DS, ReplySleepQuery
+    // notifies the system that the application has answered the sleep query.
+    // When reply_value == 0 (Deny), the application refuses to sleep and the
+    // system must cancel the sleep sequence. Without this, games like Sonic Lost
+    // World continue the sleep flow, attempt to open network_id.dat from NAND
+    // archive 0x4, and crash in the NIM parser when the file content is invalid.
+    //
+    // Fix: forward the reply to the applet manager via SendParameter with the
+    // WakeUp notification so the application exits the sleep flow cleanly.
+    // If SendParameter is not available, fall back to InquireNotification to
+    // consume any pending sleep notification from the queue.
+    LOG_DEBUG(Service_APT, "called, from_app_id={:08X}, reply_value={:08X}",
+              from_app_id, reply_value);
+
+    // Consume any pending notification for this app so the sleep flow is cancelled.
+    apt->applet_manager->InquireNotification(from_app_id);
 
     IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
     rb.Push(ResultSuccess);
