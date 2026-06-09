@@ -159,6 +159,20 @@ struct DrawParams {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z75_SINGLE_INTERNAL_BOUNDARY_MARKER");
 }
 
+[[nodiscard]] bool IsV115DA7Z89BackendUltraEarlyProbeEnabled() {
+    // v115-D-E-A7Z89: ultra-early AccelerateDrawBatch entry probe in the Vulkan backend.
+    // Emitted as the FIRST instruction in AccelerateDrawBatch(), before any gate, before
+    // any stage check, before any Vulkan operation. Every call is logged (no once-guard).
+    //
+    // Combined with pica_core A7Z89:
+    // - pica A7Z89 fires but backend A7Z89 does NOT → crash in DrawArrays safe-candidate
+    //   gate, between the PICA probe and the AccelerateDrawBatch() call.
+    // - backend A7Z89 fires → AccelerateDrawBatch is reached; crash is inside the backend.
+    // - Neither fires → crash before DrawArrays (ARM, HLE, or GPU thread issue).
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z89_BACKEND_ULTRA_EARLY_PROBE");
+}
+
 [[nodiscard]] bool IsV114ShaderMultiplexEntrySafeEnabled() {
     // v114-C/v114-C2 corrective probe:
     // A/B passed, but the first C attempt cut the log immediately after the safe micro-HW
@@ -2025,6 +2039,10 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
         LOG_WARNING(Render_Vulkan,
                     "TRACE_DRAW strict_compat v115d_a7z75 constructor_single_internal_boundary_marker active=1");
     }
+    if (IsV115DA7Z89BackendUltraEarlyProbeEnabled()) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v115d_a7z89 constructor_backend_ultra_early_probe active=1");
+    }
 
     uniform_buffer_alignment = instance.UniformMinAlignment();
     uniform_size_aligned_vs_pica =
@@ -2886,6 +2904,17 @@ bool RasterizerVulkan::SetupGeometryShader() {
 }
 
 bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
+    // A7Z89: ultra-early backend entry probe — absolute first line of AccelerateDrawBatch.
+    // If this fires, the Vulkan backend is reached. If not, crash is before this call.
+    if (IsV115DA7Z89BackendUltraEarlyProbeEnabled()) {
+        static std::atomic<u64> a7z89_backend_counter{0};
+        const u64 count = ++a7z89_backend_counter;
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DRAW strict_compat v115d_a7z89 backend_ultra_early_entry"
+                    " count={} indexed={} num_vertices={}",
+                    count, static_cast<u32>(is_indexed), regs.pipeline.num_vertices);
+    }
+
     // v114 diagnostic:
     // v110 proved raw_enter_noargs is safe. Now emit raw_enter_noargs plus raw_enter_simple,
     // then return before stage=1. No shader setup, no SPIR-V, no pipeline, no descriptors,
