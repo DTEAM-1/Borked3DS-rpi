@@ -404,6 +404,25 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
            IsEnvEnabled("BORKED3DS_V3DV_A7Z88_PICA_PROCESS_CMDLIST_COUNT");
 }
 
+[[nodiscard]] bool IsV115DA7Z89PicaDrawArraysUltraEarlyProbeEnabled() {
+    // v115-D-E-A7Z89: ultra-early DrawArrays entry probe. Emitted at the very first line
+    // of DrawArrays(), before any safe-candidate gate, before use_hw_shader checks, before
+    // AccelerateDrawBatch decisions. Every call is logged (no once-guard).
+    //
+    // Context: the software run (use_hw_shader=false) reaches 658 draw triggers and
+    // completes cleanly. The HW shader run (use_hw_shader=true) crashes silently at
+    // t≈2.549 after OpenFile /network_id.dat, before the first draw trigger at t≈2.944.
+    // A7Z85 (before AccelerateDrawBatch) has never appeared in any HW run.
+    //
+    // This probe answers: does DrawArrays() get called at all in HW mode before the crash?
+    // If A7Z89 never appears → the crash is before DrawArrays (ARM code, HLE, or GPU thread).
+    // If A7Z89 appears → DrawArrays is reached, crash is inside DrawArrays or AccelerateDrawBatch.
+    // Combined with A7Z85: if A7Z89 fires but A7Z85 does not → crash in the safe-candidate
+    // gate path between the two probes.
+    return IsStrictCompatEnabled() &&
+           IsEnvEnabled("BORKED3DS_V3DV_A7Z89_PICA_DRAWARRAYS_ULTRA_EARLY_PROBE");
+}
+
 void V115DA7Z80EmitProcessEntryOnce() {
     if (!IsV115DA7Z80PicaProcessSingleEntryMarkerEnabled()) {
         return;
@@ -608,6 +627,22 @@ void V115DA7Z88EmitProcessCmdListCount() {
         LOG_WARNING(HW_GPU,
                     "TRACE_DRAW_PICA strict_compat v115d_a7z88 cmd_list_count_{}", count);
     }
+}
+
+void V115DA7Z89EmitDrawArraysUltraEarly(u64 draw_index, bool is_indexed,
+                                         u32 num_vertices, u32 topology,
+                                         bool primitive_empty, bool use_hw_shader) {
+    if (!IsV115DA7Z89PicaDrawArraysUltraEarlyProbeEnabled()) {
+        return;
+    }
+    // Every call logged — no once-guard. This tells us if DrawArrays is reached
+    // at all in HW mode and exactly what draw parameters arrive.
+    LOG_WARNING(HW_GPU,
+                "TRACE_DRAW_PICA strict_compat v115d_a7z89 drawarrays_ultra_early"
+                " draw_index={} indexed={} num_vertices={} topology={}"
+                " primitive_empty={} use_hw_shader={}",
+                draw_index, static_cast<u32>(is_indexed), num_vertices, topology,
+                static_cast<u32>(primitive_empty), static_cast<u32>(use_hw_shader));
 }
 
 [[nodiscard]] bool IsSafePicaHwDrawAllowed() {
@@ -883,6 +918,10 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         if (IsV115DA7Z88PicaProcessCmdListCountEnabled()) {
             LOG_WARNING(HW_GPU,
                         "TRACE_DRAW_PICA strict_compat v115d_a7z88 constructor_process_cmdlist_count active=1");
+        }
+        if (IsV115DA7Z89PicaDrawArraysUltraEarlyProbeEnabled()) {
+            LOG_WARNING(HW_GPU,
+                        "TRACE_DRAW_PICA strict_compat v115d_a7z89 constructor_drawarrays_ultra_early active=1");
         }
     }
 
@@ -1668,6 +1707,15 @@ void PicaCore::DrawArrays(bool is_indexed) {
     const bool a7z65_no_prebackend = IsV115DA7Z65PicaEarlyDirectNoPrebackendLogEnabled();
     const bool a7z72_silent_early_backend = IsV115DA7Z72PicaDrawArraysSilentEarlyBackendEnabled();
     const bool a7z77_single_entry_marker = IsV115DA7Z77PicaDrawArraysSingleEntryMarkerEnabled();
+
+    // A7Z89: ultra-early probe — first thing in DrawArrays, before any gate or decision.
+    // If this never appears in HW mode, the crash is before DrawArrays is reached.
+    V115DA7Z89EmitDrawArraysUltraEarly(
+        draw_index, is_indexed,
+        regs.internal.pipeline.num_vertices,
+        static_cast<u32>(primitive_assembler.GetTopology()),
+        primitive_assembler.IsEmpty(),
+        Settings::values.use_hw_shader.GetValue());
 
     if (a7z77_single_entry_marker) {
         static std::atomic<u64> a7z77_drawarrays_entry_counter{0};
