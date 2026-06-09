@@ -481,9 +481,29 @@ void RendererVulkan::PrepareDraw(Frame* frame, const Layout::FramebufferLayout& 
 
 void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,
                                     bool flipped) {
+    // v115-D Pi5/V3DV fix: the original strict_compat block called WaitPresent() +
+    // scheduler.Finish() unconditionally before every frame. With use_hw_shader=false
+    // (software vertex path) scheduler.Finish() completes instantly because no GPU
+    // vertex work is submitted during the PICA command-list config phase.
+    //
+    // With use_hw_shader=true (HW vertex path), the GPU may have pending work from
+    // vertex buffer uploads or pipeline state during the config phase. The unconditional
+    // scheduler.Finish() then waits for GPU work that depends on the CPU thread to
+    // advance (SleepClientThread / IPC dispatch), creating a deadlock. This manifests
+    // as a silent crash at the point where Sonic's ARM code reads network_id.dat — not
+    // because of the file, but because the render thread is stuck in Finish() while the
+    // CPU thread is stuck waiting for the render thread to release resources.
+    //
+    // Fix: keep WaitPresent() for frame pacing but remove the blocking Finish() here.
+    // SwapBuffers() already calls WaitPresent() + Finish() before PrepareRendertarget(),
+    // so the serialization guarantee is maintained without the extra blocking call here.
     if (IsStrictCompatEnabled()) {
         window.WaitPresent();
-        scheduler.Finish();
+        // NOTE: scheduler.Finish() intentionally removed here. It is already called in
+        // SwapBuffers() before PrepareRendertarget(). Adding it again here creates a
+        // GPU/CPU deadlock when use_hw_shader=true because the GPU has pending vertex
+        // work that depends on the CPU IPC thread to advance. SwapBuffers() serializes
+        // correctly without this second Finish() call.
     }
 
     Frame* frame = window.GetRenderFrame();
