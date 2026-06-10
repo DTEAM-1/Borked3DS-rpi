@@ -414,17 +414,14 @@ void FragmentModule::AppendAlphaModifier(
 
 void FragmentModule::AppendColorCombiner(Pica::TexturingRegs::TevStageConfig::Operation operation) {
 #ifndef __APPLE__
-    // v115-D Pi5/V3DV fix: glGetIntegerv() requires an active OpenGL context.
-    // In Vulkan mode (profile.is_vulkan=true) there is no OpenGL context,
-    // so calling gl* functions causes a SIGSEGV. Skip the GLES path entirely
-    // when rendering with Vulkan and fall through to the Vulkan-safe branch below.
     GLint majorVersion = 0, minorVersion = 0;
     if (!profile.is_vulkan) {
         glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
         glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
     }
 
-    if (!profile.is_vulkan && OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+    if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
 
         const auto get_combiner = [operation] {
             using Operation = Pica::TexturingRegs::TevStageConfig::Operation;
@@ -518,13 +515,13 @@ void FragmentModule::AppendColorCombiner(Pica::TexturingRegs::TevStageConfig::Op
 
 void FragmentModule::AppendAlphaCombiner(Pica::TexturingRegs::TevStageConfig::Operation operation) {
 #ifndef __APPLE__
-    // v115-D Pi5/V3DV fix: guard glGetIntegerv against Vulkan context (no GL context active).
     GLint majorVersion = 0, minorVersion = 0;
     if (!profile.is_vulkan) {
         glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
         glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
     }
-    if (!profile.is_vulkan && OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+    if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
         const auto get_combiner = [operation] {
             using Operation = Pica::TexturingRegs::TevStageConfig::Operation;
             switch (operation) {
@@ -682,14 +679,14 @@ void FragmentModule::WriteTevStage(u32 index) {
         }
 
 #ifndef __APPLE__
-        // v115-D Pi5/V3DV fix: guard glGetIntegerv against Vulkan context.
         GLint majorVersion = 0, minorVersion = 0;
         if (!profile.is_vulkan) {
             glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
             glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
         }
 
-        if (!profile.is_vulkan && OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+        if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
             out += fmt::format("combiner_output = vec4(clamp(color_output_{0} * vec3({1}.0), "
                                "vec3(0.0), vec3(1.0)), "
                                "clamp(alpha_output_{0} * float({1}.0), 0.0, 1.0));\n",
@@ -1050,14 +1047,14 @@ void FragmentModule::WriteLighting() {
 
 void FragmentModule::WriteFog() {
     // Get index into fog LUT
-    // v115-D Pi5/V3DV fix: guard glGetIntegerv against Vulkan context (no GL context active).
     GLint majorVersion = 0, minorVersion = 0;
     if (!profile.is_vulkan) {
         glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
         glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
     }
 
-    if (!profile.is_vulkan && (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) && GLAD_GL_OES_texture_buffer){ //gxv64 - primary path on the Pi if texBufferOES is supported
+    if ( (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) && GLAD_GL_OES_texture_buffer){ //gxv64 - primary path on the Pi if texBufferOES is supported
         // Get index into fog LUT
         out += "float fog_index = depth * 128.0;\n";
         out += "float fog_i = clamp(floor(fog_index), 0.0, 127.0);\n";
@@ -1152,12 +1149,13 @@ void FragmentModule::WriteGas() {
 
 //gvx64 - shader re-write to fix launch crash in Poochy & Yoshi's Woolly World
 void FragmentModule::WriteShadow() {
-if (!profile.is_vulkan) {
 // Platform detection for GLES < 3.2
 GLint majorVersion = 0, minorVersion = 0;
-glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+if (!profile.is_vulkan) {
+    glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
+    glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
 }
-glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
 if ( (!profile.is_vulkan) && (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2))){ //gvx64 updated path for pi4/5 to correct shader rendering issue in Poochy & Yoshi's Woolly World under GLES
     out += R"(
 uint d = uint(clamp(depth, 0.0, 1.0) * float(0xFFFFFF));
@@ -1183,10 +1181,11 @@ imageStore(shadow_buffer, image_coord, uvec4(new_shadow));
     }
 }else{ //gvx64 original path under Vulkan worked, so do not change
 #ifndef __APPLE__
-    if (!profile.is_vulkan) {
     GLint majorVersion = 0, minorVersion = 0;
-    glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
-    glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
+    if (!profile.is_vulkan) {
+        glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
+        glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
     }
 #endif
     out += R"(
@@ -1437,12 +1436,12 @@ void FragmentModule::DefineProcTexSampler() {
 #ifndef __APPLE__
     GLint majorVersion = 0, minorVersion = 0;
     if (!profile.is_vulkan) {
-    glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
-    glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
+        glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
 
+        glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
     }
 
-    if (!profile.is_vulkan && (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+    if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
         out += R"(
 float ProcTexLookupLUT(int offset, float coord) {
     coord = coord * 128.0;
@@ -1715,8 +1714,11 @@ void FragmentModule::DefineExtensions() {
     if (!profile.is_vulkan) {
 #ifndef __APPLE__
         GLint majorVersion = 0, minorVersion = 0;
-        glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
-        glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
+        if (!profile.is_vulkan) {
+            glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
+            glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
+        }
 
         if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
             out += fragment_shader_precision_OES_2D;
@@ -1795,12 +1797,12 @@ void FragmentModule::DefineBindingsGL() {
 #ifndef __APPLE__
     GLint majorVersion = 0, minorVersion = 0;
     if (!profile.is_vulkan) {
-    glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
-    glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
+        glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
 
+        glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
     }
 
-    if (!profile.is_vulkan && (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+    if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
         out += FSUniformBlockDef;
 //gvx64        out += "layout(binding = 3) uniform highp sampler2D texture_buffer_lut_lf;\n";
         if (GLAD_GL_OES_texture_buffer){ //gxv64
@@ -1933,12 +1935,12 @@ float LookupLightingLUT(int lut_index, int index, float delta) {
 #ifndef __APPLE__
     GLint majorVersion = 0, minorVersion = 0;
     if (!profile.is_vulkan) {
-    glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
-    glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
+        glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
 
+        glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
     }
 
-    if (!profile.is_vulkan && (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+    if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
         // Original texture buffer path
         if (GLAD_GL_OES_texture_buffer){ //gxv64
             out += R"(
@@ -2103,14 +2105,14 @@ vec4 shadowTexture(vec2 uv, float w) {
 
             } else {
 #ifndef __APPLE__
-                // v115-D Pi5/V3DV fix: guard glGetIntegerv against Vulkan context.
                 GLint majorVersion = 0, minorVersion = 0;
                 if (!profile.is_vulkan) {
                     glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
                     glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
                 }
 
-                if (!profile.is_vulkan && OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+                if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
 if (!profile.is_vulkan){
                     out += R"(
 float SampleShadow2D(ivec2 uv, uint z) {
@@ -2257,14 +2259,14 @@ vec4 shadowTextureCube(vec2 uv, float w) {
     )";
             } else {
 #ifndef __APPLE__
-                // v115-D Pi5/V3DV fix: guard glGetIntegerv against Vulkan context.
                 GLint majorVersion = 0, minorVersion = 0;
                 if (!profile.is_vulkan) {
                     glGetIntegerv(GL_MAJOR_VERSION, &majorVersion);
+
                     glGetIntegerv(GL_MINOR_VERSION, &minorVersion);
                 }
 
-                if (!profile.is_vulkan && OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+                if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
                     out += R"(
 vec4 shadowTextureCube(vec2 uv, float w) {
     ivec2 size = imageSize(shadow_texture_px);
