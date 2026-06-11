@@ -7614,9 +7614,15 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         vk::ImageView texture_view = base_view;
         const char* bind_reason = "base_view";
 
-        if (strict_compat && IsValidImageView(copy_view)) {
+        if (strict_compat && direct_feedback && IsValidImageView(copy_view)) {
+            // v115-D Pi5/V3DV fix: only use copy_view in strict_compat when there is a
+            // direct render-feedback loop (the texture IS the current render target).
+            // Previously, copy_view was used for ALL strict_compat draws regardless of
+            // whether feedback was occurring. The copy surface is never populated with
+            // texture data for non-feedback draws, so sampling it produced black textures.
+            // With this fix, non-feedback draws use base_view (the real texture data).
             texture_view = copy_view;
-            bind_reason = "strict_compat_copy";
+            bind_reason = "strict_compat_feedback_copy";
         } else if (direct_feedback) {
             if (IsValidImageView(copy_view)) {
                 texture_view = copy_view;
