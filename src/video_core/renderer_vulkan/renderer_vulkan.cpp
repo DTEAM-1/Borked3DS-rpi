@@ -639,18 +639,18 @@ void main() {
             LOG_INFO(Render_Vulkan,
                      "TRACE_PRESENT strict_compat present_probe_disabled_v114 using_normal_present_frag=1 prefer_owned_present_default=0 pica_accel_draw_command_mux_v115d_expected=1");
         }
-        // v115-D Pi5/V3DV diagnostic: use the solid-color (blue) shader to confirm
-        // whether the present pipeline itself works. If the screen turns blue, the
-        // pipeline is functional and the issue is in VULKAN_PRESENT_FRAG sampling.
-        // If the screen stays black, the pipeline itself is broken (renderpass, viewport, etc).
-        // Remove this block and restore HostShaders::VULKAN_PRESENT_FRAG once confirmed.
+        // v115-D Pi5/V3DV fix: VULKAN_PRESENT_FRAG without ARRAY_DYNAMIC_INDEX (when
+        // IsImageArrayDynamicIndexSupported()=false on V3DV) outputs black — confirmed by
+        // solid-blue test (screen_textures[3] with constant [0] index silently returns 0).
+        // Use STRICT_COMPAT_TEXTURE_PRESENT_FRAG instead on V3DV, which correctly samples
+        // screen_textures[0] and handles the bgr→rgb swizzle for display.
         if (instance.IsImageArrayDynamicIndexSupported()) {
             present_shaders[0] = Compile(HostShaders::VULKAN_PRESENT_FRAG,
                                          vk::ShaderStageFlagBits::eFragment, device, preamble);
         } else {
-            // V3DV: descriptorIndexing not supported — use solid blue to test pipeline
+            // V3DV: use the explicit GLSL present shader that samples screen_textures[0]
             present_shaders[0] =
-                Compile(STRICT_COMPAT_COLOR_PRESENT_FRAG, vk::ShaderStageFlagBits::eFragment, device);
+                Compile(STRICT_COMPAT_TEXTURE_PRESENT_FRAG, vk::ShaderStageFlagBits::eFragment, device);
         }
     } else if (UseColorPresentPipelineProbe()) {
         if (IsPresentTraceEnabled()) {
