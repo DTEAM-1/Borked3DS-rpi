@@ -903,9 +903,13 @@ bool TextureRuntime::BlitTextures(Surface& source, Surface& dest,
                 .subresourceRange = MakeSubresourceRange(params.aspect, blit.src_level),
             },
             vk::ImageMemoryBarrier{
+                // v115-D Pi5/V3DV fix: use eUndefined as oldLayout so the transition is valid
+                // regardless of the actual current layout. The display framebuffer destination
+                // may be in eShaderReadOnlyOptimal (set by AccelerateDisplay before sampling),
+                // not eGeneral. eUndefined discard is always valid since the blit fully overwrites.
                 .srcAccessMask = params.dst_access,
                 .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-                .oldLayout = vk::ImageLayout::eGeneral,
+                .oldLayout = vk::ImageLayout::eUndefined,
                 .newLayout = vk::ImageLayout::eTransferDstOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
