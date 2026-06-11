@@ -1448,16 +1448,24 @@ void RendererVulkan::SwapBuffers() {
         if (second_window) {
             second_window->WaitPresent();
         }
-        // v115-D Pi5/V3DV fix: scheduler.Finish() removed here for the same reason
-        // as RenderToWindow. With use_hw_shader=true, the GPU scheduler may have
-        // pending vertex buffer uploads or pipeline state work that depends on the
-        // CPU IPC thread to advance. Calling Finish() here serializes the render
-        // thread against GPU work that can never complete because the CPU thread
-        // (Sonic's ARM code) is waiting for the render thread to release resources —
-        // a GPU/CPU deadlock. The result is that ProcessCmdList after list 64
-        // never completes, the ARM thread times out, and the process crashes silently.
-        // PrepareRendertarget() and DrawScreens() below provide sufficient
-        // GPU synchronization without a blocking full-drain here.
+        // v115-D Pi5/V3DV fix: scheduler.Finish() was removed here to prevent a
+        // GPU/CPU deadlock with use_hw_shader=true (see RenderToWindow comment).
+        //
+        // However, PrepareRendertarget() below calls AccelerateDisplay() which looks
+        // up surface 0x18046500 (display framebuffer) in the resource cache. The
+        // surface was written by AccelerateDisplayTransfer() which records an async
+        // GPU blit (0x18370800 PICA render target → 0x18046500 display FB). If that
+        // blit has not been submitted to the GPU queue yet, PrepareRendertarget finds
+        // the surface's *old* Vulkan image (black/stale), and that stale image_view is
+        // what DrawScreens samples — producing a permanently black screen.
+        //
+        // scheduler.Flush() (non-blocking) submits all pending GPU commands to the
+        // queue immediately, including the display-transfer blit, without stalling the
+        // CPU thread. The render_ready semaphore in RenderToWindow::scheduler.Flush()
+        // then ensures the final vkQueuePresentKHR waits for all GPU work to complete
+        // before the frame is shown, providing correct synchronisation without the
+        // GPU/CPU deadlock that the removed scheduler.Finish() caused.
+        scheduler.Flush();
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
                      "TRACE_PRESENT strict_compat serialized_before_prepare layout={}x{}",
