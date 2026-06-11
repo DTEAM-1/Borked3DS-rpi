@@ -7755,7 +7755,23 @@ void RasterizerVulkan::ClearAll(bool flush) {
 }
 
 bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
-    return res_cache.AccelerateDisplayTransfer(config);
+    // v115-D Pi5/V3DV diagnostic: log every call to AccelerateDisplayTransfer.
+    // The display is black because the render target (0x18370800) written by vkCmdDrawIndexed
+    // never reaches the display framebuffer (0x18046500). Either this function is never
+    // called (GPU command not triggered), or res_cache fails to find the source surface
+    // and returns false (→ CPU fallback reads stale memory → black).
+    const PAddr src_addr = config.GetPhysicalInputAddress();
+    const PAddr dst_addr = config.GetPhysicalOutputAddress();
+    const bool result = res_cache.AccelerateDisplayTransfer(config);
+    LOG_WARNING(Render_Vulkan,
+                "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
+                " input_fmt={} output_fmt={} flip_v={} result={}",
+                src_addr, dst_addr,
+                static_cast<u32>(config.input_format.Value()),
+                static_cast<u32>(config.output_format.Value()),
+                static_cast<u32>(config.flip_vertically.Value()),
+                static_cast<u32>(result));
+    return result;
 }
 
 bool RasterizerVulkan::AccelerateTextureCopy(const Pica::DisplayTransferConfig& config) {
