@@ -7755,11 +7755,6 @@ void RasterizerVulkan::ClearAll(bool flush) {
 }
 
 bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
-    // v115-D Pi5/V3DV diagnostic: log every call to AccelerateDisplayTransfer.
-    // The display is black because the render target (0x18370800) written by vkCmdDrawIndexed
-    // never reaches the display framebuffer (0x18046500). Either this function is never
-    // called (GPU command not triggered), or res_cache fails to find the source surface
-    // and returns false (→ CPU fallback reads stale memory → black).
     const PAddr src_addr = config.GetPhysicalInputAddress();
     const PAddr dst_addr = config.GetPhysicalOutputAddress();
     const bool result = res_cache.AccelerateDisplayTransfer(config);
@@ -7771,6 +7766,7 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
                 static_cast<u32>(config.output_format.Value()),
                 static_cast<u32>(config.flip_vertically.Value()),
                 static_cast<u32>(result));
+
     return result;
 }
 
@@ -7952,6 +7948,47 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
     screen_info.image_view =
         (use_copy_present_view && IsValidImageView(copy_view)) ? copy_view
                                                               : (IsValidImageView(base_view) ? base_view : copy_view);
+
+    // v115-D Pi5/V3DV fix: transition the display framebuffer surface to
+    // SHADER_READ_ONLY_OPTIMAL before the present sampler uses it.
+    // V3DV samples black/zero from eGeneral layout in the present renderpass
+    // even though the Vulkan spec allows sampling from eGeneral.
+    // This transition is safe: the surface was just written by AccelerateDisplayTransfer
+    // (eGeneral after the blit write_barrier) and will next be read by the fragment shader.
+    // The resource cache handles the transition back to COLOR_ATTACHMENT_OPTIMAL or
+    // eGeneral when the surface is next used as a render target.
+    if (static_cast<bool>(screen_info.image_view)) {
+        const vk::Image surface_image = src_surface.Image();
+        const vk::ImageAspectFlags aspect = src_surface.Aspect();
+        if (static_cast<bool>(surface_image)) {
+            renderpass_cache.EndRendering();
+            scheduler.Record([surface_image, aspect](vk::CommandBuffer cmdbuf) {
+                const vk::ImageMemoryBarrier to_shader_read = {
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite
+                                   | vk::AccessFlagBits::eColorAttachmentWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                    .oldLayout = vk::ImageLayout::eGeneral,
+                    .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = surface_image,
+                    .subresourceRange = {
+                        .aspectMask = aspect,
+                        .baseMipLevel = 0,
+                        .levelCount = VK_REMAINING_MIP_LEVELS,
+                        .baseArrayLayer = 0,
+                        .layerCount = VK_REMAINING_ARRAY_LAYERS,
+                    },
+                };
+                cmdbuf.pipelineBarrier(
+                    vk::PipelineStageFlagBits::eTransfer
+                        | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                    vk::PipelineStageFlagBits::eFragmentShader,
+                    vk::DependencyFlagBits::eByRegion,
+                    {}, {}, to_shader_read);
+            });
+        }
+    }
 
     RememberStrictPresentDisplay(framebuffer_addr, src_params.width, src_params.height,
                                  src_params.stride, src_params.pixel_format, screen_info.texcoords,
