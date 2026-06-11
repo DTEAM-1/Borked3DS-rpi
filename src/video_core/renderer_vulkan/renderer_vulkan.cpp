@@ -274,7 +274,9 @@ constexpr std::array<f32, 4 * 4> MakeOrthographicMatrix(u32 width, u32 height) {
 }
 
 constexpr static std::array<vk::DescriptorSetLayoutBinding, 1> PRESENT_BINDINGS = {{
-    {0, vk::DescriptorType::eCombinedImageSampler, 3, vk::ShaderStageFlagBits::eFragment},
+    // v115-D Pi5/V3DV fix: V3DV does not support descriptorIndexing, so we cannot use
+    // an array of 3 samplers (screen_textures[3]). Changed to a single sampler (count=1).
+    {0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment},
 }};
 
 RendererVulkan::RendererVulkan(Core::System& system, Pica::PicaCore& pica_,
@@ -597,12 +599,15 @@ void main() {
     out_color = vec4(0.0, 0.0, 1.0, 1.0);
 }
 )";
+    // v115-D Pi5/V3DV fix: V3DV does not support sampler arrays (descriptorIndexing=false).
+    // Changed from sampler2D screen_textures[3] (array) to a single sampler2D screen_texture.
+    // The bgr→rgb swizzle and alpha-as-grayscale fallback are preserved.
     static constexpr std::string_view STRICT_COMPAT_TEXTURE_PRESENT_FRAG = R"(#version 450
-layout(set = 0, binding = 0) uniform sampler2D screen_textures[3];
+layout(set = 0, binding = 0) uniform sampler2D screen_texture;
 layout(location = 0) in vec2 frag_tex_coord;
 layout(location = 0) out vec4 out_color;
 void main() {
-    vec4 s = texture(screen_textures[0], frag_tex_coord);
+    vec4 s = texture(screen_texture, frag_tex_coord);
     vec3 rgb = s.bgr;
     if (max(max(rgb.r, rgb.g), rgb.b) < 0.001 && s.a > 0.001) {
         rgb = vec3(s.a, s.a, s.a);
@@ -1044,9 +1049,9 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
             bind_view = owned_view;
         }
         strict_present_set = present_heap.Commit();
-        for (u32 i = 0; i < 3; i++) {
-            update_queue.AddImageSampler(strict_present_set, 0, i, bind_view, sampler);
-        }
+        // v115-D Pi5/V3DV fix: only bind 1 sampler (binding=0, index=0) to match the
+        // single-sampler descriptor layout (descriptorCount=1 in PRESENT_BINDINGS).
+        update_queue.AddImageSampler(strict_present_set, 0, 0, bind_view, sampler);
         update_queue.Flush();
         if (IsPresentTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
