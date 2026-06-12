@@ -6489,8 +6489,13 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return true;
     }
 
-    const bool wait_built = IsStrictCompatEnabled() ? true
-                                                    : (!async_shaders || regs.pipeline.num_vertices <= 6);
+    // v115-E Pi5/V3DV fix: strict_compat used to force wait_built=true, which made every
+    // new pipeline compile synchronously on the emulation thread (10-18s stalls with the
+    // pathologically slow V3D shader compiler). Honor async_shader_compilation in
+    // strict_compat too: not-ready pipelines skip the draw briefly (pop-in) instead of
+    // freezing the game.
+    const bool wait_built =
+        !async_shaders || (!IsStrictCompatEnabled() && regs.pipeline.num_vertices <= 6);
 
     if (consume_if_stage_limited(14, "before_bind_pipeline")) {
         return true;
