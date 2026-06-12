@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <type_traits>
 #include <boost/container/small_vector.hpp>
 #include <boost/range/iterator_range.hpp>
@@ -57,6 +58,19 @@ constexpr auto RangeFromInterval(const auto& map, const auto& interval) {
     default:
         return false;
     }
+}
+
+// v115-E Pi5/V3DV fix: forcing memory re-decode for the UI alpha/intensity formats
+// destroys GPU-composited content (e.g. glyphs the game renders into its font atlas),
+// which made dialog text fully transparent. The copy/reinterpretation validation paths
+// are allowed again by default; set BORKED3DS_V3DV_FORCE_SENSITIVE_DECODE=1 to restore
+// the previous forced-decode behavior for A/B testing.
+[[nodiscard]] inline bool ForcePi5SensitiveDecode() {
+    static const bool force = []() {
+        const char* env = std::getenv("BORKED3DS_V3DV_FORCE_SENSITIVE_DECODE");
+        return env != nullptr && env[0] == '1';
+    }();
+    return force;
 }
 
 template <class T>
@@ -1110,18 +1124,20 @@ void RasterizerCache<T>::ValidateSurface(SurfaceId surface_id, PAddr addr, u32 s
         // Look for a valid surface to copy from.
         const SurfaceParams params = surface.FromInterval(interval);
         const bool pi5_sensitive_surface = IsPi5SensitivePixelFormat(surface.pixel_format);
+        const bool pi5_force_decode = pi5_sensitive_surface && ForcePi5SensitiveDecode();
 
         if (pi5_sensitive_surface) {
             static int trace_budget = 128;
             if (trace_budget-- > 0) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_PI5_UI validate_force_decode addr={:#x} size={} pixel_format={} level={} interval=[{:#x},{:#x})",
+                         "TRACE_PI5_UI validate_force_decode addr={:#x} size={} pixel_format={} level={} interval=[{:#x},{:#x}) force_decode={}",
                          params.addr, params.size, static_cast<u32>(surface.pixel_format), level,
-                         boost::icl::first(interval), boost::icl::last_next(interval));
+                         boost::icl::first(interval), boost::icl::last_next(interval),
+                         pi5_force_decode);
             }
         }
 
-        const SurfaceId copy_surface_id = pi5_sensitive_surface
+        const SurfaceId copy_surface_id = pi5_force_decode
                                               ? SurfaceId{}
                                               : FindMatch<MatchFlags::Copy>(params, ScaleMatch::Ignore, interval);
         if (copy_surface_id && copy_surface_id != surface_id) {
@@ -1134,7 +1150,7 @@ void RasterizerCache<T>::ValidateSurface(SurfaceId surface_id, PAddr addr, u32 s
 
         // Try to find surface in cache with different format
         // that can can be reinterpreted to the requested format.
-        if (!pi5_sensitive_surface && ValidateByReinterpretation(surface, params, interval)) {
+        if (!pi5_force_decode && ValidateByReinterpretation(surface, params, interval)) {
             notify_validated(interval);
             continue;
         }
