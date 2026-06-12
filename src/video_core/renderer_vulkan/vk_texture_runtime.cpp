@@ -7,6 +7,7 @@
 #include <boost/container/static_vector.hpp>
 
 #include <atomic>
+#include <vector>
 
 #include "common/literals.h"
 #include "common/profiling.h"
@@ -247,8 +248,11 @@ bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
             return false;
         }
         for (size_t i = 0, o = 0; i < src.size(); i += 2, o += 4) {
-            const u8 intensity = src[i + 0];
-            const u8 alpha = src[i + 1];
+            // v115-E fix: native 3DS IA8 stores alpha in the first byte and intensity in
+            // the second, matching LookupTexelInTile in texture_decode.cpp. The previous
+            // order was swapped.
+            const u8 alpha = src[i + 0];
+            const u8 intensity = src[i + 1];
             dst[o + 0] = intensity;
             dst[o + 1] = intensity;
             dst[o + 2] = intensity;
@@ -1153,25 +1157,27 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
                      vk::to_string(params.aspect), res_scale);
         }
 
-        // v115-E Pi5/V3DV fix: RasterizerCache sizes the staging buffer with the
+        // v115-E Pi5/V3DV fix (rev2): RasterizerCache sizes the staging buffer with the
         // *internal* bytes-per-pixel (4 for the RGBA8-promoted UI formats), so the raw
         // 1-2 bpp payload written by DecodeTexture only fills the first
-        // expected_source_size bytes. Accept an oversized staging and trim both spans
-        // instead of skipping the expansion, which previously uploaded raw A8/I8 bytes
-        // reinterpreted as RGBA8 and produced invisible or corrupted UI text.
-        if (expected_source_size != 0 && staging.size >= expected_source_size) {
-            auto converted_staging = runtime->FindStaging(expanded_size, true);
-            if (ExpandPi5UIUpload(converted_staging.mapped.first(expanded_size),
-                                  staging.mapped.first(expected_source_size), pixel_format)) {
-                effective_upload.buffer_offset = converted_staging.offset;
-                effective_staging = converted_staging;
+        // expected_source_size bytes. Requesting a second staging here is unsafe: the
+        // stream buffer only consumes its region at record time, so FindStaging returns
+        // a region that aliases the source and the expansion corrupts itself while
+        // writing (observed as old_offset == new_offset in the traces). Instead, copy
+        // the raw payload to a temporary CPU buffer and expand back into the original
+        // oversized staging in place.
+        if (expected_source_size != 0 && staging.size >= expanded_size &&
+            staging.size >= expected_source_size) {
+            const std::vector<u8> raw_payload(staging.mapped.begin(),
+                                              staging.mapped.begin() + expected_source_size);
+            if (ExpandPi5UIUpload(staging.mapped.first(expanded_size),
+                                  std::span<const u8>(raw_payload), pixel_format)) {
                 if (trace_pi5_ui) {
                     LOG_INFO(Render_Vulkan,
-                             "TRACE_PI5_UI upload_expanded pixel_format={} src_size={} dst_size={} "
-                             "old_offset={} new_offset={} width={} height={}",
-                             VideoCore::PixelFormatAsString(pixel_format), staging.size,
-                             effective_staging.size, upload.buffer_offset,
-                             effective_upload.buffer_offset, upload_width, upload_height);
+                             "TRACE_PI5_UI upload_expanded_in_place pixel_format={} raw_size={} "
+                             "expanded_size={} offset={} width={} height={}",
+                             VideoCore::PixelFormatAsString(pixel_format), expected_source_size,
+                             expanded_size, upload.buffer_offset, upload_width, upload_height);
                 }
             } else {
                 LOG_WARNING(Render_Vulkan,
