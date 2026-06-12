@@ -603,11 +603,10 @@ layout(location = 0) in vec2 frag_tex_coord;
 layout(location = 0) out vec4 out_color;
 void main() {
     vec4 s = texture(screen_textures[0], frag_tex_coord);
-    vec3 rgb = s.bgr;
-    if (max(max(rgb.r, rgb.g), rgb.b) < 0.001 && s.a > 0.001) {
-        rgb = vec3(s.a, s.a, s.a);
-    }
-    out_color = vec4(rgb, 1.0);
+    // v115-E Pi5/V3DV fix: the accelerated display path samples the surface-cache
+    // texture, which is already in RGB order. The previous bgr swizzle and the
+    // alpha->gray fallback were debugging-era artifacts that distorted all colors.
+    out_color = vec4(s.rgb, 1.0);
 }
 )";
     present_vertex_shader =
