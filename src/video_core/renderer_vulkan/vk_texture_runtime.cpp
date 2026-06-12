@@ -6,6 +6,7 @@
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <vector>
 
@@ -1173,11 +1174,14 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
             if (ExpandPi5UIUpload(staging.mapped.first(expanded_size),
                                   std::span<const u8>(raw_payload), pixel_format)) {
                 if (trace_pi5_ui) {
+                    const size_t nonzero_bytes = static_cast<size_t>(std::count_if(
+                        raw_payload.begin(), raw_payload.end(), [](u8 b) { return b != 0; }));
                     LOG_INFO(Render_Vulkan,
                              "TRACE_PI5_UI upload_expanded_in_place pixel_format={} raw_size={} "
-                             "expanded_size={} offset={} width={} height={}",
+                             "expanded_size={} offset={} width={} height={} nonzero_bytes={}",
                              VideoCore::PixelFormatAsString(pixel_format), expected_source_size,
-                             expanded_size, upload.buffer_offset, upload_width, upload_height);
+                             expanded_size, upload.buffer_offset, upload_width, upload_height,
+                             nonzero_bytes);
                 }
             } else {
                 LOG_WARNING(Render_Vulkan,
