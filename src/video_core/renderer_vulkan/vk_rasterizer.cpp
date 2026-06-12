@@ -7764,14 +7764,16 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
     const PAddr src_addr = config.GetPhysicalInputAddress();
     const PAddr dst_addr = config.GetPhysicalOutputAddress();
     const bool result = res_cache.AccelerateDisplayTransfer(config);
-    LOG_WARNING(Render_Vulkan,
-                "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
-                " input_fmt={} output_fmt={} flip_v={} result={}",
-                src_addr, dst_addr,
-                static_cast<u32>(config.input_format.Value()),
-                static_cast<u32>(config.output_format.Value()),
-                static_cast<u32>(config.flip_vertically.Value()),
-                static_cast<u32>(result));
+    if (IsDrawTraceEnabled()) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
+                    " input_fmt={} output_fmt={} flip_v={} result={}",
+                    src_addr, dst_addr,
+                    static_cast<u32>(config.input_format.Value()),
+                    static_cast<u32>(config.output_format.Value()),
+                    static_cast<u32>(config.flip_vertically.Value()),
+                    static_cast<u32>(result));
+    }
 
     return result;
 }
