@@ -1481,6 +1481,16 @@ void RasterizerCache<T>::InvalidateRegion(PAddr addr, u32 size, SurfaceId region
 
     boost::container::small_vector<SurfaceId, 4> remove_surfaces;
     ForEachSurfaceInRegion(addr, size, [&](SurfaceId surface_id, Surface& surface) {
+        if (IsPi5SensitivePixelFormat(surface.pixel_format)) {
+            static int trace_budget = 96;
+            if (trace_budget-- > 0) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PI5_UI invalidate_sensitive addr={:#x} size={} surface_addr={:#x} "
+                         "pixel_format={} gpu_owner={}",
+                         addr, size, surface.addr, static_cast<u32>(surface.pixel_format),
+                         static_cast<bool>(region_owner_id));
+            }
+        }
         if (surface_id == region_owner_id) {
             return;
         }
