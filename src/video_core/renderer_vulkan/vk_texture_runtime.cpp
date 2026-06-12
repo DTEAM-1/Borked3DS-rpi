@@ -1153,9 +1153,16 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
                      vk::to_string(params.aspect), res_scale);
         }
 
-        if (expected_source_size != 0 && staging.size == expected_source_size) {
+        // v115-E Pi5/V3DV fix: RasterizerCache sizes the staging buffer with the
+        // *internal* bytes-per-pixel (4 for the RGBA8-promoted UI formats), so the raw
+        // 1-2 bpp payload written by DecodeTexture only fills the first
+        // expected_source_size bytes. Accept an oversized staging and trim both spans
+        // instead of skipping the expansion, which previously uploaded raw A8/I8 bytes
+        // reinterpreted as RGBA8 and produced invisible or corrupted UI text.
+        if (expected_source_size != 0 && staging.size >= expected_source_size) {
             auto converted_staging = runtime->FindStaging(expanded_size, true);
-            if (ExpandPi5UIUpload(converted_staging.mapped, staging.mapped, pixel_format)) {
+            if (ExpandPi5UIUpload(converted_staging.mapped.first(expanded_size),
+                                  staging.mapped.first(expected_source_size), pixel_format)) {
                 effective_upload.buffer_offset = converted_staging.offset;
                 effective_staging = converted_staging;
                 if (trace_pi5_ui) {
