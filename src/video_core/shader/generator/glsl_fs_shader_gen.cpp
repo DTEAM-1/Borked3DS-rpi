@@ -3,6 +3,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
+
 #ifndef __APPLE__
 #include <glad/gl.h>
 #include "video_core/renderer_opengl/gl_driver.h"
@@ -604,6 +606,19 @@ void FragmentModule::AppendAlphaCombiner(Pica::TexturingRegs::TevStageConfig::Op
 }
 
 void FragmentModule::WriteAlphaTestCondition(FramebufferRegs::CompareFunc func) {
+    // v115-E debug probe: BORKED3DS_FS_DISABLE_ALPHA_TEST=1 turns the PICA alpha test
+    // into a no-op so alpha-tested draws (e.g. font glyphs) can never be discarded.
+    // Used to discriminate "alpha reaches the fragment shader as zero" from "the draw
+    // output never lands" when text is invisible on one backend only.
+    static const bool disable_alpha_test = []() {
+        const char* env = std::getenv("BORKED3DS_FS_DISABLE_ALPHA_TEST");
+        return env != nullptr && env[0] == '1';
+    }();
+    if (disable_alpha_test) {
+        out += "// alpha test disabled by BORKED3DS_FS_DISABLE_ALPHA_TEST probe\n";
+        return;
+    }
+
     const auto get_cond = [func]() -> std::string {
         using CompareFunc = Pica::FramebufferRegs::CompareFunc;
         switch (func) {
