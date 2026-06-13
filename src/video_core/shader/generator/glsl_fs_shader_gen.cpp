@@ -606,15 +606,14 @@ void FragmentModule::AppendAlphaCombiner(Pica::TexturingRegs::TevStageConfig::Op
 }
 
 void FragmentModule::WriteAlphaTestCondition(FramebufferRegs::CompareFunc func) {
-    // v115-E debug probe: BORKED3DS_FS_DISABLE_ALPHA_TEST=1 turns the PICA alpha test
-    // into a no-op so alpha-tested draws (e.g. font glyphs) can never be discarded.
-    // Used to discriminate "alpha reaches the fragment shader as zero" from "the draw
-    // output never lands" when text is invisible on one backend only.
-    static const bool disable_alpha_test = []() {
-        const char* env = std::getenv("BORKED3DS_FS_DISABLE_ALPHA_TEST");
-        return env != nullptr && env[0] == '1';
-    }();
-    if (disable_alpha_test) {
+    // v115-E debug probe (rev2): BORKED3DS_FS_DISABLE_ALPHA_TEST=1 turns the PICA alpha
+    // test into a no-op so alpha-tested draws (e.g. font glyphs) can never be discarded.
+    // getenv is read on every call (NOT cached in a function-local static) because the
+    // first invocation can happen before the launcher environment is fully applied.
+    const char* disable_env = std::getenv("BORKED3DS_FS_DISABLE_ALPHA_TEST");
+    if (disable_env != nullptr && disable_env[0] == '1') {
+        LOG_INFO(Render, "TRACE_FS alpha_test_disabled_by_probe func={}",
+                 static_cast<u32>(func));
         out += "// alpha test disabled by BORKED3DS_FS_DISABLE_ALPHA_TEST probe\n";
         return;
     }
