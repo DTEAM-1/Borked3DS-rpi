@@ -128,7 +128,7 @@ std::atomic<u32> g_pi5_ui_surface_trace_budget{128};
     return static_cast<u8>((value << 4) | value);
 }
 
-[[nodiscard]] constexpr u32 SourceBytesPerPixel(VideoCore::PixelFormat pixel_format) {
+[[nodiscard]] [[maybe_unused]] constexpr u32 SourceBytesPerPixel(VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8:
     case VideoCore::PixelFormat::I8:
@@ -142,7 +142,7 @@ std::atomic<u32> g_pi5_ui_surface_trace_budget{128};
     }
 }
 
-[[nodiscard]] constexpr u32 ComputeExpectedPi5UploadSize(VideoCore::PixelFormat pixel_format,
+[[nodiscard]] [[maybe_unused]] constexpr u32 ComputeExpectedPi5UploadSize(VideoCore::PixelFormat pixel_format,
                                                          u32 width, u32 height) {
     const u32 pixel_count = width * height;
     switch (pixel_format) {
@@ -215,7 +215,7 @@ std::atomic<u32> g_pi5_ui_surface_trace_budget{128};
     }
 }
 
-bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
+[[maybe_unused]] bool ExpandPi5UIUpload(std::span<u8> dst, std::span<const u8> src,
                        VideoCore::PixelFormat pixel_format) {
     switch (pixel_format) {
     case VideoCore::PixelFormat::A8: {
@@ -1137,67 +1137,26 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
                  staging.size, upload.buffer_offset, vk::to_string(params.aspect));
     }
 
-    if (NeedsPi5UIUploadExpansion(pixel_format)) {
-        const u32 upload_width = upload.texture_rect.GetWidth();
-        const u32 upload_height = upload.texture_rect.GetHeight();
-        const u32 expected_source_size =
-            ComputeExpectedPi5UploadSize(pixel_format, upload_width, upload_height);
-        const u32 expanded_size = upload_width * upload_height * 4;
-        const bool trace_pi5_ui = ConsumeTraceBudget(g_pi5_ui_upload_trace_budget);
-
-        if (trace_pi5_ui) {
-            LOG_INFO(Render_Vulkan,
-                     "TRACE_PI5_UI upload_begin pixel_format={} level={} rect=({}, {}, {}, {}) "
-                     "src_size={} expected_size={} expanded_size={} native_format={} "
-                     "effective_format={} current_offset={} aspect={} res_scale={}",
-                     VideoCore::PixelFormatAsString(pixel_format), upload.texture_level,
-                     upload.texture_rect.left, upload.texture_rect.bottom,
-                     upload.texture_rect.right, upload.texture_rect.top, staging.size,
-                     expected_source_size, expanded_size, vk::to_string(traits.native),
-                     vk::to_string(effective_format), upload.buffer_offset,
-                     vk::to_string(params.aspect), res_scale);
-        }
-
-        // v115-E Pi5/V3DV fix (rev2): RasterizerCache sizes the staging buffer with the
-        // *internal* bytes-per-pixel (4 for the RGBA8-promoted UI formats), so the raw
-        // 1-2 bpp payload written by DecodeTexture only fills the first
-        // expected_source_size bytes. Requesting a second staging here is unsafe: the
-        // stream buffer only consumes its region at record time, so FindStaging returns
-        // a region that aliases the source and the expansion corrupts itself while
-        // writing (observed as old_offset == new_offset in the traces). Instead, copy
-        // the raw payload to a temporary CPU buffer and expand back into the original
-        // oversized staging in place.
-        if (expected_source_size != 0 && staging.size >= expanded_size &&
-            staging.size >= expected_source_size) {
-            const std::vector<u8> raw_payload(staging.mapped.begin(),
-                                              staging.mapped.begin() + expected_source_size);
-            if (ExpandPi5UIUpload(staging.mapped.first(expanded_size),
-                                  std::span<const u8>(raw_payload), pixel_format)) {
-                if (trace_pi5_ui) {
-                    const size_t nonzero_bytes = static_cast<size_t>(std::count_if(
-                        raw_payload.begin(), raw_payload.end(), [](u8 b) { return b != 0; }));
-                    LOG_INFO(Render_Vulkan,
-                             "TRACE_PI5_UI upload_expanded_in_place pixel_format={} raw_size={} "
-                             "expanded_size={} offset={} width={} height={} nonzero_bytes={}",
-                             VideoCore::PixelFormatAsString(pixel_format), expected_source_size,
-                             expanded_size, upload.buffer_offset, upload_width, upload_height,
-                             nonzero_bytes);
-                }
-            } else {
-                LOG_WARNING(Render_Vulkan,
-                            "TRACE_PI5_UI upload_expand_failed pixel_format={} src_size={} "
-                            "expected_size={} expanded_size={} width={} height={}",
-                            VideoCore::PixelFormatAsString(pixel_format), staging.size,
-                            expected_source_size, expanded_size, upload_width, upload_height);
-            }
-        } else if (trace_pi5_ui) {
-            LOG_WARNING(Render_Vulkan,
-                        "TRACE_PI5_UI upload_skipped_size_mismatch pixel_format={} src_size={} "
-                        "expected_size={} width={} height={} native_format={} effective_format={}",
-                        VideoCore::PixelFormatAsString(pixel_format), staging.size,
-                        expected_source_size, upload_width, upload_height,
-                        vk::to_string(traits.native), vk::to_string(effective_format));
-        }
+    // v115-E Pi5/V3DV fix (rev3): the Pi5 UI expansion is removed entirely. The codec's
+    // UNSWIZZLE/LINEAR tables in texture_codec.h pass converted=true for IA8/I8/A8/IA4/
+    // I4/A4, so DecodeTexture already fills the staging with valid 4-byte RGBA pixels
+    // for these formats. Expanding here reinterpreted that valid RGBA as raw packed
+    // data and corrupted the upload (shifted/squeezed/garbled UI images). The staging
+    // is uploaded as-is. The nonzero_bytes probe is kept to verify whether the source
+    // memory actually contained data at upload time.
+    if (NeedsPi5UIUploadExpansion(pixel_format) &&
+        ConsumeTraceBudget(g_pi5_ui_upload_trace_budget)) {
+        const size_t probe_len = std::min<size_t>(staging.mapped.size(), staging.size);
+        const auto probe = staging.mapped.first(probe_len);
+        const size_t nonzero_bytes = static_cast<size_t>(
+            std::count_if(probe.begin(), probe.end(), [](u8 b) { return b != 0; }));
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PI5_UI upload_passthrough pixel_format={} level={} rect=({}, {}, {}, {}) "
+                 "staging_size={} nonzero_bytes={} native_format={} effective_format={}",
+                 VideoCore::PixelFormatAsString(pixel_format), upload.texture_level,
+                 upload.texture_rect.left, upload.texture_rect.bottom, upload.texture_rect.right,
+                 upload.texture_rect.top, staging.size, nonzero_bytes,
+                 vk::to_string(traits.native), vk::to_string(effective_format));
     }
 
     if (NeedsPi5UIUploadExpansion(pixel_format) &&
