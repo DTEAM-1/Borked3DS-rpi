@@ -263,6 +263,21 @@ vec4 secondary_fragment_color = vec4(0.0);
                 out += "color = vec4(1.0, 0.0, 1.0, 1.0);\n";
             }
         }
+        // v115-E debug probe: BORKED3DS_FS_HIGHLIGHT_TEX=1 keeps the rest of the scene
+        // untouched but forces any fragment whose tex0 sample carries a non-negligible
+        // contribution to opaque bright white. Non-chromatic, presence/brightness signal:
+        // if bright letter shapes appear in the dialog box, the text draws DO produce
+        // visible fragments and the defect is in the normal color/blend path; if the box
+        // stays dark with no bright shapes, the text fragments are not being produced.
+        {
+            const char* hl_env = std::getenv("BORKED3DS_FS_HIGHLIGHT_TEX");
+            if (hl_env != nullptr && hl_env[0] == '1') {
+                out += "{ vec4 _hl = sampleTexUnit0();\n"
+                       "  if (max(max(_hl.r, _hl.g), max(_hl.b, _hl.a)) > 0.05) {\n"
+                       "    color = vec4(1.0, 1.0, 1.0, 1.0);\n"
+                       "  } }\n";
+            }
+        }
     }
 
     WriteLogicOp();
