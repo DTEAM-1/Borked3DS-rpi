@@ -3,7 +3,9 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdio>
 #include <cstdlib>
+#include <functional>
 
 #ifndef __APPLE__
 #include <glad/gl.h>
@@ -283,6 +285,27 @@ vec4 secondary_fragment_color = vec4(0.0);
     WriteLogicOp();
 
     out += '}';
+
+    // v115-E debug probe: BORKED3DS_DUMP_FS=1 writes each generated fragment shader to
+    // /tmp/borked3ds_fs_<alphafunc>_<hash>.glsl so the exact GLSL for the text draws
+    // (alpha_test_func=6) can be read by hand to locate where the glyph alpha is computed.
+    {
+        const char* dump_env = std::getenv("BORKED3DS_DUMP_FS");
+        if (dump_env != nullptr && dump_env[0] == '1') {
+            const std::size_t hash = std::hash<std::string>{}(out);
+            const u32 atf = static_cast<u32>(config.framebuffer.alpha_test_func.Value());
+            const std::string path =
+                fmt::format("/tmp/borked3ds_fs_atf{}_{:016x}.glsl", atf, hash);
+            std::FILE* f = std::fopen(path.c_str(), "wb");
+            if (f != nullptr) {
+                std::fwrite(out.data(), 1, out.size(), f);
+                std::fclose(f);
+                LOG_INFO(Render, "TRACE_FS dumped alpha_test_func={} bytes={} path={}", atf,
+                         out.size(), path);
+            }
+        }
+    }
+
     return out;
 }
 
