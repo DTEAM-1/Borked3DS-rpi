@@ -6489,13 +6489,8 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return true;
     }
 
-    // v115-E Pi5/V3DV fix: strict_compat used to force wait_built=true, which made every
-    // new pipeline compile synchronously on the emulation thread (10-18s stalls with the
-    // pathologically slow V3D shader compiler). Honor async_shader_compilation in
-    // strict_compat too: not-ready pipelines skip the draw briefly (pop-in) instead of
-    // freezing the game.
-    const bool wait_built =
-        !async_shaders || (!IsStrictCompatEnabled() && regs.pipeline.num_vertices <= 6);
+    const bool wait_built = IsStrictCompatEnabled() ? true
+                                                    : (!async_shaders || regs.pipeline.num_vertices <= 6);
 
     if (consume_if_stage_limited(14, "before_bind_pipeline")) {
         return true;
@@ -7769,16 +7764,14 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
     const PAddr src_addr = config.GetPhysicalInputAddress();
     const PAddr dst_addr = config.GetPhysicalOutputAddress();
     const bool result = res_cache.AccelerateDisplayTransfer(config);
-    if (IsDrawTraceEnabled()) {
-        LOG_WARNING(Render_Vulkan,
-                    "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
-                    " input_fmt={} output_fmt={} flip_v={} result={}",
-                    src_addr, dst_addr,
-                    static_cast<u32>(config.input_format.Value()),
-                    static_cast<u32>(config.output_format.Value()),
-                    static_cast<u32>(config.flip_vertically.Value()),
-                    static_cast<u32>(result));
-    }
+    LOG_WARNING(Render_Vulkan,
+                "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
+                " input_fmt={} output_fmt={} flip_v={} result={}",
+                src_addr, dst_addr,
+                static_cast<u32>(config.input_format.Value()),
+                static_cast<u32>(config.output_format.Value()),
+                static_cast<u32>(config.flip_vertically.Value()),
+                static_cast<u32>(result));
 
     return result;
 }
@@ -8063,6 +8056,38 @@ void RasterizerVulkan::SyncColorWriteMask() {
     }
 
     pipeline_info.blending.color_write_mask = color_mask;
+
+    // v115-E debug probe: log the effective blend state whenever it changes, to diagnose
+    // invisible UI layers (transparent text / 2D images). A color_write_mask that drops
+    // channels, blend_enable off when the game expects blending, or a src/dst factor pair
+    // that collapses the output to zero would all manifest as "present but invisible".
+    {
+        static u32 last_sig = 0xFFFFFFFFu;
+        const auto& bl = regs.framebuffer.output_merger.alpha_blending;
+        const u32 sig =
+            (static_cast<u32>(regs.framebuffer.output_merger.alphablend_enable) << 0) |
+            (static_cast<u32>(color_mask & 0xF) << 1) |
+            (static_cast<u32>(bl.factor_source_rgb.Value()) << 5) |
+            (static_cast<u32>(bl.factor_dest_rgb.Value()) << 10) |
+            (static_cast<u32>(bl.factor_source_a.Value()) << 15) |
+            (static_cast<u32>(bl.factor_dest_a.Value()) << 20) |
+            (static_cast<u32>(regs.framebuffer.framebuffer.allow_color_write != 0) << 25);
+        if (sig != last_sig) {
+            last_sig = sig;
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_BLEND blend_enable={} allow_color_write={} color_write_mask={:#x} "
+                     "src_rgb={} dst_rgb={} src_a={} dst_a={} eq_rgb={} eq_a={}",
+                     static_cast<u32>(regs.framebuffer.output_merger.alphablend_enable),
+                     static_cast<u32>(regs.framebuffer.framebuffer.allow_color_write != 0),
+                     color_mask,
+                     static_cast<u32>(bl.factor_source_rgb.Value()),
+                     static_cast<u32>(bl.factor_dest_rgb.Value()),
+                     static_cast<u32>(bl.factor_source_a.Value()),
+                     static_cast<u32>(bl.factor_dest_a.Value()),
+                     static_cast<u32>(bl.blend_equation_rgb.Value()),
+                     static_cast<u32>(bl.blend_equation_a.Value()));
+        }
+    }
 }
 
 void RasterizerVulkan::SyncStencilWriteMask() {
