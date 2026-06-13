@@ -252,6 +252,17 @@ vec4 secondary_fragment_color = vec4(0.0);
         out += "combiner_output = byteround(combiner_output);\n";
         WriteBlending();
         out += "color = combiner_output;\n";
+        // v115-E debug probe: BORKED3DS_FS_FORCE_OUTPUT=1 overrides the final color with
+        // opaque magenta, bypassing the TEV combiner result and any color blending logic
+        // emitted above. If magenta appears where text should be, the draw reaches the
+        // framebuffer and the defect is in the color/blend computation; if nothing
+        // appears, the draw never lands (color mask / depth / viewport / geometry).
+        {
+            const char* force_env = std::getenv("BORKED3DS_FS_FORCE_OUTPUT");
+            if (force_env != nullptr && force_env[0] == '1') {
+                out += "color = vec4(1.0, 0.0, 1.0, 1.0);\n";
+            }
+        }
     }
 
     WriteLogicOp();
