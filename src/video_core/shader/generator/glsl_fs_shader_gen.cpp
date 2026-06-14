@@ -265,6 +265,20 @@ vec4 secondary_fragment_color = vec4(0.0);
                 out += "color = vec4(1.0, 0.0, 1.0, 1.0);\n";
             }
         }
+        // v115-E debug probe: BORKED3DS_FS_SHOW_ALPHA=1 displays the final combiner alpha
+        // as opaque grayscale (luminance = alpha), only for alpha-tested draws (the text
+        // layer uses alpha_test_func=6). Non-chromatic presence/brightness signal: if the
+        // glyph shapes appear bright, combiner_output.a is correct and the defect is in the
+        // RGB/output path; if the text area stays dark, the alpha collapses in the TEV
+        // cascade (suspect: const_color / primary-color alpha delivery on the Vulkan path).
+        {
+            const char* show_a = std::getenv("BORKED3DS_FS_SHOW_ALPHA");
+            if (show_a != nullptr && show_a[0] == '1' &&
+                config.framebuffer.alpha_test_func == FramebufferRegs::CompareFunc::GreaterThan) {
+                out += "color = vec4(combiner_output.a, combiner_output.a, "
+                       "combiner_output.a, 1.0);\n";
+            }
+        }
         // v115-E debug probe: BORKED3DS_FS_HIGHLIGHT_TEX=1 keeps the rest of the scene
         // untouched but forces any fragment whose tex0 sample carries a non-negligible
         // contribution to opaque bright white. Non-chromatic, presence/brightness signal:
