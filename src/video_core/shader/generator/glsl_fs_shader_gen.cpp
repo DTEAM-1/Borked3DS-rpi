@@ -275,8 +275,13 @@ vec4 secondary_fragment_color = vec4(0.0);
             const char* show_a = std::getenv("BORKED3DS_FS_SHOW_ALPHA");
             if (show_a != nullptr && show_a[0] == '1' &&
                 config.framebuffer.alpha_test_func == FramebufferRegs::CompareFunc::GreaterThan) {
-                out += "color = vec4(combiner_output.a, combiner_output.a, "
-                       "combiner_output.a, 1.0);\n";
+                // Force opaque output on a neutral mid-gray field so the signal is legible
+                // regardless of the game background (the dialog box is white). High alpha ->
+                // black, low alpha -> mid-gray. Black glyph shapes on a gray box mean the
+                // alpha is present; a uniform gray box means the alpha has collapsed.
+                out += "{ float _a = clamp(combiner_output.a, 0.0, 1.0);\n"
+                       "  float _l = mix(0.5, 0.0, step(0.25, _a));\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
             }
         }
         // v115-E debug probe: BORKED3DS_FS_HIGHLIGHT_TEX=1 keeps the rest of the scene
