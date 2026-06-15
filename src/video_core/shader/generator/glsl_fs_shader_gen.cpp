@@ -295,29 +295,25 @@ vec4 secondary_fragment_color = vec4(0.0);
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
             }
         }
-        // v115-E debug probe: BORKED3DS_FS_SHOW_UV=1 forces every draw to opaque grayscale
-        // whose luminance encodes the interpolated texcoord0.x fed to the fragment from the
-        // vertex shader (fract so out-of-range values still read). NON-CHROMATIC by design
-        // (luminance only, colorblind-safe): across a textured quad, a VARYING brightness
-        // (a visible left-to-right gradient/banding) means texcoord0 changes per fragment, so
-        // the VS output / vertex input reg2 is alive and the glyph defect is downstream
-        // (sampler wrap/scale or which atlas region is sampled). A FLAT uniform field means
-        // texcoord0 is constant for every fragment, i.e. vs_in_reg2 (the texcoord input
-        // attribute) is not being loaded -> defect is in vertex-attribute setup
-        // (SetupVertexArray binding), NOT in the shader or the atlas. Toggle SHOW_UV_AXIS=1
-        // to encode texcoord0.y instead of .x, to confirm both axes independently.
+        // v115-E debug probe: BORKED3DS_FS_SHOW_PRIMARY_ALPHA=1 forces every draw to an opaque
+        // grayscale field whose luminance encodes ONLY primary_color.a (the vertex/per-vertex
+        // color alpha that the VS produced from vertex input attribute reg1). NON-CHROMATIC
+        // (luminance only, colorblind-safe). This isolates the vertex-color alpha from the
+        // texture alpha, to settle whether the text discard is caused by the vertex side.
+        // The text TEV computes final alpha = primary_color.a * tex0.a (confirmed from the
+        // dumped atf6 fragment shaders), so if primary_color.a is 0 the whole product is 0 and
+        // every glyph fragment is discarded by the alpha test even though the atlas (tex0.a) is
+        // correct. Reading: a WHITE/BRIGHT dialog box => primary_color.a == 1 (vertex alpha is
+        // fine, defect is downstream in tex0.a sampling); a BLACK/dark box => primary_color.a == 0
+        // => the vertex color alpha is being lost. On Vulkan this happens when a 3-component
+        // (RGB) vertex color attribute is fed to the pipeline and its missing W/alpha component
+        // defaults to 0 instead of 1 (the classic GL-vs-Vulkan default-W difference), which would
+        // also explain the washed-out colors and the frozen progress bar. bright = alpha present.
         {
-            const char* show_uv = std::getenv("BORKED3DS_FS_SHOW_UV");
-            if (show_uv != nullptr && show_uv[0] == '1') {
-                const char* uv_axis = std::getenv("BORKED3DS_FS_SHOW_UV_AXIS");
-                const bool use_y = (uv_axis != nullptr && uv_axis[0] == '1');
-                if (use_y) {
-                    out += "{ float _u = fract(abs(texcoord0.y));\n"
-                           "  color = vec4(_u, _u, _u, 1.0); }\n";
-                } else {
-                    out += "{ float _u = fract(abs(texcoord0.x));\n"
-                           "  color = vec4(_u, _u, _u, 1.0); }\n";
-                }
+            const char* show_pa = std::getenv("BORKED3DS_FS_SHOW_PRIMARY_ALPHA");
+            if (show_pa != nullptr && show_pa[0] == '1') {
+                out += "{ float _pa = clamp(primary_color.a, 0.0, 1.0);\n"
+                       "  color = vec4(_pa, _pa, _pa, 1.0); }\n";
             }
         }
     }
