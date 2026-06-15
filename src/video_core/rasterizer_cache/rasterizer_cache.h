@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include <cstdlib>
 #include <type_traits>
 #include <boost/container/small_vector.hpp>
 #include <boost/range/iterator_range.hpp>
@@ -58,19 +57,6 @@ constexpr auto RangeFromInterval(const auto& map, const auto& interval) {
     default:
         return false;
     }
-}
-
-// v115-E Pi5/V3DV fix: forcing memory re-decode for the UI alpha/intensity formats
-// destroys GPU-composited content (e.g. glyphs the game renders into its font atlas),
-// which made dialog text fully transparent. The copy/reinterpretation validation paths
-// are allowed again by default; set BORKED3DS_V3DV_FORCE_SENSITIVE_DECODE=1 to restore
-// the previous forced-decode behavior for A/B testing.
-[[nodiscard]] inline bool ForcePi5SensitiveDecode() {
-    static const bool force = []() {
-        const char* env = std::getenv("BORKED3DS_V3DV_FORCE_SENSITIVE_DECODE");
-        return env != nullptr && env[0] == '1';
-    }();
-    return force;
 }
 
 template <class T>
@@ -739,6 +725,32 @@ SurfaceId RasterizerCache<T>::GetTextureSurface(const Pica::Texture::TextureInfo
         return NULL_SURFACE_ID;
     }
 
+    // v115-E fix: Pi5-sensitive texture formats (A8/I8/IA8/IA4/I4/A4 - the font/UI atlases)
+    // are written by the CPU each time the game composes a new string into the atlas in guest
+    // RAM (e.g. dialog text). On the Vulkan/V3DV path these CPU writes are not observed as
+    // surface invalidations (TRACE_PI5_UI invalidate_sensitive never fires), so the cache keeps
+    // serving the very first uploaded contents and the on-screen text freezes on whatever was in
+    // the atlas at boot. The decode/swizzle/sampling are all correct - only the staleness is the
+    // bug. To guarantee the GPU copy matches guest RAM, force a re-decode from RAM on every
+    // access for these formats: resolve (or create) the surface without loading, mark its whole
+    // interval invalid, then let GetSurface(..., true) re-run ValidateSurface -> UploadSurface.
+    // This is scoped strictly to Pi5-sensitive formats so normal RGBA textures keep their
+    // hash/dirty-tracked fast path and there is no general perf regression. The atlas is small
+    // (<=1024x256, 256 KiB) so the per-frame re-decode cost is negligible.
+    if (pi5_sensitive_format) {
+        const SurfaceId existing_id = GetSurface(params, ScaleMatch::Ignore, false);
+        if (existing_id) {
+            Surface& sensitive_surface = slot_surfaces[existing_id];
+            sensitive_surface.MarkInvalid(sensitive_surface.GetInterval());
+            static int trace_budget = 64;
+            if (trace_budget-- > 0) {
+                LOG_INFO(Render_Vulkan,
+                         "TRACE_PI5_UI force_revalidate addr={:#x} size={} pixel_format={}",
+                         params.addr, params.size, static_cast<u32>(params.pixel_format));
+            }
+        }
+    }
+
     SurfaceId surface_id = GetSurface(params, ScaleMatch::Ignore, true);
     return surface_id ? surface_id : NULL_SURFACE_ID;
 }
@@ -1124,20 +1136,18 @@ void RasterizerCache<T>::ValidateSurface(SurfaceId surface_id, PAddr addr, u32 s
         // Look for a valid surface to copy from.
         const SurfaceParams params = surface.FromInterval(interval);
         const bool pi5_sensitive_surface = IsPi5SensitivePixelFormat(surface.pixel_format);
-        const bool pi5_force_decode = pi5_sensitive_surface && ForcePi5SensitiveDecode();
 
         if (pi5_sensitive_surface) {
             static int trace_budget = 128;
             if (trace_budget-- > 0) {
                 LOG_INFO(Render_Vulkan,
-                         "TRACE_PI5_UI validate_force_decode addr={:#x} size={} pixel_format={} level={} interval=[{:#x},{:#x}) force_decode={}",
+                         "TRACE_PI5_UI validate_force_decode addr={:#x} size={} pixel_format={} level={} interval=[{:#x},{:#x})",
                          params.addr, params.size, static_cast<u32>(surface.pixel_format), level,
-                         boost::icl::first(interval), boost::icl::last_next(interval),
-                         pi5_force_decode);
+                         boost::icl::first(interval), boost::icl::last_next(interval));
             }
         }
 
-        const SurfaceId copy_surface_id = pi5_force_decode
+        const SurfaceId copy_surface_id = pi5_sensitive_surface
                                               ? SurfaceId{}
                                               : FindMatch<MatchFlags::Copy>(params, ScaleMatch::Ignore, interval);
         if (copy_surface_id && copy_surface_id != surface_id) {
@@ -1150,7 +1160,7 @@ void RasterizerCache<T>::ValidateSurface(SurfaceId surface_id, PAddr addr, u32 s
 
         // Try to find surface in cache with different format
         // that can can be reinterpreted to the requested format.
-        if (!pi5_force_decode && ValidateByReinterpretation(surface, params, interval)) {
+        if (!pi5_sensitive_surface && ValidateByReinterpretation(surface, params, interval)) {
             notify_validated(interval);
             continue;
         }
@@ -1481,16 +1491,6 @@ void RasterizerCache<T>::InvalidateRegion(PAddr addr, u32 size, SurfaceId region
 
     boost::container::small_vector<SurfaceId, 4> remove_surfaces;
     ForEachSurfaceInRegion(addr, size, [&](SurfaceId surface_id, Surface& surface) {
-        if (IsPi5SensitivePixelFormat(surface.pixel_format)) {
-            static int trace_budget = 96;
-            if (trace_budget-- > 0) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PI5_UI invalidate_sensitive addr={:#x} size={} surface_addr={:#x} "
-                         "pixel_format={} gpu_owner={}",
-                         addr, size, surface.addr, static_cast<u32>(surface.pixel_format),
-                         static_cast<bool>(region_owner_id));
-            }
-        }
         if (surface_id == region_owner_id) {
             return;
         }
