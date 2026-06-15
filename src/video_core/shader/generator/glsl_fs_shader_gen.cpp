@@ -337,6 +337,31 @@ vec4 secondary_fragment_color = vec4(0.0);
                        "  color = vec4(_ta, _ta, _ta, 1.0); }\n";
             }
         }
+        // v115-E debug probe: BORKED3DS_FS_SHOW_UV=1 forces every draw to an opaque grayscale
+        // field whose luminance encodes the interpolated texcoord0 fed to the fragment from the
+        // vertex shader (fract so out-of-range values still read). NON-CHROMATIC (luminance
+        // only, colorblind-safe). Default axis = X; set BORKED3DS_FS_SHOW_UV_AXIS=1 for Y.
+        // Reading across a glyph quad: a smooth left-to-right (or top-to-bottom) GRADIENT means
+        // texcoord0 varies per fragment as expected; a FLAT field means the UVs are constant
+        // over the quad. Combined with SHOW_TEX0_ALPHA (which showed icon glyphs but not the
+        // letters), this checks whether the letter quads carry coherent UVs into the atlas or
+        // whether their per-vertex texcoords are scrambled - the latter being the expected
+        // signature of a broken indexed-draw (vkCmdDrawIndexed) vertex/index pairing, since all
+        // text draws are indexed. gradient = UV alive; flat = UV dead/constant.
+        {
+            const char* show_uv = std::getenv("BORKED3DS_FS_SHOW_UV");
+            if (show_uv != nullptr && show_uv[0] == '1') {
+                const char* uv_axis = std::getenv("BORKED3DS_FS_SHOW_UV_AXIS");
+                const bool use_y = (uv_axis != nullptr && uv_axis[0] == '1');
+                if (use_y) {
+                    out += "{ float _u = fract(abs(texcoord0.y));\n"
+                           "  color = vec4(_u, _u, _u, 1.0); }\n";
+                } else {
+                    out += "{ float _u = fract(abs(texcoord0.x));\n"
+                           "  color = vec4(_u, _u, _u, 1.0); }\n";
+                }
+            }
+        }
     }
 
     WriteLogicOp();
