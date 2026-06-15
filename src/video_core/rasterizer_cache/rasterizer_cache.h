@@ -725,32 +725,6 @@ SurfaceId RasterizerCache<T>::GetTextureSurface(const Pica::Texture::TextureInfo
         return NULL_SURFACE_ID;
     }
 
-    // v115-E fix: Pi5-sensitive texture formats (A8/I8/IA8/IA4/I4/A4 - the font/UI atlases)
-    // are written by the CPU each time the game composes a new string into the atlas in guest
-    // RAM (e.g. dialog text). On the Vulkan/V3DV path these CPU writes are not observed as
-    // surface invalidations (TRACE_PI5_UI invalidate_sensitive never fires), so the cache keeps
-    // serving the very first uploaded contents and the on-screen text freezes on whatever was in
-    // the atlas at boot. The decode/swizzle/sampling are all correct - only the staleness is the
-    // bug. To guarantee the GPU copy matches guest RAM, force a re-decode from RAM on every
-    // access for these formats: resolve (or create) the surface without loading, mark its whole
-    // interval invalid, then let GetSurface(..., true) re-run ValidateSurface -> UploadSurface.
-    // This is scoped strictly to Pi5-sensitive formats so normal RGBA textures keep their
-    // hash/dirty-tracked fast path and there is no general perf regression. The atlas is small
-    // (<=1024x256, 256 KiB) so the per-frame re-decode cost is negligible.
-    if (pi5_sensitive_format) {
-        const SurfaceId existing_id = GetSurface(params, ScaleMatch::Ignore, false);
-        if (existing_id) {
-            Surface& sensitive_surface = slot_surfaces[existing_id];
-            sensitive_surface.MarkInvalid(sensitive_surface.GetInterval());
-            static int trace_budget = 64;
-            if (trace_budget-- > 0) {
-                LOG_INFO(Render_Vulkan,
-                         "TRACE_PI5_UI force_revalidate addr={:#x} size={} pixel_format={}",
-                         params.addr, params.size, static_cast<u32>(params.pixel_format));
-            }
-        }
-    }
-
     SurfaceId surface_id = GetSurface(params, ScaleMatch::Ignore, true);
     return surface_id ? surface_id : NULL_SURFACE_ID;
 }
