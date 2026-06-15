@@ -316,6 +316,27 @@ vec4 secondary_fragment_color = vec4(0.0);
                        "  color = vec4(_pa, _pa, _pa, 1.0); }\n";
             }
         }
+        // v115-E debug probe: BORKED3DS_FS_SHOW_TEX0_ALPHA=1 forces every draw to an opaque
+        // grayscale field whose luminance encodes ONLY sampleTexUnit0().a - the raw alpha read
+        // from texture unit 0 (the A8 font atlas) at this fragment's texcoord0, isolated from
+        // primary color, the TEV cascade and the alpha test. NON-CHROMATIC (luminance only,
+        // colorblind-safe). This is the decisive measurement: SHOW_PRIMARY_ALPHA proved
+        // primary_color.a == 1 (white box), so the text's final alpha = 1 * tex0.a = tex0.a.
+        // The atlas RAM content is provably identical to GL (same dump hash), DecodeA8 writes
+        // the glyph into the A channel and the A8 view swizzle reads .a - so on paper tex0.a
+        // should carry the glyphs. Reading: if BRIGHT GLYPH SHAPES appear here, tex0.a is
+        // correct and the defect is downstream (impossible per the dumped TEV, so it would mean
+        // an earlier visual call was misread); if the box is a FLAT DARK field with no glyph
+        // shapes, then tex0.a really is ~0 at sampling time, proving the runtime A8 view
+        // swizzle/format does NOT actually route the glyph (stored in the A channel) to .a,
+        // despite what the source switch appears to select. bright shapes = glyph alpha present.
+        {
+            const char* show_ta = std::getenv("BORKED3DS_FS_SHOW_TEX0_ALPHA");
+            if (show_ta != nullptr && show_ta[0] == '1') {
+                out += "{ float _ta = clamp(sampleTexUnit0().a, 0.0, 1.0);\n"
+                       "  color = vec4(_ta, _ta, _ta, 1.0); }\n";
+            }
+        }
     }
 
     WriteLogicOp();
