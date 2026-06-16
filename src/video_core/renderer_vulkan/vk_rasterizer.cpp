@@ -2319,6 +2319,99 @@ void RasterizerVulkan::SetupVertexArray() {
         buffer_offset += Common::AlignUp(aligned_stride * vertex_num, 4);
     }
 
+    // --- SONDE TRACE_VTX_DUMP (numerique, non visuelle) ---
+    // CONTEXTE : le log d'indexation a PROUVE que la geometrie du texte est soumise
+    // correctement (indices identite 0..N-1, vertex_offset=0 partout). Le texte reste
+    // invisible alors que (a) l'ecriture couleur est active (mask=0xf), (b) le blend des
+    // draws texte est OPAQUE (ONE/ZERO) donc la couleur RGB d'un fragment serait ecrite
+    // telle quelle, (c) DISABLE_ALPHA_TEST est sans effet. Recoupe avec SHOW_UV (plat sur
+    // les lettres) et SHOW_TEX0_ALPHA (icones variables, lettres plates, MEME atlas), la
+    // seule lecture coherente est : les quads de lettres echantillonnent un UV CONSTANT.
+    //
+    // La source ne peut pas etre en cause (GL rend le texte avec les memes donnees memoire).
+    // Cette sonde dump donc, pour les draws qui echantillonnent l'atlas police, le LAYOUT
+    // d'attributs reellement construit pour Vulkan (reg/binding/offset/type/size + stride)
+    // ET les octets bruts des premiers sommets uploades, pour COMPARER en chiffres le draw
+    // icone (nv=6) et le draw lettres (nv~42) :
+    //   - layout texcoord DIFFERENT entre icone et lettres, ou UV bruts des lettres
+    //     constants  => cause cote attributs Vulkan (offset/format/stride). Cible trouvee.
+    //   - layout identique ET UV bruts variables  => cause en aval (VS / sortie texcoord),
+    //     prochaine sonde au niveau shader.
+    // BORKED3DS_V3DV_TRACE_VTX_DUMP=1 => atlas police seulement ; =2 => tous les draws.
+    {
+        const char* vtx_env = std::getenv("BORKED3DS_V3DV_TRACE_VTX_DUMP");
+        if (vtx_env != nullptr && (vtx_env[0] == '1' || vtx_env[0] == '2')) {
+            const auto& pica_textures = regs.texturing.GetTextures();
+            const PAddr tex0_addr = pica_textures[0].config.GetPhysicalAddress();
+            const bool atlas_only = (vtx_env[0] == '1');
+            if (!atlas_only || tex0_addr == 0x2064be00u) {
+                static std::atomic<u32> g_vtx_dump_budget{400};
+                if (g_vtx_dump_budget.fetch_sub(1, std::memory_order_relaxed) > 0) {
+                    const u32 nv = regs.pipeline.num_vertices;
+                    const u32 vtx_num = (vs_input_index_max >= vs_input_index_min)
+                                            ? (vs_input_index_max - vs_input_index_min + 1)
+                                            : 0u;
+                    // resume du layout d'attributs construit pour ce draw
+                    std::string attrs;
+                    attrs.reserve(256);
+                    for (u32 reg = 0; reg < 16; reg++) {
+                        if (!enable_attributes[reg]) {
+                            continue;
+                        }
+                        const VertexAttribute& a = layout.attributes[reg];
+                        attrs += "reg" + std::to_string(reg);
+                        attrs += ":b" + std::to_string(static_cast<u32>(a.binding.Value()));
+                        attrs += ":off" + std::to_string(static_cast<u32>(a.offset.Value()));
+                        attrs += ":type" + std::to_string(static_cast<u32>(a.type.Value()));
+                        attrs += ":sz" + std::to_string(static_cast<u32>(a.size.Value()));
+                        attrs += ' ';
+                    }
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_VTX_DUMP tex0=0x{:08x} num_vertices={} vtx_min={} "
+                                "vtx_max={} vtx_num={} bindings={} attrs=[ {}]",
+                                tex0_addr, nv, vs_input_index_min, vs_input_index_max, vtx_num,
+                                static_cast<u32>(layout.binding_count), attrs);
+                    // octets bruts des premiers sommets, par binding (<=2 bindings, <=3 sommets)
+                    static const char HEX[] = "0123456789abcdef";
+                    const u32 nb = (layout.binding_count < 2u)
+                                       ? static_cast<u32>(layout.binding_count)
+                                       : 2u;
+                    for (u32 b = 0; b < nb; b++) {
+                        const u32 stride = static_cast<u32>(layout.bindings[b].stride.Value());
+                        if (stride == 0) {
+                            continue;
+                        }
+                        const u32 cpu_off = static_cast<u32>(binding_offsets[b]) -
+                                            static_cast<u32>(array_offset);
+                        const u32 nverts = (vtx_num < 3u) ? vtx_num : 3u;
+                        // garde-fou : ne lire que dans la region mappee
+                        if (nverts == 0 ||
+                            (cpu_off + stride * nverts) > static_cast<u32>(vs_input_size)) {
+                            continue;
+                        }
+                        const u8* base = array_ptr + cpu_off;
+                        const u32 stride_cap = (stride < 64u) ? stride : 64u;
+                        std::string hexdump;
+                        hexdump.reserve(stride_cap * nverts * 3 + 16);
+                        for (u32 vtx = 0; vtx < nverts; vtx++) {
+                            const u8* vp = base + vtx * stride;
+                            for (u32 k = 0; k < stride_cap; k++) {
+                                hexdump += HEX[(vp[k] >> 4) & 0xF];
+                                hexdump += HEX[vp[k] & 0xF];
+                                hexdump += ' ';
+                            }
+                            hexdump += "| ";
+                        }
+                        LOG_WARNING(Render_Vulkan,
+                                    "TRACE_VTX_DUMP   binding={} stride={} first{}verts=[ {}]",
+                                    b, stride, nverts, hexdump);
+                    }
+                }
+            }
+        }
+    }
+    // --- FIN SONDE TRACE_VTX_DUMP ---
+
     stream_buffer.Commit(buffer_offset);
     SetupFixedAttribs();
 }
