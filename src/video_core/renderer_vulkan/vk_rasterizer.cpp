@@ -6633,6 +6633,56 @@ void RasterizerVulkan::SetupIndexArray() {
             } else {
                 std::memcpy(index_ptr, index_data, source_index_size);
             }
+
+            // --- SONDE TRACE_INDEX_DUMP (mesure numerique, non visuelle) ---
+            // v115-E: les draws de texte sont tous indexes. SHOW_UV/SHOW_TEX0_ALPHA montrent
+            // que les glyphes "icone" (draws num_vertices=6) rendent, mais pas les lettres
+            // (draws groupes num_vertices~42). Hypothese: l'index buffer des draws groupes est
+            // mal lu/lie sur V3DV -> quads de lettres degeneres -> aucune UV/fragment. Cette
+            // sonde logge le contenu reel de l'index buffer (valeurs brutes, min/max, monotonie)
+            // pour les draws groupes, afin de trancher en CHIFFRES, sans interpretation visuelle.
+            // Lecture: indices coherents 0..(N-1) croissants par quads => indexation saine, bug
+            // ailleurs. Indices hors-borne, repetes, ou tous nuls => index buffer corrompu/mal lu.
+            {
+                const char* idx_env = std::getenv("BORKED3DS_V3DV_TRACE_INDEX_DUMP");
+                const u32 nv = regs.pipeline.num_vertices;
+                // Cible les draws groupes (lettres) : >6 sommets, taille raisonnable.
+                if (idx_env != nullptr && idx_env[0] == '1' && nv > 6 && nv <= 256) {
+                    static std::atomic<u32> g_idx_dump_budget{24};
+                    if (g_idx_dump_budget.fetch_sub(1, std::memory_order_relaxed) > 0) {
+                        u32 idx_min = 0xFFFFFFFFu;
+                        u32 idx_max = 0;
+                        u32 nonzero = 0;
+                        bool monotonic_nondec = true;
+                        u32 prev = 0;
+                        std::string head; // premieres valeurs lisibles
+                        head.reserve(160);
+                        for (u32 i = 0; i < nv; i++) {
+                            const u32 v = index_u8 ? static_cast<u32>(index_data[i])
+                                                   : static_cast<u32>(
+                                                         index_data[i * 2] |
+                                                         (index_data[i * 2 + 1] << 8));
+                            if (v < idx_min) idx_min = v;
+                            if (v > idx_max) idx_max = v;
+                            if (v != 0) nonzero++;
+                            if (i > 0 && v < prev) monotonic_nondec = false;
+                            prev = v;
+                            if (i < 24) {
+                                head += std::to_string(v);
+                                head += ' ';
+                            }
+                        }
+                        LOG_WARNING(Render_Vulkan,
+                                    "TRACE_INDEX_DUMP addr=0x{:08x} num_vertices={} index_u8={} "
+                                    "native_u8={} src_size={} idx_min={} idx_max={} nonzero={} "
+                                    "monotonic_nondec={} head=[ {}]",
+                                    index_addr, nv, static_cast<u32>(index_u8),
+                                    static_cast<u32>(native_u8), source_index_size, idx_min,
+                                    idx_max, nonzero, static_cast<u32>(monotonic_nondec), head);
+                    }
+                }
+            }
+            // --- FIN SONDE TRACE_INDEX_DUMP ---
         }
     }
 
@@ -6772,6 +6822,48 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                  regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
     }
     if (!framebuffer->Handle()) {
+        // --- SONDE TRACE_NULL_FB_DROP ---
+        // v115-E: point de drop silencieux commun aux deux chemins Vulkan (HW-shader et
+        // non-HW-shader), inexistant en GL. Quand AccelerateDrawBatch() handoff un draw ici
+        // avec un framebuffer dont le handle est nul, Draw() retourne true : la PICA-core
+        // considere le draw "traite" et ne declenche aucun fallback logiciel, donc aucun
+        // glyphe n'est jamais soumis a vkCmdDraw. La sonde SHOW_ALPHA ne peut pas le voir
+        // car elle vit dans le GLSL, apres l'emission de la commande GPU.
+        // Cette sonde capture, pour chaque draw absorbe ici (budget 32, non chromatique) :
+        //  - accelerate : true => arrive via AccelerateDrawBatch (chemin Sonic/texte).
+        //  - textures : nombre de textures primaires actives (>0 attendu pour le texte).
+        //  - color_addr / depth_addr : adresses physiques PICA de la cible. Si color_addr
+        //    est non nul mais qu'aucune surface n'a ete resolue, c'est l'adresse de la cible
+        //    UI/texte manquante a tracer dans rasterizer_cache (GetFramebufferSurfaces).
+        //  - using_color / using_depth : distingue le cas "aucun attachement demande"
+        //    (les deux faux) du cas "surface demandee mais non resolue" (color demande, mais
+        //    color_id invalide dans GetSurfaceSubRect avec load_if_create=false).
+        {
+            const char* nfb_env = std::getenv("BORKED3DS_V3DV_TRACE_NULL_FB_DROP");
+            if (nfb_env != nullptr && nfb_env[0] == '1') {
+                static std::atomic<u32> g_null_fb_drop_budget{32};
+                if (g_null_fb_drop_budget.fetch_sub(1, std::memory_order_relaxed) > 0) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_NULL_FB_DROP accelerate={} textures={} "
+                                "color_addr=0x{:08x} depth_addr=0x{:08x} "
+                                "num_vertices={} vertex_batch_size={} "
+                                "using_color={} using_depth={} write_color={} "
+                                "color_mask=0x{:x} shadow={}",
+                                static_cast<u32>(accelerate),
+                                CountEnabledPrimaryTextures(regs),
+                                regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                                regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                                regs.pipeline.num_vertices,
+                                static_cast<u32>(vertex_batch.size()),
+                                static_cast<u32>(using_color_fb),
+                                static_cast<u32>(using_depth_fb),
+                                static_cast<u32>(write_color_fb),
+                                static_cast<u32>(pipeline_info.blending.color_write_mask),
+                                static_cast<u32>(shadow_rendering));
+                }
+            }
+        }
+        // --- FIN SONDE TRACE_NULL_FB_DROP ---
         if (a7z40_draw_wrapper_trace) {
             V114ShaderMultiplexFileTraceRaw("v115d_a7z40 framebuffer_handle_invalid_return_true");
         }
