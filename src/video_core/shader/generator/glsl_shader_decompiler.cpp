@@ -3,7 +3,6 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <cstdlib>
 #include <exception>
 #include <map>
 #include <set>
@@ -838,34 +837,11 @@ private:
             shader.AddLine("}}\n");
         }
 
-        // v115-G Pi5/V3DV fix: V3DV (non-conformant) mis-evaluates dynamic indexing of a
-        // UBO array (uniforms.f[index] with a run-time index). The PICA vertex shaders that
-        // compute texture coordinates via relative addressing (address registers) hit this
-        // path, so their texcoord output collapses to a constant -> flat UV -> invisible
-        // dialogue text, while position (which only ever indexes with a static offset) is
-        // fine. When BORKED3DS_V3DV_SAFE_UNIFORM_INDEXING is set we emit a form that only
-        // ever accesses uniforms.f[] with a compile-time-constant index (a switch), which
-        // sidesteps the driver bug. Off by default so the regular dynamic-index path (and
-        // 3D performance) are unchanged.
-        const bool safe_uniform_indexing =
-            std::getenv("BORKED3DS_V3DV_SAFE_UNIFORM_INDEXING") != nullptr;
         shader.AddLine("vec4 get_offset_register(int base_index, int offset) {{");
         ++shader.scope;
         shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
-        if (safe_uniform_indexing) {
-            shader.AddLine("int index = (base_index + fixed_offset) & 0x7F;");
-            shader.AddLine("switch (index) {{");
-            ++shader.scope;
-            for (int reg_index = 0; reg_index < 96; ++reg_index) {
-                shader.AddLine("case {}: return uniforms.f[{}];", reg_index, reg_index);
-            }
-            shader.AddLine("default: return vec4(1.0);");
-            --shader.scope;
-            shader.AddLine("}}");
-        } else {
-            shader.AddLine("uint index = uint((base_index + fixed_offset) & 0x7F);");
-            shader.AddLine("return index < 96u ? uniforms.f[index] : vec4(1.0);");
-        }
+        shader.AddLine("uint index = uint((base_index + fixed_offset) & 0x7F);");
+        shader.AddLine("return index < 96u ? uniforms.f[index] : vec4(1.0);");
         --shader.scope;
         shader.AddLine("}}\n");
 
