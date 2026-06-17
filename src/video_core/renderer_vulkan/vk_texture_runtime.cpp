@@ -178,14 +178,9 @@ std::atomic<u32> g_pi5_ui_surface_trace_budget{128};
 [[nodiscard]] vk::ComponentMapping MakeUIViewComponentMapping(VideoCore::PixelFormat pixel_format,
                                                              vk::ImageAspectFlags aspect,
                                                              vk::Format format) {
-    // v115-F Pi5/V3DV fix: A8/I8/IA8/IA4/I4/A4 are created as RGBA8
-    // (GetEffectiveTextureFormat) but the codec leaves the meaningful data in the R
-    // channel (and G for the IA pair), not in true-RGBA positions. The previous early
-    // return to an identity swizzle made tex0.a sample channel A (= 0) instead of the
-    // real alpha, which hid every A8 dialogue glyph and washed out the I8/IA8 surfaces
-    // on V3DV (pale character shading, near-transparent UI). Drop that override and fall
-    // through to the per-format swizzle below, so the RGBA8-expanded views use exactly
-    // the same component mapping as the native single-channel views.
+    if (NeedsPi5UIUploadExpansion(pixel_format) && format == vk::Format::eR8G8B8A8Unorm) {
+        return MakeIdentityComponentMapping();
+    }
     if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
         return MakeIdentityComponentMapping();
     }
