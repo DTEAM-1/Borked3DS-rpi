@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
 #include <exception>
 #include <map>
 #include <set>
@@ -841,7 +842,17 @@ private:
         ++shader.scope;
         shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
         shader.AddLine("uint index = uint((base_index + fixed_offset) & 0x7F);");
-        shader.AddLine("return index < 96u ? uniforms.f[index] : vec4(1.0);");
+        // v115-I Pi5/V3DV test: position (constant index 32) renders fine, but the texcoord
+        // uses a runtime index (64 + address_registers.y). If that index lands >= 96 on V3DV,
+        // the original code returns the constant vec4(1.0) -> flat UV -> invisible dialogue
+        // text. When BORKED3DS_V3DV_CLAMP_OFFSET_INDEX is set we read the nearest in-range
+        // uniform instead of the constant fallback: if the text reappears (even with imperfect
+        // UVs) the out-of-range fallback was the culprit. Off by default -> original behaviour.
+        if (std::getenv("BORKED3DS_V3DV_CLAMP_OFFSET_INDEX") != nullptr) {
+            shader.AddLine("return uniforms.f[min(index, 95u)];");
+        } else {
+            shader.AddLine("return index < 96u ? uniforms.f[index] : vec4(1.0);");
+        }
         --shader.scope;
         shader.AddLine("}}\n");
 
