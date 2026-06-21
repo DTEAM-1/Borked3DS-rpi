@@ -152,16 +152,8 @@ void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
         return;
     }
 
-    // v115-E: dump par HASH au lieu de tronquer, afin de conserver TOUS les variants VS
-    // generes pendant la session et pouvoir isoler le VS du texte (signature : une seule
-    // entree vs_in_typed_reg0, sans vs_in_typed_reg1). Hash FNV-1a inline, aucun include sup.
-    std::uint64_t vs_hash = 1469598103934665603ull;
-    for (unsigned char c : source) {
-        vs_hash ^= static_cast<std::uint64_t>(c);
-        vs_hash *= 1099511628211ull;
-    }
-    const std::string path = fmt::format("/tmp/borked3ds_vs_{:016x}.glsl", vs_hash);
-    std::ofstream file(path, std::ios::out | std::ios::trunc);
+    std::ofstream file("/tmp/borked3ds_v115d_a7z3_generated_vs.glsl",
+                       std::ios::out | std::ios::trunc);
     if (file) {
         file << source;
         file.flush();
@@ -530,8 +522,18 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
         out += fmt::format("    vs_out_attr{} = vec4(0.0f, 0.0f, 0.0f, 1.0f);\n", i);
     }
     out += "\n    // Execute shader and emit vertex\n"
-           "    exec_shader();\n"
-           "    EmitVtx();\n"
+           "    exec_shader();\n";
+    // v115-J Pi5/V3DV diagnostic: force texcoord0 (vs_out_attr2) to a per-vertex pattern
+    // derived from gl_VertexIndex, bypassing the PICA texcoord computation entirely. Read
+    // back with SHOW_UV: a gradient proves the VS can deliver a varying texcoord to the FS
+    // (so the flat dialogue UV comes from the PICA computation), while a still-flat result
+    // points downstream (varying interface / rasterization on V3DV). Off by default.
+    if (config.state.num_outputs > 2 &&
+        std::getenv("BORKED3DS_V3DV_FORCE_TEXCOORD_TEST") != nullptr) {
+        out += "    vs_out_attr2 = vec4(float(gl_VertexIndex & 1), "
+               "float((gl_VertexIndex >> 1) & 1), 0.0f, 1.0f);\n";
+    }
+    out += "    EmitVtx();\n"
            "}\n\n";
 
     V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_append_program_source");
