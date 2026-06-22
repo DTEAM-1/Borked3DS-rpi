@@ -504,6 +504,14 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
 
     out += "bool exec_shader();\n\n";
 
+    // v115-L: Append decompiled shader BEFORE main() so that file-scope globals
+    // (conditional_code, address_registers, reg_tmp*) are visible from main() for
+    // diagnostic probes. This reordering is safe: all functions and globals are defined
+    // before main() sees them, and the forward declaration of exec_shader above handles
+    // the reference in the early interface code.
+    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_append_program_source");
+    out += program_source;
+
     V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_main_source");
     out += "\nvoid main() {\n";
     for (std::size_t i = 0; i < used_regs.size(); ++i) {
@@ -523,30 +531,39 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
     }
     out += "\n    // Execute shader and emit vertex\n"
            "    exec_shader();\n";
-    // v115-J Pi5/V3DV diagnostic: force texcoord0 (vs_out_attr2) to a per-vertex pattern
-    // derived from gl_VertexIndex, bypassing the PICA texcoord computation entirely. Read
-    // back with SHOW_UV: a gradient proves the VS can deliver a varying texcoord to the FS
-    // (so the flat dialogue UV comes from the PICA computation), while a still-flat result
-    // points downstream (varying interface / rasterization on V3DV). Off by default.
-    if (config.state.num_outputs > 2 &&
-        std::getenv("BORKED3DS_V3DV_FORCE_TEXCOORD_TEST") != nullptr) {
+    // Diagnostic overrides are value-gated ("1" enables; "0"/unset/anything else disables)
+    // so that setting a var to 0 in emulators.cfg truly turns it off.
+    const char* ftt_env = std::getenv("BORKED3DS_V3DV_FORCE_TEXCOORD_TEST");
+    const bool force_texcoord_test = ftt_env != nullptr && ftt_env[0] == '1';
+    const char* piu_env = std::getenv("BORKED3DS_V3DV_PROBE_INT_UNIFORM");
+    const bool probe_int_uniform = piu_env != nullptr && piu_env[0] == '1';
+    // v115-M: probe f[5].y (the loop-counter step / comparison target). If bright (=1.0),
+    // then with i[0].x=0 (1 iteration), reg_tmp8 starts at f[5].x=0, never reaches f[5].y=1
+    // -> sub_67_86 is never called -> reg_tmp5 stays flat. Text needs i[0].x >= 1.
+    const char* pf5_env = std::getenv("BORKED3DS_V3DV_PROBE_F5");
+    const bool probe_f5 = pf5_env != nullptr && pf5_env[0] == '1';
+    // v115-N: probe reg_tmp5 directly (the texcoord computation result). After the
+    // reordering, reg_tmp5 is a file-scope global accessible from main(). Shows the average
+    // of reg_tmp5.x and reg_tmp5.y as luminance: 0.5 gray = initial (0,0), brighter/darker
+    // = the computation set it. Compare V3DV vs GL.
+    const char* pr5_env = std::getenv("BORKED3DS_V3DV_PROBE_REG_TMP5");
+    const bool probe_reg_tmp5 = pr5_env != nullptr && pr5_env[0] == '1';
+    if (config.state.num_outputs > 2 && force_texcoord_test) {
         out += "    vs_out_attr2 = vec4(float(gl_VertexIndex & 1), "
                "float((gl_VertexIndex >> 1) & 1), 0.0f, 1.0f);\n";
     }
-    // v115-K Pi5/V3DV diagnostic: read back the integer loop-count uniform i[0].x as a
-    // binary luminance (bright if > 0, dark if == 0). If the dialogue quads come out DARK,
-    // the integer uniform is being read as zero on V3DV (std140 bool[16] / uvec4 i[]
-    // mis-layout) -> the texcoord loop under-runs -> flat UV. Bright means the loop bound is
-    // fine and the collapse is elsewhere (conditional_code). Off by default.
-    if (config.state.num_outputs > 2 &&
-        std::getenv("BORKED3DS_V3DV_PROBE_INT_UNIFORM") != nullptr) {
+    if (config.state.num_outputs > 2 && probe_int_uniform) {
         out += "    vs_out_attr2 = vec4(uniforms.i[0].x > 0u ? 1.0f : 0.0f);\n";
+    }
+    if (config.state.num_outputs > 2 && probe_f5) {
+        out += "    vs_out_attr2 = vec4(vec3(uniforms.f[5].y), 1.0f);\n";
+    }
+    if (config.state.num_outputs > 2 && probe_reg_tmp5) {
+        out += "    vs_out_attr2 = vec4(vec3((reg_tmp5.x + reg_tmp5.y) * 0.5 + 0.5), 1.0f);\n";
     }
     out += "    EmitVtx();\n"
            "}\n\n";
 
-    V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_append_program_source");
-    out += program_source;
     V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl final_source_size", out.size());
     V115DA7Z3DumpGeneratedVertexShader(out);
     V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl return_success");
