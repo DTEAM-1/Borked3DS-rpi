@@ -533,6 +533,15 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
         out += "    vs_out_attr2 = vec4(float(gl_VertexIndex & 1), "
                "float((gl_VertexIndex >> 1) & 1), 0.0f, 1.0f);\n";
     }
+    // v115-K Pi5/V3DV diagnostic: read back the integer loop-count uniform i[0].x as a
+    // binary luminance (bright if > 0, dark if == 0). If the dialogue quads come out DARK,
+    // the integer uniform is being read as zero on V3DV (std140 bool[16] / uvec4 i[]
+    // mis-layout) -> the texcoord loop under-runs -> flat UV. Bright means the loop bound is
+    // fine and the collapse is elsewhere (conditional_code). Off by default.
+    if (config.state.num_outputs > 2 &&
+        std::getenv("BORKED3DS_V3DV_PROBE_INT_UNIFORM") != nullptr) {
+        out += "    vs_out_attr2 = vec4(uniforms.i[0].x > 0u ? 1.0f : 0.0f);\n";
+    }
     out += "    EmitVtx();\n"
            "}\n\n";
 
