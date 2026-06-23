@@ -2420,6 +2420,11 @@ void RasterizerVulkan::SetupFixedAttribs() {
     const auto& vertex_attributes = regs.pipeline.vertex_attributes;
     VertexLayout& layout = pipeline_info.vertex_layout;
 
+    // Snapshot of attributes already enabled by the vertex array (SetupVertexArray). The default
+    // loop below also flips enable_attributes, so capture the array-only state first to be able to
+    // classify each input register as array / immediate / fallback in the diagnostic trace.
+    const auto array_enabled = enable_attributes;
+
     // Build the constant (fixed) attribute block once into a local staging buffer so its exact
     // size is known before touching the stream buffer. Max size: slot 0 default (0,0,0,1) plus
     // up to 16 default attributes of 16 bytes each.
@@ -2470,6 +2475,33 @@ void RasterizerVulkan::SetupFixedAttribs() {
     // Physically replicate the constant block once per vertex and bind it per-vertex (eVertex, see
     // vk_graphics_pipeline.cpp) with the real stride, so vertex N reads its own identical copy.
     // Depends on no driver-specific behaviour. Other backends keep the single-block eInstance path.
+    // v116-diag: classify input registers 0..2 for this draw to find why the dialogue texcoord
+    // (reg2) and color (reg1) end up flat. Gated behind BORKED3DS_V3DV_TRACE_FIXED so it never
+    // spams normal runs; rate-limited to the first calls. For each attribute index i we report the
+    // mapped input register, whether the vertex array enabled it, whether PICA marks it as a
+    // default/immediate attribute, and the immediate value PICA would supply.
+    if (IsEnvEnabled("BORKED3DS_V3DV_TRACE_FIXED")) {
+        static std::atomic<u32> diag_calls{0};
+        if (diag_calls.fetch_add(1) < 80u) {
+            const auto& pica_textures = regs.texturing.GetTextures();
+            const PAddr tex0_addr = pica_textures[0].config.GetPhysicalAddress();
+            const u32 nv = regs.pipeline.num_vertices;
+            for (std::size_t i = 0; i < 16; i++) {
+                const u32 reg = regs.vs.GetRegisterForAttribute(i);
+                if (reg > 2) {
+                    continue;
+                }
+                const bool is_def = vertex_attributes.IsDefaultAttribute(i);
+                const auto& a = pica.input_default_attributes[i];
+                LOG_WARNING(Render_Vulkan,
+                            "V116_DIAG tex0=0x{:08x} nv={} attr_i={} reg={} array_enabled={} "
+                            "is_default={} imm=({},{},{},{})",
+                            tex0_addr, nv, i, reg, array_enabled[reg] ? 1 : 0, is_def ? 1 : 0,
+                            a.x.ToFloat32(), a.y.ToFloat32(), a.z.ToFloat32(), a.w.ToFloat32());
+            }
+        }
+    }
+
     const auto [vs_input_index_min, vs_input_index_max, vs_input_size] = vertex_info;
     (void)vs_input_size;
     const u32 vertex_num = (vs_input_index_max >= vs_input_index_min)
