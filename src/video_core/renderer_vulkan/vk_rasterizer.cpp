@@ -2420,11 +2420,13 @@ void RasterizerVulkan::SetupFixedAttribs() {
     const auto& vertex_attributes = regs.pipeline.vertex_attributes;
     VertexLayout& layout = pipeline_info.vertex_layout;
 
-    auto [fixed_ptr, fixed_offset, _] = stream_buffer.Map(16 * sizeof(Common::Vec4f), 0);
-    binding_offsets[layout.binding_count] = static_cast<u32>(fixed_offset);
+    // Build the constant (fixed) attribute block once into a local staging buffer so its exact
+    // size is known before touching the stream buffer. Max size: slot 0 default (0,0,0,1) plus
+    // up to 16 default attributes of 16 bytes each.
+    std::array<u8, (1 + 16) * sizeof(Common::Vec4f)> block{};
 
     static const Common::Vec4f default_attrib{0.f, 0.f, 0.f, 1.f};
-    std::memcpy(fixed_ptr, default_attrib.AsArray(), sizeof(Common::Vec4f));
+    std::memcpy(block.data(), default_attrib.AsArray(), sizeof(Common::Vec4f));
 
     u32 offset = sizeof(Common::Vec4f);
     for (std::size_t i = 0; i < 16; i++) {
@@ -2436,7 +2438,7 @@ void RasterizerVulkan::SetupFixedAttribs() {
                                          attr.w.ToFloat32()};
 
                 const u32 data_size = sizeof(float) * static_cast<u32>(data.size());
-                std::memcpy(fixed_ptr + offset, data.data(), data_size);
+                std::memcpy(block.data() + offset, data.data(), data_size);
 
                 VertexAttribute& attribute = layout.attributes[reg];
                 attribute.binding.Assign(layout.binding_count);
@@ -2462,21 +2464,60 @@ void RasterizerVulkan::SetupFixedAttribs() {
         }
     }
 
-    VertexBinding& binding = layout.bindings[layout.binding_count];
-    binding.binding.Assign(layout.binding_count++);
-    binding.fixed.Assign(1);
-    // v116-A option A: under Pi5/V3DV strict_compat the fixed binding is bound per-vertex
-    // (see vk_graphics_pipeline.cpp). A non-zero stride would then make each vertex step past
-    // the single committed constant block, so only vertex 0 would read valid data. Stride 0
-    // makes every vertex re-read the same constant block -> true constant attribute. Other
-    // backends keep eInstance + real stride (original behaviour).
-    if (IsStrictCompatEnabled()) {
-        binding.stride.Assign(0);
-    } else {
-        binding.stride.Assign(offset);
-    }
+    // v116-B option B: on Pi5/V3DV strict_compat, neither eInstance nor an eVertex stride-0 fixed
+    // binding delivers the constant attributes (color reg1 / texcoord reg2) to every vertex on the
+    // non-instanced safe-draw path -> flat UV (invisible dialogue text) and washed-out colors.
+    // Physically replicate the constant block once per vertex and bind it per-vertex (eVertex, see
+    // vk_graphics_pipeline.cpp) with the real stride, so vertex N reads its own identical copy.
+    // Depends on no driver-specific behaviour. Other backends keep the single-block eInstance path.
+    const auto [vs_input_index_min, vs_input_index_max, vs_input_size] = vertex_info;
+    (void)vs_input_size;
+    const u32 vertex_num = (vs_input_index_max >= vs_input_index_min)
+                               ? (vs_input_index_max - vs_input_index_min + 1)
+                               : 1u;
 
-    stream_buffer.Commit(offset);
+    // Fixed attributes only appear on small UI/text draws in practice; this cap guards against a
+    // pathological allocation and is never hit there.
+    constexpr u64 kMaxReplicatedBytes = 1u << 20; // 1 MiB
+    const bool strict = IsStrictCompatEnabled();
+    const bool replicate = strict && (static_cast<u64>(offset) * vertex_num <= kMaxReplicatedBytes);
+
+    if (replicate) {
+        const u32 total = offset * vertex_num;
+        auto [fixed_ptr, fixed_offset, _] = stream_buffer.Map(total, 0);
+        binding_offsets[layout.binding_count] = static_cast<u32>(fixed_offset);
+        for (u32 v = 0; v < vertex_num; v++) {
+            std::memcpy(fixed_ptr + static_cast<std::size_t>(v) * offset, block.data(), offset);
+        }
+
+        VertexBinding& binding = layout.bindings[layout.binding_count];
+        binding.binding.Assign(layout.binding_count++);
+        binding.fixed.Assign(1);
+        binding.stride.Assign(offset);
+
+        stream_buffer.Commit(total);
+
+        static std::atomic_bool logged_v116b{false};
+        if (!logged_v116b.exchange(true)) {
+            LOG_WARNING(Render_Vulkan,
+                        "V116B_FIXED_REPLICATE active vertex_num={} block_bytes={} total={}",
+                        vertex_num, offset, total);
+        }
+    } else {
+        // Single constant block. Non-strict backends bind it eInstance (stride = offset). Under
+        // strict_compat (pipeline forces eVertex) the cap was exceeded, so use stride 0 to keep
+        // every vertex reading the same block rather than stepping past it.
+        auto [fixed_ptr, fixed_offset, _] = stream_buffer.Map(offset, 0);
+        binding_offsets[layout.binding_count] = static_cast<u32>(fixed_offset);
+        std::memcpy(fixed_ptr, block.data(), offset);
+
+        VertexBinding& binding = layout.bindings[layout.binding_count];
+        binding.binding.Assign(layout.binding_count++);
+        binding.fixed.Assign(1);
+        binding.stride.Assign(strict ? 0u : offset);
+
+        stream_buffer.Commit(offset);
+    }
 }
 
 bool RasterizerVulkan::SetupVertexShader() {

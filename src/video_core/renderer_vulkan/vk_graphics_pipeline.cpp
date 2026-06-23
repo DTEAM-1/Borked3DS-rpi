@@ -383,13 +383,12 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     std::array<vk::VertexInputBindingDescription, MAX_VERTEX_BINDINGS> bindings;
     for (u32 i = 0; i < info.vertex_layout.binding_count; i++) {
         const auto& binding = info.vertex_layout.bindings[i];
-        // v116-A option A: on Pi5/V3DV strict_compat, a fixed (constant) attribute binding
-        // bound with VK_VERTEX_INPUT_RATE_INSTANCE is only delivered correctly to vertex 0
-        // on non-instanced draws (texcoord reg2 / color reg1 read flat for the remaining
-        // vertices -> invisible dialogue text and washed-out Sonic). Force the fixed binding
-        // to per-vertex rate; combined with the stride=0 emitted by SetupFixedAttribs under
-        // strict_compat, every vertex re-reads the same constant block. Other backends keep
-        // the original eInstance behaviour.
+        // v116-B: on Pi5/V3DV strict_compat a fixed (constant) attribute binding is bound
+        // per-vertex (eVertex). SetupFixedAttribs then replicates the constant block once per
+        // vertex with the real stride, so vertex N reads its own identical copy. This avoids
+        // relying on eInstance / stride-0 fixed-attribute fetch, which V3DV does not deliver to
+        // every vertex on the non-instanced safe-draw path (flat texcoord reg2 / color reg1 ->
+        // invisible dialogue text and washed-out Sonic). Other backends keep eInstance.
         const bool force_vertex_rate = pi5_strict_compat && binding.fixed.Value();
         bindings[i] = vk::VertexInputBindingDescription{
             .binding = binding.binding,
