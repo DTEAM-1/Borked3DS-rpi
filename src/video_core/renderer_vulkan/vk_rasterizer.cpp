@@ -2465,7 +2465,16 @@ void RasterizerVulkan::SetupFixedAttribs() {
     VertexBinding& binding = layout.bindings[layout.binding_count];
     binding.binding.Assign(layout.binding_count++);
     binding.fixed.Assign(1);
-    binding.stride.Assign(offset);
+    // v116-A option A: under Pi5/V3DV strict_compat the fixed binding is bound per-vertex
+    // (see vk_graphics_pipeline.cpp). A non-zero stride would then make each vertex step past
+    // the single committed constant block, so only vertex 0 would read valid data. Stride 0
+    // makes every vertex re-read the same constant block -> true constant attribute. Other
+    // backends keep eInstance + real stride (original behaviour).
+    if (IsStrictCompatEnabled()) {
+        binding.stride.Assign(0);
+    } else {
+        binding.stride.Assign(offset);
+    }
 
     stream_buffer.Commit(offset);
 }
