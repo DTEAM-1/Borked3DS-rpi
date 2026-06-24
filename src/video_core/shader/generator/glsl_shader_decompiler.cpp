@@ -838,6 +838,19 @@ private:
             shader.AddLine("}}\n");
         }
 
+        const bool v3dv_static_or =
+            std::getenv("BORKED3DS_V3DV_STATIC_OFFSET_REGISTER") != nullptr;
+        if (v3dv_static_or) {
+            // v116-OR2: V3DV miscompiles dynamic uniform-array (UBO) indexing for a non-zero
+            // runtime index (position uses constant index 0 -> fine; the dialogue texcoord uses
+            // f[64 + address_registers.y] -> flat UV / invisible text on V3DV, correct under GL).
+            // Mirror the uniform float bank into a private array once (filled in exec_shader with
+            // constant UBO indices only), then index THAT privately. Private-array dynamic
+            // indexing uses a different code path on V3D and is handled correctly. Kept small:
+            // get_offset_register stays a single load (it is inlined ~30x), the copy lives once.
+            shader.AddLine("vec4 g_pica_f[96];");
+        }
+
         shader.AddLine("vec4 get_offset_register(int base_index, int offset) {{");
         ++shader.scope;
         shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
@@ -848,21 +861,8 @@ private:
         // text. When BORKED3DS_V3DV_CLAMP_OFFSET_INDEX is set we read the nearest in-range
         // uniform instead of the constant fallback: if the text reappears (even with imperfect
         // UVs) the out-of-range fallback was the culprit. Off by default -> original behaviour.
-        if (std::getenv("BORKED3DS_V3DV_STATIC_OFFSET_REGISTER") != nullptr) {
-            // v116-OR: V3DV miscompiles dynamic uniform-array (UBO) indexing for a non-zero
-            // runtime index. Position uses address_registers.x == 0 (constant index -> fine),
-            // but the dialogue texcoord uses f[64 + address_registers.y] with a non-zero runtime
-            // index -> flat UV / invisible text on V3DV while it renders correctly under desktop
-            // GL with the very same GLSL. Replace the single dynamic UBO read with a switch over
-            // constant indices: every uniforms.f[N] below uses a compile-time-constant index,
-            // which V3DV handles correctly. Behaviour is identical to uniforms.f[min(index,95u)].
-            shader.AddLine("uint sidx = min(index, 95u);");
-            shader.AddLine("switch (sidx) {{");
-            for (u32 k = 0; k < 96; ++k) {
-                shader.AddLine("case {}u: return uniforms.f[{}u];", k, k);
-            }
-            shader.AddLine("}}");
-            shader.AddLine("return uniforms.f[95u];");
+        if (v3dv_static_or) {
+            shader.AddLine("return g_pica_f[min(index, 95u)];");
         } else if (std::getenv("BORKED3DS_V3DV_CLAMP_OFFSET_INDEX") != nullptr) {
             shader.AddLine("return uniforms.f[min(index, 95u)];");
         } else {
@@ -888,6 +888,12 @@ private:
         // Add the main entry point
         shader.AddLine("bool exec_shader() {{");
         ++shader.scope;
+        if (v3dv_static_or) {
+            // Fill the private mirror once per invocation using constant UBO indices only.
+            for (u32 k = 0; k < 96; ++k) {
+                shader.AddLine("g_pica_f[{}u] = uniforms.f[{}u];", k, k);
+            }
+        }
         CallSubroutine(GetSubroutine(main_offset, PROGRAM_END));
         --shader.scope;
         shader.AddLine("}}\n");
