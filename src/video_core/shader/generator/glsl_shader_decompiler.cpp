@@ -591,7 +591,7 @@ private:
                 // ordered comparisons (<,<=,>,>=) are untouched. Off -> original exact behaviour.
                 const bool tolerant_eq =
                     std::getenv("BORKED3DS_V3DV_TOLERANT_EQ") != nullptr;
-                constexpr std::string_view kEqEps = "1e-3";
+                constexpr std::string_view kEqEps = "1e-2";
 
                 const auto emit_component = [&](const char* comp, CompareOp op) {
                     if (tolerant_eq && op == CompareOp::Equal) {
