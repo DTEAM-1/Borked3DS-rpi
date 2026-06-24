@@ -591,9 +591,15 @@ private:
                 // ordered comparisons (<,<=,>,>=) are untouched. Off -> original exact behaviour.
                 const bool tolerant_eq =
                     std::getenv("BORKED3DS_V3DV_TOLERANT_EQ") != nullptr;
+                const bool force_eq_true =
+                    std::getenv("BORKED3DS_V3DV_FORCE_EQ_TRUE") != nullptr;
                 constexpr std::string_view kEqEps = "1e-2";
 
                 const auto emit_component = [&](const char* comp, CompareOp op) {
+                    if (force_eq_true && op == CompareOp::Equal) {
+                        shader.AddLine("conditional_code.{} = true;", comp);
+                        return true;
+                    }
                     if (tolerant_eq && op == CompareOp::Equal) {
                         shader.AddLine("conditional_code.{} = abs({}.{} - {}.{}) <= {};", comp, src1,
                                        comp, src2, comp, kEqEps);
@@ -611,6 +617,8 @@ private:
                     LOG_ERROR(HW_GPU, "Unknown compare mode {:x}", op_x);
                 } else if (cmp_ops.find(op_y) == cmp_ops.end()) {
                     LOG_ERROR(HW_GPU, "Unknown compare mode {:x}", op_y);
+                } else if (force_eq_true && op_x == op_y && op_x == CompareOp::Equal) {
+                    shader.AddLine("conditional_code = bvec2(true);");
                 } else if (tolerant_eq && op_x == op_y &&
                            (op_x == CompareOp::Equal || op_x == CompareOp::NotEqual)) {
                     // Same tolerant op on both components: keep the vec2 form.
