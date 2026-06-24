@@ -848,7 +848,22 @@ private:
         // text. When BORKED3DS_V3DV_CLAMP_OFFSET_INDEX is set we read the nearest in-range
         // uniform instead of the constant fallback: if the text reappears (even with imperfect
         // UVs) the out-of-range fallback was the culprit. Off by default -> original behaviour.
-        if (std::getenv("BORKED3DS_V3DV_CLAMP_OFFSET_INDEX") != nullptr) {
+        if (std::getenv("BORKED3DS_V3DV_STATIC_OFFSET_REGISTER") != nullptr) {
+            // v116-OR: V3DV miscompiles dynamic uniform-array (UBO) indexing for a non-zero
+            // runtime index. Position uses address_registers.x == 0 (constant index -> fine),
+            // but the dialogue texcoord uses f[64 + address_registers.y] with a non-zero runtime
+            // index -> flat UV / invisible text on V3DV while it renders correctly under desktop
+            // GL with the very same GLSL. Replace the single dynamic UBO read with a switch over
+            // constant indices: every uniforms.f[N] below uses a compile-time-constant index,
+            // which V3DV handles correctly. Behaviour is identical to uniforms.f[min(index,95u)].
+            shader.AddLine("uint sidx = min(index, 95u);");
+            shader.AddLine("switch (sidx) {{");
+            for (u32 k = 0; k < 96; ++k) {
+                shader.AddLine("case {}u: return uniforms.f[{}u];", k, k);
+            }
+            shader.AddLine("}}");
+            shader.AddLine("return uniforms.f[95u];");
+        } else if (std::getenv("BORKED3DS_V3DV_CLAMP_OFFSET_INDEX") != nullptr) {
             shader.AddLine("return uniforms.f[min(index, 95u)];");
         } else {
             shader.AddLine("return index < 96u ? uniforms.f[index] : vec4(1.0);");
