@@ -165,6 +165,7 @@ private:
     vk::UniqueBufferView texture_lf_view;
     vk::UniqueBufferView texture_rg_view;
     vk::UniqueBufferView texture_rgba_view;
+    vk::UniqueBufferView vs_pica_f_view; // v116c-TBO: RGBA32F whole-buffer view over uniform_buffer
     vk::DeviceSize uniform_buffer_alignment;
     u32 uniform_size_aligned_vs_pica;
     u32 uniform_size_aligned_vs;
