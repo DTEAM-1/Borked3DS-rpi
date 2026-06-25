@@ -870,15 +870,20 @@ private:
         // is correct, so the dynamic LOAD itself is the fault. get_offset_register_sw resolves the
         // read through a switch over constant indices (V3D-safe) instead of a dynamic load. It is
         // emitted only when enabled, and (see call site) is used ONLY for base_index >= 64, i.e.
-        // the ~6 texcoord call sites, to keep the inlined SPIR-V small (a full-range switch on all
-        // ~30 call sites blew the shader up to 64k words and hung the GPU).
+        // the ~6 texcoord call sites.
+        // v116b-SW: the full 0..95 switch (96 cases) inlined at each base>=64 call site produced a
+        // 46009-word VS that still hung V3D before the first dialogue draw. The texcoord path only
+        // ever reads f[64..95], so we bound the switch to exactly those 32 cases. This cuts the
+        // inlined switch to ~1/3 (~16k words target), which should clear the GPU hang. The index is
+        // clamped into [64,95] so every selector lands on a real case for this path; the trailing
+        // return is a constant-index (V3D-safe) terminal the compiler requires.
         if (std::getenv("BORKED3DS_V3DV_HIGH_SWITCH") != nullptr) {
             shader.AddLine("vec4 get_offset_register_sw(int base_index, int offset) {{");
             ++shader.scope;
             shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
-            shader.AddLine("uint index = min(uint((base_index + fixed_offset) & 0x7F), 95u);");
+            shader.AddLine("uint index = clamp(uint((base_index + fixed_offset) & 0x7F), 64u, 95u);");
             shader.AddLine("switch (index) {{");
-            for (u32 k = 0; k < 96; ++k) {
+            for (u32 k = 64; k < 96; ++k) {
                 shader.AddLine("case {}u: return uniforms.f[{}u];", k, k);
             }
             shader.AddLine("}}");
