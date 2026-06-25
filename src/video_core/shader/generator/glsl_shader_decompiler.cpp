@@ -582,59 +582,15 @@ private:
                 const CompareOp op_x = instr.common.compare_op.x.Value();
                 const CompareOp op_y = instr.common.compare_op.y.Value();
 
-                // v116-EQ: on Pi5/V3DV the dialogue-glyph texcoord write (sub_67_86, reg_tmp5)
-                // is gated by an exact float equality `reg_tmp8 == f[5].y`. reg_tmp8 drifts by a
-                // few ULP on V3D's ALU, so the exact == is false there while it is true under
-                // desktop GL -> sub_67_86 is skipped -> reg_tmp5 keeps a flat fallback -> invisible
-                // text. Index and dynamic reads were proven correct, so this gate is the divergence.
-                // When enabled, emit a tolerant comparison (|a-b| <= eps) for Equal / NotEqual only;
-                // ordered comparisons (<,<=,>,>=) are untouched. Off -> original exact behaviour.
-                const bool tolerant_eq =
-                    std::getenv("BORKED3DS_V3DV_TOLERANT_EQ") != nullptr;
-                const bool force_eq_true =
-                    std::getenv("BORKED3DS_V3DV_FORCE_EQ_TRUE") != nullptr;
-                constexpr std::string_view kEqEps = "1e-2";
-
-                const auto emit_component = [&](const char* comp, CompareOp op) {
-                    if (force_eq_true && op == CompareOp::Equal) {
-                        shader.AddLine("conditional_code.{} = true;", comp);
-                        return true;
-                    }
-                    if (tolerant_eq && op == CompareOp::Equal) {
-                        shader.AddLine("conditional_code.{} = abs({}.{} - {}.{}) <= {};", comp, src1,
-                                       comp, src2, comp, kEqEps);
-                        return true;
-                    }
-                    if (tolerant_eq && op == CompareOp::NotEqual) {
-                        shader.AddLine("conditional_code.{} = abs({}.{} - {}.{}) > {};", comp, src1,
-                                       comp, src2, comp, kEqEps);
-                        return true;
-                    }
-                    return false;
-                };
-
                 if (cmp_ops.find(op_x) == cmp_ops.end()) {
                     LOG_ERROR(HW_GPU, "Unknown compare mode {:x}", op_x);
                 } else if (cmp_ops.find(op_y) == cmp_ops.end()) {
                     LOG_ERROR(HW_GPU, "Unknown compare mode {:x}", op_y);
-                } else if (force_eq_true && op_x == op_y && op_x == CompareOp::Equal) {
-                    shader.AddLine("conditional_code = bvec2(true);");
-                } else if (tolerant_eq && op_x == op_y &&
-                           (op_x == CompareOp::Equal || op_x == CompareOp::NotEqual)) {
-                    // Same tolerant op on both components: keep the vec2 form.
-                    const std::string_view fn = op_x == CompareOp::Equal ? "lessThanEqual"
-                                                                         : "greaterThan";
-                    shader.AddLine("conditional_code = {}(abs(vec2({}) - vec2({})), vec2({}));", fn,
-                                   src1, src2, kEqEps);
                 } else if (op_x != op_y) {
-                    if (!emit_component("x", op_x)) {
-                        shader.AddLine("conditional_code.x = {}.x {} {}.x;", src1,
-                                       cmp_ops.find(op_x)->second.first, src2);
-                    }
-                    if (!emit_component("y", op_y)) {
-                        shader.AddLine("conditional_code.y = {}.y {} {}.y;", src1,
-                                       cmp_ops.find(op_y)->second.first, src2);
-                    }
+                    shader.AddLine("conditional_code.x = {}.x {} {}.x;", src1,
+                                   cmp_ops.find(op_x)->second.first, src2);
+                    shader.AddLine("conditional_code.y = {}.y {} {}.y;", src1,
+                                   cmp_ops.find(op_y)->second.first, src2);
                 } else {
                     shader.AddLine("conditional_code = {}(vec2({}), vec2({}));",
                                    cmp_ops.find(op_x)->second.second, src1, src2);
@@ -886,6 +842,18 @@ private:
         ++shader.scope;
         shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
         shader.AddLine("uint index = uint((base_index + fixed_offset) & 0x7F);");
+        // v116-HIGHU: decide whether the upper uniform bank f[64..95] actually contains data on
+        // V3DV (UBO upload/range bug) or whether the runtime READ of that range is miscompiled.
+        // For texcoord reads (base_index >= 64) return WHITE iff any of f[64]/f[80]/f[95] is
+        // non-zero, BLACK otherwise. Uses CONSTANT indices only -> no dynamic indexing involved,
+        // so a black result means the high uniforms are genuinely empty on this backend.
+        if (std::getenv("BORKED3DS_V3DV_PROBE_HIGH_UNIFORM") != nullptr) {
+            shader.AddLine(
+                "if (base_index >= 64) {{ return vec4("
+                "(any(greaterThan(abs(uniforms.f[64]), vec4(1e-6))) || "
+                "any(greaterThan(abs(uniforms.f[80]), vec4(1e-6))) || "
+                "any(greaterThan(abs(uniforms.f[95]), vec4(1e-6)))) ? 1.0 : 0.0); }}");
+        }
         // v115-I Pi5/V3DV test: position (constant index 32) renders fine, but the texcoord
         // uses a runtime index (64 + address_registers.y). If that index lands >= 96 on V3DV,
         // the original code returns the constant vec4(1.0) -> flat UV -> invisible dialogue
