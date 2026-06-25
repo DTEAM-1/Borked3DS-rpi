@@ -174,7 +174,10 @@ layout (set = 0, binding = 0, std140) uniform vs_pica_data {
 #else
 layout (binding = 0, std140) uniform vs_pica_data {
 #endif
-    pica_uniforms uniforms;
+pica_uniforms uniforms;
+    // v116c-TBO: per-draw texel base of f[0] in the whole-buffer RGBA32F view (vs_pica_f_tbo).
+    // Read at a constant index (V3D-safe) to drive texelFetch in get_offset_register_sw.
+    uint f_texel_base;
 };
 )";
 
