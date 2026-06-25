@@ -335,7 +335,14 @@ private:
             return fmt::format("reg_tmp{}", index);
         case RegisterType::FloatUniform:
             if (address_register_index != 0) {
-                return fmt::format("get_offset_register({}, address_registers.{})", index,
+                // v116-SW: route the upper-bank (texcoord) reads through the constant-index
+                // switch variant on V3D; keep the dynamic read for the lower bank (position/color),
+                // which works. `index` here is the compile-time base uniform index.
+                const char* off_fn =
+                    (std::getenv("BORKED3DS_V3DV_HIGH_SWITCH") != nullptr && index >= 64)
+                        ? "get_offset_register_sw"
+                        : "get_offset_register";
+                return fmt::format("{}({}, address_registers.{})", off_fn, index,
                                    "xyz"[address_register_index - 1]);
             }
             return fmt::format("uniforms.f[{}]", index);
@@ -842,18 +849,6 @@ private:
         ++shader.scope;
         shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
         shader.AddLine("uint index = uint((base_index + fixed_offset) & 0x7F);");
-        // v116-HIGHU: decide whether the upper uniform bank f[64..95] actually contains data on
-        // V3DV (UBO upload/range bug) or whether the runtime READ of that range is miscompiled.
-        // For texcoord reads (base_index >= 64) return WHITE iff any of f[64]/f[80]/f[95] is
-        // non-zero, BLACK otherwise. Uses CONSTANT indices only -> no dynamic indexing involved,
-        // so a black result means the high uniforms are genuinely empty on this backend.
-        if (std::getenv("BORKED3DS_V3DV_PROBE_HIGH_UNIFORM") != nullptr) {
-            shader.AddLine(
-                "if (base_index >= 64) {{ return vec4("
-                "(any(greaterThan(abs(uniforms.f[64]), vec4(1e-6))) || "
-                "any(greaterThan(abs(uniforms.f[80]), vec4(1e-6))) || "
-                "any(greaterThan(abs(uniforms.f[95]), vec4(1e-6)))) ? 1.0 : 0.0); }}");
-        }
         // v115-I Pi5/V3DV test: position (constant index 32) renders fine, but the texcoord
         // uses a runtime index (64 + address_registers.y). If that index lands >= 96 on V3DV,
         // the original code returns the constant vec4(1.0) -> flat UV -> invisible dialogue
@@ -868,7 +863,30 @@ private:
         --shader.scope;
         shader.AddLine("}}\n");
 
-        // Add declarations for registers
+        // v116-SW: V3D miscompiles DYNAMIC indexed reads of the upper uniform bank
+        // (f[64..95], used by the dialogue-glyph texcoord f[64 + address_registers.y]) while it
+        // handles the lower bank (position f[32 + address_registers.x]) and CONSTANT indices
+        // correctly. We confirmed the data is present (constant-index probe = white) and the index
+        // is correct, so the dynamic LOAD itself is the fault. get_offset_register_sw resolves the
+        // read through a switch over constant indices (V3D-safe) instead of a dynamic load. It is
+        // emitted only when enabled, and (see call site) is used ONLY for base_index >= 64, i.e.
+        // the ~6 texcoord call sites, to keep the inlined SPIR-V small (a full-range switch on all
+        // ~30 call sites blew the shader up to 64k words and hung the GPU).
+        if (std::getenv("BORKED3DS_V3DV_HIGH_SWITCH") != nullptr) {
+            shader.AddLine("vec4 get_offset_register_sw(int base_index, int offset) {{");
+            ++shader.scope;
+            shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
+            shader.AddLine("uint index = min(uint((base_index + fixed_offset) & 0x7F), 95u);");
+            shader.AddLine("switch (index) {{");
+            for (u32 k = 0; k < 96; ++k) {
+                shader.AddLine("case {}u: return uniforms.f[{}u];", k, k);
+            }
+            shader.AddLine("}}");
+            shader.AddLine("return uniforms.f[95u];");
+            --shader.scope;
+            shader.AddLine("}}\n");
+        }
+
         shader.AddLine("bvec2 conditional_code = bvec2(false);");
         shader.AddLine("ivec3 address_registers = ivec3(0);");
         for (int i = 0; i < 16; ++i) {
