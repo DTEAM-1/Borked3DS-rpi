@@ -863,31 +863,27 @@ private:
         --shader.scope;
         shader.AddLine("}}\n");
 
-        // v116-SW: V3D miscompiles DYNAMIC indexed reads of the upper uniform bank
+        // v116c-TBO: V3D miscompiles DYNAMIC indexed reads of the upper uniform bank
         // (f[64..95], used by the dialogue-glyph texcoord f[64 + address_registers.y]) while it
-        // handles the lower bank (position f[32 + address_registers.x]) and CONSTANT indices
-        // correctly. We confirmed the data is present (constant-index probe = white) and the index
-        // is correct, so the dynamic LOAD itself is the fault. get_offset_register_sw resolves the
-        // read through a switch over constant indices (V3D-safe) instead of a dynamic load. It is
-        // emitted only when enabled, and (see call site) is used ONLY for base_index >= 64, i.e.
-        // the ~6 texcoord call sites.
-        // v116b-SW: the full 0..95 switch (96 cases) inlined at each base>=64 call site produced a
-        // 46009-word VS that still hung V3D before the first dialogue draw. The texcoord path only
-        // ever reads f[64..95], so we bound the switch to exactly those 32 cases. This cuts the
-        // inlined switch to ~1/3 (~16k words target), which should clear the GPU hang. The index is
-        // clamped into [64,95] so every selector lands on a real case for this path; the trailing
-        // return is a constant-index (V3D-safe) terminal the compiler requires.
+        // handles the lower bank (position) and CONSTANT indices correctly. The constant-index
+        // switch (v116b) was still folded back to a dynamic load by V3D (text stayed flat) and,
+        // inlined at each base>=64 call site, also blew the VS up (~34-46k words) and hung the GPU.
+        // get_offset_register_sw now reads f[] through a UNIFORM TEXEL BUFFER (the texture unit) --
+        // a different hardware path that V3D compiles correctly here. This is the exact mechanism
+        // the FS fog/lighting LUTs already use: texelFetch(lut, per_draw_base + i) over a
+        // whole-buffer view. f_texel_base is the per-draw texel index of f[0], written by the
+        // Vulkan uniform upload and read at a CONSTANT index (V3D-safe). One change kills BOTH the
+        // invisibility and the giant-switch hang. Emitted only when enabled; used ONLY for
+        // base_index >= 64 (see call site). vs_pica_f_tbo is bound at set=0 binding=6, eVertex.
         if (std::getenv("BORKED3DS_V3DV_HIGH_SWITCH") != nullptr) {
+            shader.AddLine("#ifdef VULKAN");
+            shader.AddLine("layout(set = 0, binding = 6) uniform samplerBuffer vs_pica_f_tbo;");
+            shader.AddLine("#endif");
             shader.AddLine("vec4 get_offset_register_sw(int base_index, int offset) {{");
             ++shader.scope;
             shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
-            shader.AddLine("uint index = clamp(uint((base_index + fixed_offset) & 0x7F), 64u, 95u);");
-            shader.AddLine("switch (index) {{");
-            for (u32 k = 64; k < 96; ++k) {
-                shader.AddLine("case {}u: return uniforms.f[{}u];", k, k);
-            }
-            shader.AddLine("}}");
-            shader.AddLine("return uniforms.f[95u];");
+            shader.AddLine("int index = min((base_index + fixed_offset) & 0x7F, 95);");
+            shader.AddLine("return texelFetch(vs_pica_f_tbo, int(f_texel_base) + index);");
             --shader.scope;
             shader.AddLine("}}\n");
         }
