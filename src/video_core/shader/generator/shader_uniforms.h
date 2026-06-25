@@ -98,10 +98,20 @@ static_assert(sizeof(VSUniformData) < 16384,
 
 struct VSPicaUniformData {
     alignas(16) PicaUniformsData uniforms;
+    // v116c-TBO: texel index of f[0] (within the whole-uniform_buffer RGBA32F view bound at
+    // set=0 binding=6, vs_pica_f_tbo) for the current draw. Written by the Vulkan uniform upload
+    // (UploadUniforms, sync_vs_pica) and read at a CONSTANT index by the VS texcoord path
+    // (get_offset_register_sw -> texelFetch). This is the direct analog of the FS fog/lighting
+    // *_lut_offset uniforms and bypasses the V3D dynamic-uniform-load miscompile of f[64..95].
+    // Always present (tiny, unused on the GL path); only the texelFetch use is env-gated.
+    alignas(16) u32 f_texel_base;
 };
-static_assert(sizeof(VSPicaUniformData) == 1856,
+static_assert(sizeof(VSPicaUniformData) == 1872,
               "The size of the VSPicaUniformData does not match the structure in the shader");
 static_assert(sizeof(VSPicaUniformData) < 16384,
               "VSPicaUniformData structure must be less than 16kb as per the OpenGL spec");
+static_assert(offsetof(PicaUniformsData, f) == 320,
+              "f[] must start at byte 320; the f_texel_base math in vk_rasterizer.cpp "
+              "(UploadUniforms) depends on this offset");
 
 } // namespace Pica::Shader::Generator
