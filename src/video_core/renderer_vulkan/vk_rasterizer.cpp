@@ -2016,7 +2016,9 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
       runtime{instance, scheduler, renderpass_cache, update_queue, image_count},
       res_cache{memory, custom_tex_manager, runtime, regs, renderer},
       stream_buffer{instance, scheduler, BUFFER_USAGE, STREAM_BUFFER_SIZE},
-      uniform_buffer{instance, scheduler, vk::BufferUsageFlagBits::eUniformBuffer,
+      uniform_buffer{instance, scheduler,
+                     vk::BufferUsageFlagBits::eUniformBuffer |
+                         vk::BufferUsageFlagBits::eUniformTexelBuffer,
                      UNIFORM_BUFFER_SIZE},
       texture_buffer{instance, scheduler, vk::BufferUsageFlagBits::eUniformTexelBuffer,
                      TextureBufferSize(instance)},
@@ -2072,7 +2074,12 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
         .offset = 0,
         .range = VK_WHOLE_SIZE,
     });
-
+   vs_pica_f_view = device.createBufferViewUnique({
+        .buffer = uniform_buffer.Handle(),
+        .format = vk::Format::eR32G32B32A32Sfloat,
+        .offset = 0,
+        .range = VK_WHOLE_SIZE,
+    });
     scheduler.RegisterOnSubmit([&renderpass_cache] { renderpass_cache.EndRendering(); });
 
     const auto buffer_set = pipeline_cache.Acquire(DescriptorHeapType::Buffer);
@@ -2082,6 +2089,7 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
     update_queue.AddTexelBuffer(buffer_set, 3, *texture_lf_view);
     update_queue.AddTexelBuffer(buffer_set, 4, *texture_rg_view);
     update_queue.AddTexelBuffer(buffer_set, 5, *texture_rgba_view);
+    update_queue.AddTexelBuffer(buffer_set, 6, *vs_pica_f_view);
 
     const auto texture_set = pipeline_cache.Acquire(DescriptorHeapType::Texture);
     Surface& null_surface = res_cache.GetSurface(VideoCore::NULL_SURFACE_ID);
@@ -8580,8 +8588,13 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
     }
 
     if (sync_vs_pica) {
-        VSPicaUniformData vs_uniforms;
+    VSPicaUniformData vs_uniforms;
         vs_uniforms.uniforms.SetFromRegs(regs.vs, pica.vs_setup);
+        // v116c-TBO: texel index of f[0] for THIS draw, in the whole-buffer RGBA32F view.
+        // draw_base = the same dynamic offset passed to UpdateRange(0, ...) below; f[] sits 320 B
+        // into the PICA block. All terms are 16-aligned so the division is exact.
+        const u32 draw_base = offset + used_bytes;
+        vs_uniforms.f_texel_base = (draw_base + 320u) / 16u;
         std::memcpy(uniforms + used_bytes, &vs_uniforms, sizeof(vs_uniforms));
 
         pipeline_cache.UpdateRange(0, offset + used_bytes);
