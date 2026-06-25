@@ -2074,7 +2074,7 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
         .offset = 0,
         .range = VK_WHOLE_SIZE,
     });
-   vs_pica_f_view = device.createBufferViewUnique({
+    vs_pica_f_view = device.createBufferViewUnique({
         .buffer = uniform_buffer.Handle(),
         .format = vk::Format::eR32G32B32A32Sfloat,
         .offset = 0,
@@ -8588,7 +8588,7 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
     }
 
     if (sync_vs_pica) {
-    VSPicaUniformData vs_uniforms;
+        VSPicaUniformData vs_uniforms;
         vs_uniforms.uniforms.SetFromRegs(regs.vs, pica.vs_setup);
         // v116c-TBO: texel index of f[0] for THIS draw, in the whole-buffer RGBA32F view.
         // draw_base = the same dynamic offset passed to UpdateRange(0, ...) below; f[] sits 320 B
