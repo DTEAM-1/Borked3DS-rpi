@@ -200,6 +200,63 @@ private:
     }
 };
 
+// v117b-MIRROR (Plan A gating): returns true if any instruction REACHABLE from main_offset reads
+// the upper float-uniform bank f[64..95] through an address-register (dynamic) index -- exactly the
+// pattern GetSourceRegister routes to get_offset_register_sw (address_register_index != 0 &&
+// FloatUniform && base index >= 64). The Vulkan rasterizer calls this per draw to decide whether to
+// mirror f[64..95] into f[0..31] for the V3DV low-bank workaround. Reachability is computed with the
+// same ControlFlowAnalyzer used for generation, so unreachable tail words (which a naive linear scan
+// would misdecode and false-flag) are never inspected; the loose main range is bounded by END.
+bool ProgramReadsHighIndexedUniform(const ProgramCode& program_code, u32 main_offset) {
+    const auto is_high_uniform = [](const SourceRegister& reg, u32 addr_index) {
+        return addr_index != 0 && reg.GetRegisterType() == RegisterType::FloatUniform &&
+               static_cast<u32>(reg.GetIndex()) >= 64;
+    };
+
+    std::set<Subroutine> subroutines;
+    try {
+        subroutines = ControlFlowAnalyzer(program_code, main_offset).MoveSubroutines();
+    } catch (const std::exception&) {
+        // If control-flow analysis fails the generator falls back too; never mirror in that case.
+        return false;
+    }
+
+    for (const auto& sub : subroutines) {
+        for (u32 offset = sub.begin; offset < sub.end && offset < PROGRAM_END; ++offset) {
+            const Instruction instr = {program_code[offset]};
+            if (instr.opcode.Value() == OpCode::Id::END) {
+                break; // bounds the loose main subroutine range at its terminator
+            }
+            switch (instr.opcode.Value().GetInfo().type) {
+            case OpCode::Type::Arithmetic: {
+                const bool inv =
+                    (0 != (instr.opcode.Value().GetInfo().subtype & OpCode::Info::SrcInversed));
+                if (is_high_uniform(instr.common.GetSrc1(inv),
+                                    !inv * instr.common.address_register_index) ||
+                    is_high_uniform(instr.common.GetSrc2(inv),
+                                    inv * instr.common.address_register_index)) {
+                    return true;
+                }
+                break;
+            }
+            case OpCode::Type::MultiplyAdd: {
+                const bool inv = (instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MADI);
+                if (is_high_uniform(instr.mad.GetSrc2(inv),
+                                    !inv * instr.mad.address_register_index) ||
+                    is_high_uniform(instr.mad.GetSrc3(inv),
+                                    inv * instr.mad.address_register_index)) {
+                    return true;
+                }
+                break;
+            }
+            default:
+                break;
+            }
+        }
+    }
+    return false;
+}
+
 class ShaderWriter {
 public:
     // Forwards all arguments directly to libfmt.
@@ -894,14 +951,14 @@ private:
                 shader.AddLine("return vec4(vec3(clamp(float(index - 64) / 31.0, 0.0, 1.0)), 1.0);");
             } else if (std::getenv("BORKED3DS_V3DV_LOW_MIRROR") != nullptr) {
                 // v117-MIRROR (Plan A): the upper bank f[64..95] is mirrored into the lower bank
-                // f[0..31] by the Vulkan uniform upload (see RasterizerVulkan::UploadUniforms).
-                // DYNAMIC indexed reads of the LOW bank are the ONLY uniform path V3D compiles
-                // correctly here -- the position already uses f[32 + aL.x] successfully, while the
-                // upper-bank dynamic read AND the VS texel-buffer (texelFetch) path both miscompile
-                // to a constant on V3DV (the TBO_INDEX_TEST probe showed the index varies, so the
-                // fault is in the READ, not upstream). Read the mirror with a dynamic LOW index.
-                // No TMU, no buffer view, no barrier. `index` is in [64,95] here -> index-64 in
-                // [0,31]; clamp defensively.
+                // f[0..31] by the Vulkan uniform upload (RasterizerVulkan::UploadUniforms), but
+                // ONLY for draws whose VS actually reads the upper bank dynamically (detected via
+                // ProgramReadsHighIndexedUniform). DYNAMIC indexed reads of the LOW bank are the
+                // only uniform path V3D compiles correctly here (the position already uses
+                // f[32 + aL.x] successfully), while both the upper-bank dynamic read AND the VS
+                // texel-buffer (texelFetch) path miscompile to a constant on V3DV. Read the mirror
+                // with a dynamic LOW index. No TMU, no buffer view, no barrier. `index` is in
+                // [64,95] here -> index-64 in [0,31]; clamp defensively.
                 shader.AddLine("return uniforms.f[clamp(index - 64, 0, 31)];");
             } else {
                 shader.AddLine("return texelFetch(vs_pica_f_tbo, int(f_texel_base) + index);");
