@@ -200,17 +200,28 @@ private:
     }
 };
 
-// v117b-MIRROR (Plan A gating): returns true if any instruction REACHABLE from main_offset reads
-// the upper float-uniform bank f[64..95] through an address-register (dynamic) index -- exactly the
-// pattern GetSourceRegister routes to get_offset_register_sw (address_register_index != 0 &&
-// FloatUniform && base index >= 64). The Vulkan rasterizer calls this per draw to decide whether to
-// mirror f[64..95] into f[0..31] for the V3DV low-bank workaround. Reachability is computed with the
-// same ControlFlowAnalyzer used for generation, so unreachable tail words (which a naive linear scan
-// would misdecode and false-flag) are never inspected; the loose main range is bounded by END.
-bool ProgramReadsHighIndexedUniform(const ProgramCode& program_code, u32 main_offset) {
-    const auto is_high_uniform = [](const SourceRegister& reg, u32 addr_index) {
-        return addr_index != 0 && reg.GetRegisterType() == RegisterType::FloatUniform &&
-               static_cast<u32>(reg.GetIndex()) >= 64;
+// v117c-MIRROR (Plan A gating, refined): the V3DV low-bank mirror overwrites ONLY f[0..31], so a
+// draw is corrupted iff it reads any uniform f[<32] (e.g. 3D transform matrices in the low slots).
+// We therefore mirror a draw iff it (a) reads the upper bank f[64..95] via an address-register
+// (dynamic) index -- the pattern routed to get_offset_register_sw -- AND (b) never reads any uniform
+// below f[32]. The dialogue-glyph VS reads only f[32 + aL.x] (position) and f[64 + aL.y] (texcoord),
+// so it qualifies; matrix-reading 3D shaders are excluded and left intact. Reachability is computed
+// with the same ControlFlowAnalyzer used for generation, bounded by END, so unreachable tail words
+// are never misdecoded.
+bool VertexShaderWantsLowMirror(const ProgramCode& program_code, u32 main_offset) {
+    const auto classify = [](const SourceRegister& reg, u32 addr_index, bool& reads_high,
+                             bool& reads_low) {
+        if (reg.GetRegisterType() != RegisterType::FloatUniform) {
+            return;
+        }
+        const u32 base = static_cast<u32>(reg.GetIndex());
+        if (base < 32) {
+            // Constant read of f[0..31], or a dynamic read whose base can land in f[0..31]. Either
+            // way the draw touches the bytes the mirror overwrites -> must NOT be mirrored.
+            reads_low = true;
+        } else if (addr_index != 0 && base >= 64) {
+            reads_high = true;
+        }
     };
 
     std::set<Subroutine> subroutines;
@@ -221,6 +232,8 @@ bool ProgramReadsHighIndexedUniform(const ProgramCode& program_code, u32 main_of
         return false;
     }
 
+    bool reads_high = false;
+    bool reads_low = false;
     for (const auto& sub : subroutines) {
         for (u32 offset = sub.begin; offset < sub.end && offset < PROGRAM_END; ++offset) {
             const Instruction instr = {program_code[offset]};
@@ -231,30 +244,30 @@ bool ProgramReadsHighIndexedUniform(const ProgramCode& program_code, u32 main_of
             case OpCode::Type::Arithmetic: {
                 const bool inv =
                     (0 != (instr.opcode.Value().GetInfo().subtype & OpCode::Info::SrcInversed));
-                if (is_high_uniform(instr.common.GetSrc1(inv),
-                                    !inv * instr.common.address_register_index) ||
-                    is_high_uniform(instr.common.GetSrc2(inv),
-                                    inv * instr.common.address_register_index)) {
-                    return true;
-                }
+                classify(instr.common.GetSrc1(inv),
+                         !inv * instr.common.address_register_index, reads_high, reads_low);
+                classify(instr.common.GetSrc2(inv),
+                         inv * instr.common.address_register_index, reads_high, reads_low);
                 break;
             }
             case OpCode::Type::MultiplyAdd: {
                 const bool inv = (instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MADI);
-                if (is_high_uniform(instr.mad.GetSrc2(inv),
-                                    !inv * instr.mad.address_register_index) ||
-                    is_high_uniform(instr.mad.GetSrc3(inv),
-                                    inv * instr.mad.address_register_index)) {
-                    return true;
-                }
+                classify(instr.mad.GetSrc1(inv), 0, reads_high, reads_low);
+                classify(instr.mad.GetSrc2(inv),
+                         !inv * instr.mad.address_register_index, reads_high, reads_low);
+                classify(instr.mad.GetSrc3(inv),
+                         inv * instr.mad.address_register_index, reads_high, reads_low);
                 break;
             }
             default:
                 break;
             }
+            if (reads_low) {
+                return false; // never mirror a draw that reads f[<32]
+            }
         }
     }
-    return false;
+    return reads_high && !reads_low;
 }
 
 class ShaderWriter {
@@ -953,7 +966,7 @@ private:
                 // v117-MIRROR (Plan A): the upper bank f[64..95] is mirrored into the lower bank
                 // f[0..31] by the Vulkan uniform upload (RasterizerVulkan::UploadUniforms), but
                 // ONLY for draws whose VS actually reads the upper bank dynamically (detected via
-                // ProgramReadsHighIndexedUniform). DYNAMIC indexed reads of the LOW bank are the
+                // VertexShaderWantsLowMirror). DYNAMIC indexed reads of the LOW bank are the
                 // only uniform path V3D compiles correctly here (the position already uses
                 // f[32 + aL.x] successfully), while both the upper-bank dynamic read AND the VS
                 // texel-buffer (texelFetch) path miscompile to a constant on V3DV. Read the mirror

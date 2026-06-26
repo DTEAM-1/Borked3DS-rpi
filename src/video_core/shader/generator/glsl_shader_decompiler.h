@@ -18,9 +18,10 @@ std::string DecompileProgram(const Pica::ProgramCode& program_code,
                              const RegGetter& inputreg_getter, const RegGetter& outputreg_getter,
                              bool sanitize_mul);
 
-/// v117b-MIRROR (Plan A gating): true if any instruction reachable from main_offset reads the upper
-/// float-uniform bank f[64..95] via an address-register (dynamic) index. The Vulkan rasterizer uses
-/// this to apply the V3DV low-bank mirror only to the draws that need it (e.g. dialogue glyphs).
-bool ProgramReadsHighIndexedUniform(const Pica::ProgramCode& program_code, u32 main_offset);
+/// v117c-MIRROR (Plan A gating): true if this VS should receive the V3DV low-bank mirror, i.e. it
+/// reads f[64..95] via an address-register (dynamic) index AND never reads any uniform f[<32]. The
+/// Vulkan rasterizer uses this per draw so the mirror (which overwrites f[0..31]) is applied only to
+/// draws that don't read the low bank -- the dialogue glyphs -- and never to matrix-reading 3D draws.
+bool VertexShaderWantsLowMirror(const Pica::ProgramCode& program_code, u32 main_offset);
 
 } // namespace Pica::Shader::Generator::GLSL
