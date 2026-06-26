@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <exception>
+#include <set>
 #include <span>
 #include <string>
 #include <tuple>
@@ -8592,23 +8593,34 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
         VSPicaUniformData vs_uniforms;
         vs_uniforms.uniforms.SetFromRegs(regs.vs, pica.vs_setup);
 
-        // v117b-MIRROR (Plan A): mirror the upper float-uniform bank f[64..95] into the lower bank
+        // v117c-MIRROR (Plan A): mirror the upper float-uniform bank f[64..95] into the lower bank
         // f[0..31] in this per-draw copy, so the dialogue-glyph VS can fetch the texcoord uniforms
         // through a DYNAMIC LOW index (uniforms.f[index-64] in get_offset_register_sw) -- the only
         // indexed uniform path V3DV compiles correctly. Gated by BORKED3DS_V3DV_LOW_MIRROR.
         //
-        // CONDITIONAL per-draw: applied ONLY to draws whose VS actually reads the upper bank
-        // f[64..95] through an address-register (dynamic) index -- i.e. the glyph draw. Normal 3D
-        // draws read f[0..31] directly (transform matrices); mirroring over them destroys their
-        // geometry (whole-scene triangle soup). The decision is delegated to the decompiler's
-        // ProgramReadsHighIndexedUniform, which computes REACHABILITY from main_offset exactly like
-        // generation (so unreachable tail words are never misdecoded into a false positive, unlike a
-        // naive linear scan).
+        // CONDITIONAL per-draw: VertexShaderWantsLowMirror returns true ONLY for draws that read
+        // f[64..95] via an address-register (dynamic) index AND never read any uniform f[<32]. Since
+        // the mirror overwrites only f[0..31], this leaves matrix-reading 3D shaders (which read the
+        // low slots) untouched, while still catching the glyph VS (reads only f[32+aL.x] and
+        // f[64+aL.y]). Set BORKED3DS_V3DV_TRACE_MIRROR=1 to log each distinct VS that gets mirrored
+        // (one line per shader) -- a numeric measure of how many draws the gate actually selects.
         static const bool low_mirror = std::getenv("BORKED3DS_V3DV_LOW_MIRROR") != nullptr;
-        if (low_mirror && GLSL::ProgramReadsHighIndexedUniform(pica.vs_setup.program_code,
-                                                               regs.vs.main_offset)) {
+        if (low_mirror &&
+            GLSL::VertexShaderWantsLowMirror(pica.vs_setup.program_code, regs.vs.main_offset)) {
             for (u32 i = 0; i < 32; ++i) {
                 vs_uniforms.uniforms.f[i] = vs_uniforms.uniforms.f[64 + i];
+            }
+
+            static const bool trace_mirror = std::getenv("BORKED3DS_V3DV_TRACE_MIRROR") != nullptr;
+            if (trace_mirror) {
+                static std::set<u32> seen_offsets;
+                const u32 mo = static_cast<u32>(regs.vs.main_offset);
+                if (seen_offsets.insert(mo).second) {
+                    LOG_INFO(Render_Vulkan,
+                             "v117 low-mirror applied to VS main_offset={} (distinct mirrored "
+                             "shaders so far={})",
+                             mo, seen_offsets.size());
+                }
             }
         }
 
