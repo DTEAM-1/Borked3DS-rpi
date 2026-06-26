@@ -892,6 +892,17 @@ private:
             // Compared against the current texelFetch result (flat white), this splits the tree.
             if (std::getenv("BORKED3DS_V3DV_TBO_INDEX_TEST") != nullptr) {
                 shader.AddLine("return vec4(vec3(clamp(float(index - 64) / 31.0, 0.0, 1.0)), 1.0);");
+            } else if (std::getenv("BORKED3DS_V3DV_LOW_MIRROR") != nullptr) {
+                // v117-MIRROR (Plan A): the upper bank f[64..95] is mirrored into the lower bank
+                // f[0..31] by the Vulkan uniform upload (see RasterizerVulkan::UploadUniforms).
+                // DYNAMIC indexed reads of the LOW bank are the ONLY uniform path V3D compiles
+                // correctly here -- the position already uses f[32 + aL.x] successfully, while the
+                // upper-bank dynamic read AND the VS texel-buffer (texelFetch) path both miscompile
+                // to a constant on V3DV (the TBO_INDEX_TEST probe showed the index varies, so the
+                // fault is in the READ, not upstream). Read the mirror with a dynamic LOW index.
+                // No TMU, no buffer view, no barrier. `index` is in [64,95] here -> index-64 in
+                // [0,31]; clamp defensively.
+                shader.AddLine("return uniforms.f[clamp(index - 64, 0, 31)];");
             } else {
                 shader.AddLine("return texelFetch(vs_pica_f_tbo, int(f_texel_base) + index);");
             }
