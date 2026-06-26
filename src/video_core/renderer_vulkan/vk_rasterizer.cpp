@@ -17,6 +17,8 @@
 #include <tuple>
 #include <vector>
 
+#include <nihstro/shader_bytecode.h>
+
 #include "common/literals.h"
 #include "common/logging/log.h"
 #include "common/math_util.h"
@@ -8596,17 +8598,52 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
         // through a DYNAMIC LOW index (uniforms.f[index-64] in get_offset_register_sw) -- the only
         // indexed uniform path V3DV compiles correctly. Gated by BORKED3DS_V3DV_LOW_MIRROR.
         //
-        // SCOPE / KNOWN LIMITATION for this proof pass: this clobbers f[0..31] for EVERY accelerated
-        // draw while the flag is on, so non-glyph 3D draws that read f[0..31] directly will be wrong
-        // (expect transient 3D-scene glitches). The glyph VS reads only f[32..95] (position
-        // f[32 + aL.x], texcoord f[64 + aL.y]), so its OWN output is unaffected by the mirror and
-        // the dialogue-text verdict stays valid. Making this conditional per-draw (for Smash /
-        // Kid Icarus non-regression) is the follow-up pass and needs the VS-config "uses high
-        // indexed uniform" flag threaded through (vk_rasterizer.h + shader_gen.cpp).
+        // CONDITIONAL per-draw (v117b): the mirror is applied ONLY to draws whose VS actually reads
+        // the upper bank f[64..95] through an address-register (dynamic) index -- i.e. the glyph VS.
+        // Normal 3D draws read f[0..31] directly (transform matrices); mirroring over them destroys
+        // their geometry (whole-scene triangle soup, dialogue unreachable). The scan below replays
+        // the EXACT predicate the decompiler uses to emit get_offset_register_sw
+        // (address_register_index != 0 && FloatUniform && index >= 64), using the same nihstro API,
+        // so it flags exactly the draws the shader path rewires -- no more, no less.
         static const bool low_mirror = std::getenv("BORKED3DS_V3DV_LOW_MIRROR") != nullptr;
         if (low_mirror) {
-            for (u32 i = 0; i < 32; ++i) {
-                vs_uniforms.uniforms.f[i] = vs_uniforms.uniforms.f[64 + i];
+            const auto is_high_uniform = [](const nihstro::SourceRegister& reg,
+                                            u32 addr_index) -> bool {
+                return addr_index != 0 &&
+                       reg.GetRegisterType() == nihstro::RegisterType::FloatUniform &&
+                       static_cast<u32>(reg.GetIndex()) >= 64;
+            };
+
+            bool vs_uses_high_indexed = false;
+            for (u32 off = 0; off < pica.vs_setup.program_code.size() && !vs_uses_high_indexed;
+                 ++off) {
+                const nihstro::Instruction instr = {pica.vs_setup.program_code[off]};
+                const auto type = instr.opcode.Value().GetInfo().type;
+                if (type == nihstro::OpCode::Type::Arithmetic) {
+                    const bool inv = (0 != (instr.opcode.Value().GetInfo().subtype &
+                                            nihstro::OpCode::Info::SrcInversed));
+                    if (is_high_uniform(instr.common.GetSrc1(inv),
+                                        !inv * instr.common.address_register_index) ||
+                        is_high_uniform(instr.common.GetSrc2(inv),
+                                        inv * instr.common.address_register_index)) {
+                        vs_uses_high_indexed = true;
+                    }
+                } else if (type == nihstro::OpCode::Type::MultiplyAdd) {
+                    const bool inv =
+                        (instr.opcode.Value().EffectiveOpCode() == nihstro::OpCode::Id::MADI);
+                    if (is_high_uniform(instr.mad.GetSrc2(inv),
+                                        !inv * instr.mad.address_register_index) ||
+                        is_high_uniform(instr.mad.GetSrc3(inv),
+                                        inv * instr.mad.address_register_index)) {
+                        vs_uses_high_indexed = true;
+                    }
+                }
+            }
+
+            if (vs_uses_high_indexed) {
+                for (u32 i = 0; i < 32; ++i) {
+                    vs_uniforms.uniforms.f[i] = vs_uniforms.uniforms.f[64 + i];
+                }
             }
         }
 
