@@ -883,7 +883,18 @@ private:
             ++shader.scope;
             shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
             shader.AddLine("int index = min((base_index + fixed_offset) & 0x7F, 95);");
-            shader.AddLine("return texelFetch(vs_pica_f_tbo, int(f_texel_base) + index);");
+            // v116c-DIAG: BORKED3DS_V3DV_TBO_INDEX_TEST=1 bypasses texelFetch entirely and returns
+            // a luminance ramp derived from `index` (64..95 -> 0..1). Run with FS_SHOW_UV=1:
+            //   - per-glyph cells in DIFFERENT grays -> index varies, reg_tmp5->output works, so the
+            //     texelFetch READ is the fault (TMU visibility / VS texel-buffer on V3D).
+            //   - still flat -> index is constant here / reg_tmp5 never reaches the output -> the
+            //     fault is upstream of the read, not in it.
+            // Compared against the current texelFetch result (flat white), this splits the tree.
+            if (std::getenv("BORKED3DS_V3DV_TBO_INDEX_TEST") != nullptr) {
+                shader.AddLine("return vec4(vec3(clamp(float(index - 64) / 31.0, 0.0, 1.0)), 1.0);");
+            } else {
+                shader.AddLine("return texelFetch(vs_pica_f_tbo, int(f_texel_base) + index);");
+            }
             --shader.scope;
             shader.AddLine("}}\n");
         }
