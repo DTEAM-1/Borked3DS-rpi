@@ -8590,6 +8590,26 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
     if (sync_vs_pica) {
         VSPicaUniformData vs_uniforms;
         vs_uniforms.uniforms.SetFromRegs(regs.vs, pica.vs_setup);
+
+        // v117-MIRROR (Plan A): mirror the upper float-uniform bank f[64..95] into the lower bank
+        // f[0..31] in this per-draw copy, so the dialogue-glyph VS can fetch the texcoord uniforms
+        // through a DYNAMIC LOW index (uniforms.f[index-64] in get_offset_register_sw) -- the only
+        // indexed uniform path V3DV compiles correctly. Gated by BORKED3DS_V3DV_LOW_MIRROR.
+        //
+        // SCOPE / KNOWN LIMITATION for this proof pass: this clobbers f[0..31] for EVERY accelerated
+        // draw while the flag is on, so non-glyph 3D draws that read f[0..31] directly will be wrong
+        // (expect transient 3D-scene glitches). The glyph VS reads only f[32..95] (position
+        // f[32 + aL.x], texcoord f[64 + aL.y]), so its OWN output is unaffected by the mirror and
+        // the dialogue-text verdict stays valid. Making this conditional per-draw (for Smash /
+        // Kid Icarus non-regression) is the follow-up pass and needs the VS-config "uses high
+        // indexed uniform" flag threaded through (vk_rasterizer.h + shader_gen.cpp).
+        static const bool low_mirror = std::getenv("BORKED3DS_V3DV_LOW_MIRROR") != nullptr;
+        if (low_mirror) {
+            for (u32 i = 0; i < 32; ++i) {
+                vs_uniforms.uniforms.f[i] = vs_uniforms.uniforms.f[64 + i];
+            }
+        }
+
         // v116c-TBO: texel index of f[0] for THIS draw, in the whole-buffer RGBA32F view.
         // draw_base = the same dynamic offset passed to UpdateRange(0, ...) below; f[] sits 320 B
         // into the PICA block. All terms are 16-aligned so the division is exact.
