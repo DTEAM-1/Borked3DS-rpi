@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <vector>
 
 #include "common/literals.h"
@@ -179,6 +180,28 @@ std::atomic<u32> g_pi5_ui_surface_trace_budget{128};
                                                              vk::ImageAspectFlags aspect,
                                                              vk::Format format) {
     if (NeedsPi5UIUploadExpansion(pixel_format) && format == vk::Format::eR8G8B8A8Unorm) {
+        // v118-A8FONT: the Pi5 UI expansion stores A8/A4 as (0xFF,0xFF,0xFF,intensity) -- i.e. white
+        // rgb with the glyph intensity in the ALPHA channel. With the identity view below, sampling
+        // returns tex.rgb=(1,1,1), so a TEV stage of the form "color = tex.rgb * primary.rgb" yields
+        // a flat primary-colored quad and the glyph shape (carried by intensity) never reaches rgb
+        // -> alpha-only font text is invisible on V3DV, while OpenGL presents the intensity in rgb
+        // and shows the text (confirmed: same atlas 0x2064be00, icons/RGBA glyphs render, only A8
+        // letters vanish). For the alpha-only formats, replicate the intensity (the alpha channel of
+        // the expanded image) into rgb so the font drives the visible color, matching the OpenGL
+        // reference. Gated by BORKED3DS_V3DV_A8_INTENSITY_RGB so it can be toggled without a rebuild.
+        if (pixel_format == VideoCore::PixelFormat::A8 ||
+            pixel_format == VideoCore::PixelFormat::A4) {
+            static const bool a8_intensity_rgb =
+                std::getenv("BORKED3DS_V3DV_A8_INTENSITY_RGB") != nullptr;
+            if (a8_intensity_rgb) {
+                return vk::ComponentMapping{
+                    .r = vk::ComponentSwizzle::eA,
+                    .g = vk::ComponentSwizzle::eA,
+                    .b = vk::ComponentSwizzle::eA,
+                    .a = vk::ComponentSwizzle::eA,
+                };
+            }
+        }
         return MakeIdentityComponentMapping();
     }
     if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
