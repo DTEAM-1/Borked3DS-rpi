@@ -24,4 +24,22 @@ std::string DecompileProgram(const Pica::ProgramCode& program_code,
 /// draws that don't read the low bank -- the dialogue glyphs -- and never to matrix-reading 3D draws.
 bool VertexShaderWantsLowMirror(const Pica::ProgramCode& program_code, u32 main_offset);
 
+/// v118-MIRROR (Plan A, per-VS base): plan describing how to mirror the V3DV-miscompiled upper float
+/// uniform bank into a conflict-free low window for one VS.
+///   ok    : the mirror should be applied to this draw
+///   base  : low slot where f[64] is mirrored (= highest f[<32] index the VS reads, + 1; 0 if none)
+///   count : number of contiguous upper-bank slots mirrored: f[64..64+count) -> f[base..base+count)
+/// The generated get_offset_register_sw re-fetches the texcoord via a dynamic LOW index at the same
+/// base, clamped into [0, count). For a pure upper-bank VS this is base=0/count=32 (the original
+/// f[0..31] <- f[64..95] mirror). Unlike VertexShaderWantsLowMirror it also accepts hybrid VSs that
+/// read low constants (e.g. the Sonic Lost World glyph VS: low f[0..6] + upper-bank texcoord), by
+/// placing the window above their low reads instead of excluding them.
+struct LowMirrorPlan {
+    bool ok;
+    u32 base;
+    u32 count;
+};
+
+LowMirrorPlan VertexShaderLowMirrorPlan(const Pica::ProgramCode& program_code, u32 main_offset);
+
 } // namespace Pica::Shader::Generator::GLSL

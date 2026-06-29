@@ -208,85 +208,80 @@ private:
 // so it qualifies; matrix-reading 3D shaders are excluded and left intact. Reachability is computed
 // with the same ControlFlowAnalyzer used for generation, bounded by END, so unreachable tail words
 // are never misdecoded.
-bool VertexShaderWantsLowMirror(const ProgramCode& program_code, u32 main_offset) {
-    const auto classify = [](const SourceRegister& reg, u32 addr_index, bool& reads_high,
-                             bool& reads_low) {
-        if (reg.GetRegisterType() != RegisterType::FloatUniform) {
-            return;
-        }
-        const u32 base = static_cast<u32>(reg.GetIndex());
-        if (base < 32) {
-            // Constant read of f[0..31], or a dynamic read whose base can land in f[0..31]. Either
-            // way the draw touches the bytes the mirror overwrites -> must NOT be mirrored.
-            reads_low = true;
-        } else if (addr_index != 0 && base >= 64) {
-            reads_high = true;
-        }
-    };
+LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 main_offset) {
+    // v118-MIRROR (Plan A, per-VS base): V3D miscompiles DYNAMIC indexed reads of the upper float
+    // uniform bank f[64..95] (used by the dialogue-glyph texcoord, f[64 + address_registers.y]),
+    // while it handles dynamic reads of the LOW bank correctly (the position already uses
+    // f[32 + aL.x]). The fix mirrors the needed upper-bank slots into a CONTIGUOUS low window the VS
+    // does not otherwise read, then re-fetches them through a dynamic LOW index. The earlier gating
+    // simply excluded any VS that read f[<32] -- but the Sonic Lost World glyph VS reads BOTH low
+    // constants (f[0..6]) AND the upper-bank texcoord (f[64..69]), so it was wrongly excluded and
+    // stayed flat. Here we instead place the mirror window ABOVE the VS's highest low read:
+    //   base  = (highest f[<32] index read) + 1   (0 if none)
+    //   count = (highest f[64..95] index read) - 63
+    // and only mirror when base + count <= 32, so [base, base+count) overlaps none of the VS's
+    // low/mid/high reads. For a pure upper-bank VS (no low reads) base is 0 -> identical to the old
+    // behaviour, so already-working text in other games is unchanged.
+    const LowMirrorPlan kNoMirror{false, 0, 0};
 
     std::set<Subroutine> subroutines;
     try {
         subroutines = ControlFlowAnalyzer(program_code, main_offset).MoveSubroutines();
     } catch (const std::exception&) {
         // If control-flow analysis fails the generator falls back too; never mirror in that case.
-        return false;
+        return kNoMirror;
     }
 
-    // v118-DIAG: when BORKED3DS_V3DV_TRACE_MIRROR_MAP is set, log the exact set of uniform indices
-    // each distinct VS reads, split into low (f[<32], static/low base -> blocks the mirror),
-    // mid (f[32..63], e.g. address-indexed position), and high_indexed (f[64..95] read via an
-    // address register -> the texcoord path V3DV miscompiles). A hybrid VS that reads BOTH low and
-    // high is excluded from the low-bank mirror; this map shows which low slots it actually needs,
-    // so a conflict-free mirror target can be chosen. Pure diagnostic: does not change the result.
+    // Collect the exact uniform indices read, split by bank.
+    std::set<u32> low_idx;  // f[<32], static or low-based: must be preserved by the mirror window
+    std::set<u32> mid_idx;  // f[32..63] (e.g. address-indexed position): never touched by the window
+    std::set<u32> high_idx; // f[64..95] read via an address register: the texcoord V3D miscompiles
+    const auto collect = [&](const SourceRegister& reg, u32 addr_index) {
+        if (reg.GetRegisterType() != RegisterType::FloatUniform) {
+            return;
+        }
+        const u32 base = static_cast<u32>(reg.GetIndex());
+        if (base < 32) {
+            low_idx.insert(base);
+        } else if (addr_index != 0 && base >= 64) {
+            high_idx.insert(base);
+        } else {
+            mid_idx.insert(base);
+        }
+    };
+    for (const auto& sub : subroutines) {
+        for (u32 offset = sub.begin; offset < sub.end && offset < PROGRAM_END; ++offset) {
+            const Instruction instr = {program_code[offset]};
+            if (instr.opcode.Value() == OpCode::Id::END) {
+                break; // bounds the loose main subroutine range at its terminator
+            }
+            switch (instr.opcode.Value().GetInfo().type) {
+            case OpCode::Type::Arithmetic: {
+                const bool inv =
+                    (0 != (instr.opcode.Value().GetInfo().subtype & OpCode::Info::SrcInversed));
+                collect(instr.common.GetSrc1(inv), !inv * instr.common.address_register_index);
+                collect(instr.common.GetSrc2(inv), inv * instr.common.address_register_index);
+                break;
+            }
+            case OpCode::Type::MultiplyAdd: {
+                const bool inv = (instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MADI);
+                collect(instr.mad.GetSrc1(inv), 0);
+                collect(instr.mad.GetSrc2(inv), !inv * instr.mad.address_register_index);
+                collect(instr.mad.GetSrc3(inv), inv * instr.mad.address_register_index);
+                break;
+            }
+            default:
+                break;
+            }
+        }
+    }
+
+    // v118-DIAG: BORKED3DS_V3DV_TRACE_MIRROR_MAP=1 logs each distinct VS's read map once, so a hybrid
+    // VS (low AND high) can be characterized and the chosen window verified. Pure diagnostic.
     static const bool trace_mirror_map = std::getenv("BORKED3DS_V3DV_TRACE_MIRROR_MAP") != nullptr;
     if (trace_mirror_map) {
         static std::set<u32> seen_map_offsets;
         if (seen_map_offsets.insert(main_offset).second) {
-            std::set<u32> low_idx;
-            std::set<u32> mid_idx;
-            std::set<u32> high_idx;
-            const auto collect = [&](const SourceRegister& reg, u32 addr_index) {
-                if (reg.GetRegisterType() != RegisterType::FloatUniform) {
-                    return;
-                }
-                const u32 base = static_cast<u32>(reg.GetIndex());
-                if (base < 32) {
-                    low_idx.insert(base);
-                } else if (addr_index != 0 && base >= 64) {
-                    high_idx.insert(base);
-                } else {
-                    mid_idx.insert(base);
-                }
-            };
-            for (const auto& sub : subroutines) {
-                for (u32 offset = sub.begin; offset < sub.end && offset < PROGRAM_END; ++offset) {
-                    const Instruction instr = {program_code[offset]};
-                    if (instr.opcode.Value() == OpCode::Id::END) {
-                        break;
-                    }
-                    switch (instr.opcode.Value().GetInfo().type) {
-                    case OpCode::Type::Arithmetic: {
-                        const bool inv = (0 != (instr.opcode.Value().GetInfo().subtype &
-                                                OpCode::Info::SrcInversed));
-                        collect(instr.common.GetSrc1(inv),
-                                !inv * instr.common.address_register_index);
-                        collect(instr.common.GetSrc2(inv),
-                                inv * instr.common.address_register_index);
-                        break;
-                    }
-                    case OpCode::Type::MultiplyAdd: {
-                        const bool inv =
-                            (instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MADI);
-                        collect(instr.mad.GetSrc1(inv), 0);
-                        collect(instr.mad.GetSrc2(inv), !inv * instr.mad.address_register_index);
-                        collect(instr.mad.GetSrc3(inv), inv * instr.mad.address_register_index);
-                        break;
-                    }
-                    default:
-                        break;
-                    }
-                }
-            }
             const auto join_set = [](const std::set<u32>& s) {
                 std::string out;
                 for (const u32 v : s) {
@@ -301,42 +296,26 @@ bool VertexShaderWantsLowMirror(const ProgramCode& program_code, u32 main_offset
         }
     }
 
-    bool reads_high = false;
-    bool reads_low = false;
-    for (const auto& sub : subroutines) {
-        for (u32 offset = sub.begin; offset < sub.end && offset < PROGRAM_END; ++offset) {
-            const Instruction instr = {program_code[offset]};
-            if (instr.opcode.Value() == OpCode::Id::END) {
-                break; // bounds the loose main subroutine range at its terminator
-            }
-            switch (instr.opcode.Value().GetInfo().type) {
-            case OpCode::Type::Arithmetic: {
-                const bool inv =
-                    (0 != (instr.opcode.Value().GetInfo().subtype & OpCode::Info::SrcInversed));
-                classify(instr.common.GetSrc1(inv),
-                         !inv * instr.common.address_register_index, reads_high, reads_low);
-                classify(instr.common.GetSrc2(inv),
-                         inv * instr.common.address_register_index, reads_high, reads_low);
-                break;
-            }
-            case OpCode::Type::MultiplyAdd: {
-                const bool inv = (instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MADI);
-                classify(instr.mad.GetSrc1(inv), 0, reads_high, reads_low);
-                classify(instr.mad.GetSrc2(inv),
-                         !inv * instr.mad.address_register_index, reads_high, reads_low);
-                classify(instr.mad.GetSrc3(inv),
-                         inv * instr.mad.address_register_index, reads_high, reads_low);
-                break;
-            }
-            default:
-                break;
-            }
-            if (reads_low) {
-                return false; // never mirror a draw that reads f[<32]
-            }
-        }
+    if (high_idx.empty()) {
+        return kNoMirror; // no dynamic upper-bank read -> nothing to mirror
     }
-    return reads_high && !reads_low;
+    // base = first low slot above this VS's own f[<32] reads; the mirror window is [base, 32).
+    const u32 base = low_idx.empty() ? 0u : (*low_idx.rbegin() + 1u);
+    if (base >= 32u) {
+        return kNoMirror; // the VS reads up to f[31] -> no free low window remains below f[32]
+    }
+    // The dialogue glyph reads f[64+aL.y .. 69+aL.y] sharing one address register, so the reachable
+    // upper index is NOT known statically (the static bases 64..69 are only the record start; aL.y
+    // spans a wide runtime range, as the index probe showed dark->light across glyphs). Mirror the
+    // LARGEST contiguous window that fits above the low reads, [base, 32), and let
+    // get_offset_register_sw clamp into it. For a pure upper-bank VS (base=0) this is the full
+    // f[0..31] <- f[64..95] mirror, identical to before -> other games unchanged.
+    const u32 count = 32u - base;
+    return LowMirrorPlan{true, base, count};
+}
+
+bool VertexShaderWantsLowMirror(const ProgramCode& program_code, u32 main_offset) {
+    return VertexShaderLowMirrorPlan(program_code, main_offset).ok;
 }
 
 class ShaderWriter {
@@ -1032,16 +1011,22 @@ private:
             if (std::getenv("BORKED3DS_V3DV_TBO_INDEX_TEST") != nullptr) {
                 shader.AddLine("return vec4(vec3(clamp(float(index - 64) / 31.0, 0.0, 1.0)), 1.0);");
             } else if (std::getenv("BORKED3DS_V3DV_LOW_MIRROR") != nullptr) {
-                // v117-MIRROR (Plan A): the upper bank f[64..95] is mirrored into the lower bank
-                // f[0..31] by the Vulkan uniform upload (RasterizerVulkan::UploadUniforms), but
-                // ONLY for draws whose VS actually reads the upper bank dynamically (detected via
-                // VertexShaderWantsLowMirror). DYNAMIC indexed reads of the LOW bank are the
-                // only uniform path V3D compiles correctly here (the position already uses
-                // f[32 + aL.x] successfully), while both the upper-bank dynamic read AND the VS
-                // texel-buffer (texelFetch) path miscompile to a constant on V3DV. Read the mirror
-                // with a dynamic LOW index. No TMU, no buffer view, no barrier. `index` is in
-                // [64,95] here -> index-64 in [0,31]; clamp defensively.
-                shader.AddLine("return uniforms.f[clamp(index - 64, 0, 31)];");
+                // v118-MIRROR (Plan A, per-VS base): the needed upper-bank slots f[64..64+count) are
+                // mirrored by the Vulkan uniform upload (RasterizerVulkan::UploadUniforms) into a
+                // conflict-free low window f[base..base+count) chosen by VertexShaderLowMirrorPlan
+                // (base = highest f[<32] slot this VS reads, + 1). DYNAMIC indexed reads of the LOW
+                // bank are the only uniform path V3D compiles correctly here (the position already
+                // uses f[32 + aL.x]); both the upper-bank dynamic read AND the VS texel-buffer
+                // (texelFetch) path miscompile to a constant on V3DV. Read the mirror with a dynamic
+                // LOW index at the per-VS base. `index` is in [64,95] here -> index-64 in [0,31];
+                // clamp into the mirrored window. For a pure upper-bank VS, base=0, count=32 -> the
+                // previous f[clamp(index-64,0,31)] behaviour exactly, so other games are unchanged.
+                const LowMirrorPlan plan =
+                    VertexShaderLowMirrorPlan(program_code, main_offset);
+                const u32 base = plan.ok ? plan.base : 0u;
+                const u32 count = plan.ok ? plan.count : 32u;
+                shader.AddLine(fmt::format("return uniforms.f[{} + clamp(index - 64, 0, {})];", base,
+                                           count - 1u));
             } else {
                 shader.AddLine("return texelFetch(vs_pica_f_tbo, int(f_texel_base) + index);");
             }
