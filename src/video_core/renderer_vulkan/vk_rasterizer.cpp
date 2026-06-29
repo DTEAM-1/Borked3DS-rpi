@@ -7832,6 +7832,40 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         };
 
         if (!texture.enabled) {
+            // v119 probe: on V3DV the Sonic Lost World dialogue text draw arrives with PICA
+            // texture0_enable=0 even though its generated fragment shader samples tex0 (the A8
+            // font atlas; alpha = primary.a * sampleTexUnit0().a). Out of 284 A8 (format=8) draws
+            // in a session, 283 bind correctly via base_view; exactly the dialogue draw reports
+            // tex0 "disabled", so the glyph alpha is lost and the letters vanish, while the
+            // OpenGL reference shows them. The FS sampling tex0 while the enable bit reads false
+            // indicates the enable gate here drops the font wrongly. When the flag is set, bind
+            // the real A8 surface for unit 0 despite the false enable bit, to confirm the gate is
+            // the cause. Scoped to texture_index==0 AND format==A8 so no other draw is touched.
+            // Reversible without a rebuild via BORKED3DS_V3DV_FORCE_BIND_DISABLED_A8.
+            static const bool force_bind_disabled_a8 =
+                std::getenv("BORKED3DS_V3DV_FORCE_BIND_DISABLED_A8") != nullptr;
+            const bool is_a8 = (static_cast<u32>(texture.format) == 8u);
+            if (force_bind_disabled_a8 && texture_index == 0 && is_a8) {
+                Surface& surface = res_cache.GetTextureSurface(texture);
+                Sampler& sampler = res_cache.GetSampler(texture.config);
+                const vk::ImageView base_view = surface.ImageView();
+                if (IsValidImageView(base_view)) {
+                    if (IsDrawTraceEnabled()) {
+                        LOG_INFO(Render_Vulkan,
+                                 "TRACE_DRAW tex0 force-bound disabled A8 reason=force_bind_disabled_a8 format={} addr=0x{:08X}",
+                                 static_cast<u32>(texture.format),
+                                 texture.config.GetPhysicalAddress());
+                    }
+                    update_queue.AddImageSampler(texture_set, texture_index, 0, base_view,
+                                                 sampler.Handle());
+                    continue;
+                }
+                if (IsDrawTraceEnabled()) {
+                    LOG_WARNING(Render_Vulkan,
+                                "TRACE_DRAW tex0 force_bind_disabled_a8 surface invalid, falling back to null format={}",
+                                static_cast<u32>(texture.format));
+                }
+            }
             bind_null("disabled");
             continue;
         }
