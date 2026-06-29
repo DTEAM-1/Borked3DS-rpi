@@ -1025,8 +1025,8 @@ private:
                     VertexShaderLowMirrorPlan(program_code, main_offset);
                 const u32 base = plan.ok ? plan.base : 0u;
                 const u32 count = plan.ok ? plan.count : 32u;
-                shader.AddLine(fmt::format("return uniforms.f[{} + clamp(index - 64, 0, {})];", base,
-                                           count - 1u));
+                shader.AddLine("return uniforms.f[{} + clamp(index - 64, 0, {})];", base,
+                               count - 1u);
             } else {
                 shader.AddLine("return texelFetch(vs_pica_f_tbo, int(f_texel_base) + index);");
             }
