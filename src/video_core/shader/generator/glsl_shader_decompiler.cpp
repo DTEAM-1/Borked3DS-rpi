@@ -232,6 +232,75 @@ bool VertexShaderWantsLowMirror(const ProgramCode& program_code, u32 main_offset
         return false;
     }
 
+    // v118-DIAG: when BORKED3DS_V3DV_TRACE_MIRROR_MAP is set, log the exact set of uniform indices
+    // each distinct VS reads, split into low (f[<32], static/low base -> blocks the mirror),
+    // mid (f[32..63], e.g. address-indexed position), and high_indexed (f[64..95] read via an
+    // address register -> the texcoord path V3DV miscompiles). A hybrid VS that reads BOTH low and
+    // high is excluded from the low-bank mirror; this map shows which low slots it actually needs,
+    // so a conflict-free mirror target can be chosen. Pure diagnostic: does not change the result.
+    static const bool trace_mirror_map = std::getenv("BORKED3DS_V3DV_TRACE_MIRROR_MAP") != nullptr;
+    if (trace_mirror_map) {
+        static std::set<u32> seen_map_offsets;
+        if (seen_map_offsets.insert(main_offset).second) {
+            std::set<u32> low_idx;
+            std::set<u32> mid_idx;
+            std::set<u32> high_idx;
+            const auto collect = [&](const SourceRegister& reg, u32 addr_index) {
+                if (reg.GetRegisterType() != RegisterType::FloatUniform) {
+                    return;
+                }
+                const u32 base = static_cast<u32>(reg.GetIndex());
+                if (base < 32) {
+                    low_idx.insert(base);
+                } else if (addr_index != 0 && base >= 64) {
+                    high_idx.insert(base);
+                } else {
+                    mid_idx.insert(base);
+                }
+            };
+            for (const auto& sub : subroutines) {
+                for (u32 offset = sub.begin; offset < sub.end && offset < PROGRAM_END; ++offset) {
+                    const Instruction instr = {program_code[offset]};
+                    if (instr.opcode.Value() == OpCode::Id::END) {
+                        break;
+                    }
+                    switch (instr.opcode.Value().GetInfo().type) {
+                    case OpCode::Type::Arithmetic: {
+                        const bool inv = (0 != (instr.opcode.Value().GetInfo().subtype &
+                                                OpCode::Info::SrcInversed));
+                        collect(instr.common.GetSrc1(inv),
+                                !inv * instr.common.address_register_index);
+                        collect(instr.common.GetSrc2(inv),
+                                inv * instr.common.address_register_index);
+                        break;
+                    }
+                    case OpCode::Type::MultiplyAdd: {
+                        const bool inv =
+                            (instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MADI);
+                        collect(instr.mad.GetSrc1(inv), 0);
+                        collect(instr.mad.GetSrc2(inv), !inv * instr.mad.address_register_index);
+                        collect(instr.mad.GetSrc3(inv), inv * instr.mad.address_register_index);
+                        break;
+                    }
+                    default:
+                        break;
+                    }
+                }
+            }
+            const auto join_set = [](const std::set<u32>& s) {
+                std::string out;
+                for (const u32 v : s) {
+                    out += std::to_string(v);
+                    out += ' ';
+                }
+                return out;
+            };
+            LOG_INFO(HW_GPU,
+                     "TRACE_MIRROR_MAP main_offset={} low=[ {}] mid=[ {}] high_indexed=[ {}]",
+                     main_offset, join_set(low_idx), join_set(mid_idx), join_set(high_idx));
+        }
+    }
+
     bool reads_high = false;
     bool reads_low = false;
     for (const auto& sub : subroutines) {
