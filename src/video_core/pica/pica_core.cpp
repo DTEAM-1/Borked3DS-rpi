@@ -10,6 +10,9 @@
 #include <cstring>
 #include <cstdio>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "common/arch.h"
@@ -39,10 +42,20 @@ union CommandHeader {
 static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect size!");
 
 [[nodiscard]] bool IsEnvEnabled(const char* name) {
-    if (const char* value = std::getenv(name)) {
-        return value[0] != '\0' && value[0] != '0';
+    // Perf: les variables d'environnement sont fixees au lancement et ne changent jamais
+    // en cours d'execution. On met le resultat en cache pour eviter un getenv() par-draw
+    // sur les predicats Is*Enabled() du chemin chaud partage GL+Vulkan. Comportement
+    // identique : les sondes repondent toujours a emulators.cfg.
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, bool> cache;
+    std::scoped_lock lock(cache_mutex);
+    if (const auto it = cache.find(name); it != cache.end()) {
+        return it->second;
     }
-    return false;
+    const char* value = std::getenv(name);
+    const bool enabled = value != nullptr && value[0] != '\0' && value[0] != '0';
+    cache.emplace(name, enabled);
+    return enabled;
 }
 
 [[nodiscard]] bool IsInterestingPicaStateReg(u32 id) {
@@ -70,19 +83,27 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
 }
 
 [[nodiscard]] u32 GetEnvU32(const char* name, u32 fallback) {
+    // Perf: meme logique de cache que IsEnvEnabled. Chaque nom est utilise avec un
+    // fallback constant dans ce code, donc la mise en cache par nom est sans effet de bord.
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, u32> cache;
+    std::scoped_lock lock(cache_mutex);
+    if (const auto it = cache.find(name); it != cache.end()) {
+        return it->second;
+    }
+
+    u32 result = fallback;
     const char* value = std::getenv(name);
-    if (value == nullptr || value[0] == '\0') {
-        return fallback;
+    if (value != nullptr && value[0] != '\0') {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (end != value) {
+            constexpr unsigned long max_u32 = 0xFFFFFFFFul;
+            result = parsed > max_u32 ? 0xFFFFFFFFu : static_cast<u32>(parsed);
+        }
     }
-
-    char* end = nullptr;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (end == value) {
-        return fallback;
-    }
-
-    constexpr unsigned long max_u32 = 0xFFFFFFFFul;
-    return parsed > max_u32 ? 0xFFFFFFFFu : static_cast<u32>(parsed);
+    cache.emplace(name, result);
+    return result;
 }
 
 
