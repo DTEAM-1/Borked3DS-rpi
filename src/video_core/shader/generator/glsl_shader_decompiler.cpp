@@ -299,18 +299,18 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
     if (high_idx.empty()) {
         return kNoMirror; // no dynamic upper-bank read -> nothing to mirror
     }
-    // base = first low slot above this VS's own f[<32] reads; the mirror window is [base, 32).
-    const u32 base = low_idx.empty() ? 0u : (*low_idx.rbegin() + 1u);
-    if (base >= 32u) {
-        return kNoMirror; // the VS reads up to f[31] -> no free low window remains below f[32]
+    // A VS that also reads the low bank f[<32] cannot be safely mirrored: the generated
+    // get_offset_register_sw reads a FIXED low window for every draw of this VS, but such a VS is in
+    // practice SHARED between the dialogue glyphs and 3D geometry (observed: main_offset=0 drives both
+    // Sonic's text and his model). Any base/count that helps the text starves the 3D high reads (and
+    // vice-versa) -> corrupted geometry. Only mirror VSs dedicated to the upper-bank text path, i.e.
+    // those that never touch f[<32]; those have a free full f[0..31] window (base=0, count=32). Hybrid
+    // VSs (Sonic Lost World) are left to the original path -- flat text, but intact 3D.
+    if (!low_idx.empty()) {
+        return kNoMirror;
     }
-    // The dialogue glyph reads f[64+aL.y .. 69+aL.y] sharing one address register, so the reachable
-    // upper index is NOT known statically (the static bases 64..69 are only the record start; aL.y
-    // spans a wide runtime range, as the index probe showed dark->light across glyphs). Mirror the
-    // LARGEST contiguous window that fits above the low reads, [base, 32), and let
-    // get_offset_register_sw clamp into it. For a pure upper-bank VS (base=0) this is the full
-    // f[0..31] <- f[64..95] mirror, identical to before -> other games unchanged.
-    const u32 count = 32u - base;
+    const u32 base = 0u;
+    const u32 count = 32u;
     return LowMirrorPlan{true, base, count};
 }
 
