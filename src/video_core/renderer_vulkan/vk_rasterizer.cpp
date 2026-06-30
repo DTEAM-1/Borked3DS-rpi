@@ -12,10 +12,12 @@
 #include <cstring>
 #include <cstdlib>
 #include <exception>
+#include <mutex>
 #include <set>
 #include <span>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "common/literals.h"
@@ -73,8 +75,20 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsEnvEnabled(const char* name) {
+    // Perf: les variables d'environnement sont fixees au lancement du process et ne
+    // changent jamais en cours d'execution. On met le resultat en cache pour eviter un
+    // getenv() par-draw sur les dizaines de predicats Is*Enabled() du chemin chaud.
+    // Comportement identique : les sondes repondent toujours a emulators.cfg.
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, bool> cache;
+    std::scoped_lock lock(cache_mutex);
+    if (const auto it = cache.find(name); it != cache.end()) {
+        return it->second;
+    }
     const char* value = std::getenv(name);
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
+    const bool enabled = value != nullptr && value[0] != '\0' && value[0] != '0';
+    cache.emplace(name, enabled);
+    return enabled;
 }
 
 [[nodiscard]] bool IsDrawTraceEnabled() {
@@ -662,19 +676,27 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
 }
 
 [[nodiscard]] u32 GetEnvU32(const char* name, u32 fallback) {
+    // Perf: meme logique de cache que IsEnvEnabled. Chaque nom est utilise avec un
+    // fallback constant dans ce code, donc la mise en cache par nom est sans effet de bord.
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, u32> cache;
+    std::scoped_lock lock(cache_mutex);
+    if (const auto it = cache.find(name); it != cache.end()) {
+        return it->second;
+    }
+
+    u32 result = fallback;
     const char* value = std::getenv(name);
-    if (value == nullptr || value[0] == '\0') {
-        return fallback;
+    if (value != nullptr && value[0] != '\0') {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (end != value) {
+            constexpr unsigned long max_u32 = 0xFFFFFFFFul;
+            result = parsed > max_u32 ? 0xFFFFFFFFu : static_cast<u32>(parsed);
+        }
     }
-
-    char* end = nullptr;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (end == value) {
-        return fallback;
-    }
-
-    constexpr unsigned long max_u32 = 0xFFFFFFFFul;
-    return parsed > max_u32 ? 0xFFFFFFFFu : static_cast<u32>(parsed);
+    cache.emplace(name, result);
+    return result;
 }
 
 [[nodiscard]] bool IsV115DA7XTraceExpected() {
@@ -2349,11 +2371,14 @@ void RasterizerVulkan::SetupVertexArray() {
     //     prochaine sonde au niveau shader.
     // BORKED3DS_V3DV_TRACE_VTX_DUMP=1 => atlas police seulement ; =2 => tous les draws.
     {
-        const char* vtx_env = std::getenv("BORKED3DS_V3DV_TRACE_VTX_DUMP");
-        if (vtx_env != nullptr && (vtx_env[0] == '1' || vtx_env[0] == '2')) {
+        static const char vtx_env0 = []() -> char {
+            const char* v = std::getenv("BORKED3DS_V3DV_TRACE_VTX_DUMP");
+            return (v != nullptr) ? v[0] : '\0';
+        }();
+        if (vtx_env0 == '1' || vtx_env0 == '2') {
             const auto& pica_textures = regs.texturing.GetTextures();
             const PAddr tex0_addr = pica_textures[0].config.GetPhysicalAddress();
-            const bool atlas_only = (vtx_env[0] == '1');
+            const bool atlas_only = (vtx_env0 == '1');
             if (!atlas_only || tex0_addr == 0x2064be00u) {
                 static std::atomic<u32> g_vtx_dump_budget{400};
                 if (g_vtx_dump_budget.fetch_sub(1, std::memory_order_relaxed) > 0) {
@@ -6829,10 +6854,13 @@ void RasterizerVulkan::SetupIndexArray() {
             // Lecture: indices coherents 0..(N-1) croissants par quads => indexation saine, bug
             // ailleurs. Indices hors-borne, repetes, ou tous nuls => index buffer corrompu/mal lu.
             {
-                const char* idx_env = std::getenv("BORKED3DS_V3DV_TRACE_INDEX_DUMP");
+                static const bool idx_env_on = []() {
+                    const char* v = std::getenv("BORKED3DS_V3DV_TRACE_INDEX_DUMP");
+                    return v != nullptr && v[0] == '1';
+                }();
                 const u32 nv = regs.pipeline.num_vertices;
                 // Cible les draws groupes (lettres) : >6 sommets, taille raisonnable.
-                if (idx_env != nullptr && idx_env[0] == '1' && nv > 6 && nv <= 256) {
+                if (idx_env_on && nv > 6 && nv <= 256) {
                     static std::atomic<u32> g_idx_dump_budget{24};
                     if (g_idx_dump_budget.fetch_sub(1, std::memory_order_relaxed) > 0) {
                         u32 idx_min = 0xFFFFFFFFu;
@@ -7024,8 +7052,11 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         //    (les deux faux) du cas "surface demandee mais non resolue" (color demande, mais
         //    color_id invalide dans GetSurfaceSubRect avec load_if_create=false).
         {
-            const char* nfb_env = std::getenv("BORKED3DS_V3DV_TRACE_NULL_FB_DROP");
-            if (nfb_env != nullptr && nfb_env[0] == '1') {
+            static const bool nfb_env_on = []() {
+                const char* v = std::getenv("BORKED3DS_V3DV_TRACE_NULL_FB_DROP");
+                return v != nullptr && v[0] == '1';
+            }();
+            if (nfb_env_on) {
                 static std::atomic<u32> g_null_fb_drop_budget{32};
                 if (g_null_fb_drop_budget.fetch_sub(1, std::memory_order_relaxed) > 0) {
                     LOG_WARNING(Render_Vulkan,
