@@ -82,6 +82,7 @@
 #include "common/file_util.h"
 #include "common/literals.h"
 #include "common/logging/backend.h"
+#include "common/logging/filter.h"
 #include "common/logging/log.h"
 #include "common/memory_detect.h"
 #include "common/scm_rev.h"
@@ -268,6 +269,16 @@ GMainWindow::GMainWindow(Core::System& system_)
     CheckForMigration();
 
     this->config = std::make_unique<Config>();
+
+    // Apply the configured log filter now that qt-config.ini has been loaded. The Qt frontend
+    // initializes logging before reading the config and, unlike the SDL frontend, never applied
+    // Settings::values.log_filter at startup, so the log_filter setting was silently ignored and
+    // every level flooded the log file. Mirror the SDL frontend behaviour here.
+    {
+        Common::Log::Filter log_filter;
+        log_filter.ParseFilterString(Settings::values.log_filter.GetValue());
+        Common::Log::SetGlobalFilter(log_filter);
+    }
 
 #ifdef __unix__
     SetGamemodeEnabled(Settings::values.enable_gamemode.GetValue());
