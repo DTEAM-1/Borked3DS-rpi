@@ -6934,7 +6934,7 @@ void RasterizerVulkan::SetupIndexArray() {
 }
 
 void RasterizerVulkan::DrawTriangles() {
-    LOG_DEBUG(Render_Vulkan, "Starting DrawTriangles with batch size {}", vertex_batch.size());
+    LOG_TRACE(Render_Vulkan, "Starting DrawTriangles with batch size {}", vertex_batch.size());
 
     if (vertex_batch.empty()) {
         LOG_DEBUG(Render_Vulkan, "Empty vertex batch, skipping draw");
@@ -6952,7 +6952,7 @@ void RasterizerVulkan::DrawTriangles() {
                      vertex_batch.size());
         }
         Draw(false, false);
-        LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles draw_submitted");
+        LOG_TRACE(Render_Vulkan, "RasterizerVulkan::DrawTriangles draw_submitted");
     } catch (const vk::SystemError& e) {
         LOG_CRITICAL(Render_Vulkan, "Vulkan error in DrawTriangles: {}", e.what());
     } catch (const std::exception& e) {
@@ -8106,7 +8106,8 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
     const PAddr src_addr = config.GetPhysicalInputAddress();
     const PAddr dst_addr = config.GetPhysicalOutputAddress();
     const bool result = res_cache.AccelerateDisplayTransfer(config);
-    LOG_WARNING(Render_Vulkan,
+    if (IsDrawTraceEnabled())
+        LOG_WARNING(Render_Vulkan,
                 "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
                 " input_fmt={} output_fmt={} flip_v={} result={}",
                 src_addr, dst_addr,
@@ -8414,7 +8415,7 @@ void RasterizerVulkan::SyncColorWriteMask() {
             (static_cast<u32>(bl.factor_source_a.Value()) << 15) |
             (static_cast<u32>(bl.factor_dest_a.Value()) << 20) |
             (static_cast<u32>(regs.framebuffer.framebuffer.allow_color_write != 0) << 25);
-        if (sig != last_sig) {
+        if (IsDrawTraceEnabled() && sig != last_sig) {
             last_sig = sig;
             LOG_INFO(Render_Vulkan,
                      "TRACE_BLEND blend_enable={} allow_color_write={} color_write_mask={:#x} "
