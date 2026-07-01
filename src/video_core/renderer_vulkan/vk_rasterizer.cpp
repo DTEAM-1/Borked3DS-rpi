@@ -8701,10 +8701,11 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
         }
 
         // v116c-TBO: texel index of f[0] for THIS draw, in the whole-buffer RGBA32F view.
-        // draw_base = the same dynamic offset passed to UpdateRange(0, ...) below; f[] sits 320 B
-        // into the PICA block. All terms are 16-aligned so the division is exact.
+        // draw_base = the same dynamic offset passed to UpdateRange(0, ...) below. Direction B
+        // moved f[] to the FRONT of the PICA block (offset 0), so f[0] now sits at draw_base
+        // itself. All terms are 16-aligned so the division is exact.
         const u32 draw_base = offset + used_bytes;
-        vs_uniforms.f_texel_base = (draw_base + 320u) / 16u;
+        vs_uniforms.f_texel_base = draw_base / 16u;
         std::memcpy(uniforms + used_bytes, &vs_uniforms, sizeof(vs_uniforms));
 
         pipeline_cache.UpdateRange(0, offset + used_bytes);
