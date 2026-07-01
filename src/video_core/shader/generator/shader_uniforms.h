@@ -82,9 +82,12 @@ struct PicaUniformsData {
         alignas(16) int b;
     };
 
-    std::array<BoolAligned, 16> bools;
-    alignas(16) std::array<Common::Vec4u, 4> i;
+    // Direction B: f[] moved to the FRONT of the block so f[0..95] map to std140 slots 0..95
+    // (within V3D's indirect-uniform addressing range) instead of slots 20..115. Must stay in
+    // lockstep with the GLSL `pica_uniforms` layout in glsl_shader_gen.cpp.
     alignas(16) std::array<Common::Vec4f, 96> f;
+    alignas(16) std::array<Common::Vec4u, 4> i;
+    std::array<BoolAligned, 16> bools;
 };
 
 struct VSUniformData {
@@ -110,8 +113,9 @@ static_assert(sizeof(VSPicaUniformData) == 1872,
               "The size of the VSPicaUniformData does not match the structure in the shader");
 static_assert(sizeof(VSPicaUniformData) < 16384,
               "VSPicaUniformData structure must be less than 16kb as per the OpenGL spec");
-static_assert(offsetof(PicaUniformsData, f) == 320,
-              "f[] must start at byte 320; the f_texel_base math in vk_rasterizer.cpp "
-              "(UploadUniforms) depends on this offset");
+static_assert(offsetof(PicaUniformsData, f) == 0,
+              "Direction B: f[] is now at the front of the PICA block (offset 0) so f[0..95] "
+              "map to std140 slots 0..95. The f_texel_base math in vk_rasterizer.cpp "
+              "(UploadUniforms) must use offset 0 to match.");
 
 } // namespace Pica::Shader::Generator

@@ -164,9 +164,9 @@ void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
 
 constexpr std::string_view VSPicaUniformBlockDef = R"(
 struct pica_uniforms {
-    bool b[16];
-    uvec4 i[4];
     vec4 f[96];
+    uvec4 i[4];
+    bool b[16];
 };
 
 #ifdef VULKAN
