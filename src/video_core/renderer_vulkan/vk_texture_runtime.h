@@ -6,7 +6,6 @@
 #pragma once
 
 #include <array>
-#include <deque>
 #include <span>
 #include <unordered_set> //gvx64
 #include "video_core/rasterizer_cache/framebuffer_base.h"
@@ -102,12 +101,6 @@ private:
     /// Clears a partial texture rect using a clear rectangle
     void ClearTextureWithRenderpass(Surface& surface, const VideoCore::TextureClear& clear);
 
-    /// Frees GPU resources from destroyed surfaces once the GPU has passed the recorded tick.
-    /// Deferred (tick-based) destruction avoids a full scheduler->Finish() stall per surface,
-    /// which is what made heavy scenes (lots of cache churn) far slower on Vulkan than on GL.
-    /// Pass force=true to drain everything unconditionally (shutdown).
-    void DrainDestructionQueue(bool force);
-
 private:
     const Instance& instance;
     Scheduler& scheduler;
@@ -116,18 +109,6 @@ private:
     StreamBuffer upload_buffer;
     StreamBuffer download_buffer;
     u32 num_swapchain_images;
-
-    /// A batch of GPU resources from a destroyed Surface, awaiting the GPU to reach `tick`.
-    struct PendingSurfaceDestruction {
-        u64 tick;
-        std::array<Handle, 3> handles;
-        Handle copy_handle;
-        std::array<vk::UniqueFramebuffer, 2> framebuffers;
-        vk::UniqueImageView depth_view;
-        vk::UniqueImageView stencil_view;
-        vk::UniqueImageView storage_view;
-    };
-    std::deque<PendingSurfaceDestruction> destruction_queue;
 };
 
 class Surface : public VideoCore::SurfaceBase {

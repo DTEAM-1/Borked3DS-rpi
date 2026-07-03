@@ -43,17 +43,6 @@ using VideoCore::SurfaceType;
 using VideoCore::TextureType;
 using namespace Common::Literals;
 
-/// Deferred (tick-based) surface destruction is on by default. Set the env var
-/// BORKED3DS_V3DV_NO_DEFER_SURFACE_DESTRUCTION=1 at launch to fall back to the old
-/// synchronous scheduler->Finish() path (for A/B testing, no rebuild needed).
-[[nodiscard]] bool DeferSurfaceDestruction() {
-    static const bool disabled = []() {
-        const char* v = std::getenv("BORKED3DS_V3DV_NO_DEFER_SURFACE_DESTRUCTION");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
-    }();
-    return !disabled;
-}
-
 struct RecordParams {
     vk::ImageAspectFlags aspect;
     vk::Filter filter;
@@ -587,36 +576,10 @@ TextureRuntime::TextureRuntime(const Instance& instance, Scheduler& scheduler,
       num_swapchain_images{num_swapchain_images_} {}
 
 TextureRuntime::~TextureRuntime() {
-    // Ensure the GPU is idle, then release everything still queued for deferred destruction.
     scheduler.Finish();
-    DrainDestructionQueue(true);
-}
-
-void TextureRuntime::DrainDestructionQueue(bool force) {
-    const VmaAllocator allocator = instance.GetAllocator();
-    while (!destruction_queue.empty()) {
-        PendingSurfaceDestruction& pending = destruction_queue.front();
-        // Entries are pushed in non-decreasing tick order, so once the front is not yet free,
-        // nothing behind it is either.
-        if (!force && !scheduler.IsFree(pending.tick)) {
-            break;
-        }
-        for (const auto& handle : pending.handles) {
-            if (handle.image) {
-                vmaDestroyImage(allocator, handle.image, handle.alloc);
-            }
-        }
-        if (pending.copy_handle.image) {
-            vmaDestroyImage(allocator, pending.copy_handle.image, pending.copy_handle.alloc);
-        }
-        // The UniqueImageView / UniqueFramebuffer members of `pending` are released here on pop.
-        destruction_queue.pop_front();
-    }
 }
 
 VideoCore::StagingData TextureRuntime::FindStaging(u32 size, bool upload) {
-    // Opportunistically reclaim GPU resources from surfaces destroyed on earlier frames.
-    DrainDestructionQueue(false);
     StreamBuffer& buffer = upload ? upload_buffer : download_buffer;
     const auto [data, offset, invalidate] = buffer.Map(size, 16);
     return VideoCore::StagingData{
@@ -1163,36 +1126,15 @@ Surface::~Surface() {
     if (!handles[0].image_view) {
         return;
     }
-
-    if (!DeferSurfaceDestruction()) {
-        // Legacy path: block on a full GPU sync, then destroy immediately.
-        scheduler->Finish();
-        for (const auto& [alloc, image, image_view] : handles) {
-            if (image) {
-                vmaDestroyImage(instance->GetAllocator(), image, alloc);
-            }
+    scheduler->Finish();
+    for (const auto& [alloc, image, image_view] : handles) {
+        if (image) {
+            vmaDestroyImage(instance->GetAllocator(), image, alloc);
         }
-        if (copy_handle.image_view) {
-            vmaDestroyImage(instance->GetAllocator(), copy_handle.image, copy_handle.alloc);
-        }
-        return;
     }
-
-    // Deferred path: hand our GPU resources to the runtime, tagged with the current GPU tick,
-    // instead of stalling on scheduler->Finish() here. The runtime frees them once the GPU has
-    // passed that tick (see TextureRuntime::DrainDestructionQueue). This removes the per-surface
-    // GPU stall that made heavy, cache-churning scenes far slower on Vulkan than on OpenGL.
-    TextureRuntime::PendingSurfaceDestruction pending{
-        .tick = scheduler->CurrentTick(),
-        .handles = std::move(handles),
-        .copy_handle = std::move(copy_handle),
-        .framebuffers = std::move(framebuffers),
-        .depth_view = std::move(depth_view),
-        .stencil_view = std::move(stencil_view),
-        .storage_view = std::move(storage_view),
-    };
-    runtime->destruction_queue.push_back(std::move(pending));
-    runtime->DrainDestructionQueue(false);
+    if (copy_handle.image_view) {
+        vmaDestroyImage(instance->GetAllocator(), copy_handle.image, copy_handle.alloc);
+    }
 }
 
 void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
