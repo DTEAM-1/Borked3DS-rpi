@@ -208,45 +208,46 @@ private:
 // so it qualifies; matrix-reading 3D shaders are excluded and left intact. Reachability is computed
 // with the same ControlFlowAnalyzer used for generation, bounded by END, so unreachable tail words
 // are never misdecoded.
-LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 main_offset) {
-    // v118-MIRROR (Plan A, per-VS base): V3D miscompiles DYNAMIC indexed reads of the upper float
-    // uniform bank f[64..95] (used by the dialogue-glyph texcoord, f[64 + address_registers.y]),
-    // while it handles dynamic reads of the LOW bank correctly (the position already uses
-    // f[32 + aL.x]). The fix mirrors the needed upper-bank slots into a CONTIGUOUS low window the VS
-    // does not otherwise read, then re-fetches them through a dynamic LOW index. The earlier gating
-    // simply excluded any VS that read f[<32] -- but the Sonic Lost World glyph VS reads BOTH low
-    // constants (f[0..6]) AND the upper-bank texcoord (f[64..69]), so it was wrongly excluded and
-    // stayed flat. Here we instead place the mirror window ABOVE the VS's highest low read:
-    //   base  = (highest f[<32] index read) + 1   (0 if none)
-    //   count = (highest f[64..95] index read) - 63
-    // and only mirror when base + count <= 32, so [base, base+count) overlaps none of the VS's
-    // low/mid/high reads. For a pure upper-bank VS (no low reads) base is 0 -> identical to the old
-    // behaviour, so already-working text in other games is unchanged.
-    const LowMirrorPlan kNoMirror{false, 0, 0};
+// vDIRA (Direction A, v119) refactor: the per-bank uniform-read scan below used to live inside
+// VertexShaderLowMirrorPlan. It is now shared between the mirror gate (v117c/v118) and the new
+// software-VS-fallback gate (VertexShaderNeedsSoftwareVSFallback), so both make their decision from
+// the SAME reachable-code analysis and can never disagree on what a VS reads. Behaviour of the
+// mirror path is bit-for-bit identical to v118.
+namespace {
+
+struct UniformReadScan {
+    bool analyzed;      ///< control-flow analysis succeeded; when false the sets are empty
+    std::set<u32> low;  ///< f[<32] reads (static or dynamic): must be preserved by a mirror window
+    std::set<u32> mid;  ///< f[32..63] (e.g. address-indexed position) and STATIC upper-bank reads
+    std::set<u32> high; ///< f[64..95] reads via an address register: the pattern V3D miscompiles
+};
+
+UniformReadScan ScanVertexShaderUniformReads(const ProgramCode& program_code, u32 main_offset) {
+    UniformReadScan scan{};
 
     std::set<Subroutine> subroutines;
     try {
         subroutines = ControlFlowAnalyzer(program_code, main_offset).MoveSubroutines();
     } catch (const std::exception&) {
-        // If control-flow analysis fails the generator falls back too; never mirror in that case.
-        return kNoMirror;
+        // If control-flow analysis fails the generator falls back too; report "not analyzed" so
+        // both gates (mirror and software fallback) stay conservative.
+        scan.analyzed = false;
+        return scan;
     }
+    scan.analyzed = true;
 
     // Collect the exact uniform indices read, split by bank.
-    std::set<u32> low_idx;  // f[<32], static or low-based: must be preserved by the mirror window
-    std::set<u32> mid_idx;  // f[32..63] (e.g. address-indexed position): never touched by the window
-    std::set<u32> high_idx; // f[64..95] read via an address register: the texcoord V3D miscompiles
     const auto collect = [&](const SourceRegister& reg, u32 addr_index) {
         if (reg.GetRegisterType() != RegisterType::FloatUniform) {
             return;
         }
         const u32 base = static_cast<u32>(reg.GetIndex());
         if (base < 32) {
-            low_idx.insert(base);
+            scan.low.insert(base);
         } else if (addr_index != 0 && base >= 64) {
-            high_idx.insert(base);
+            scan.high.insert(base);
         } else {
-            mid_idx.insert(base);
+            scan.mid.insert(base);
         }
     };
     for (const auto& sub : subroutines) {
@@ -277,7 +278,8 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
     }
 
     // v118-DIAG: BORKED3DS_V3DV_TRACE_MIRROR_MAP=1 logs each distinct VS's read map once, so a hybrid
-    // VS (low AND high) can be characterized and the chosen window verified. Pure diagnostic.
+    // VS (low AND high) can be characterized and the chosen window verified. Pure diagnostic. The
+    // seen-set dedups by main_offset, so a VS scanned by both gates is still logged only once.
     static const bool trace_mirror_map = std::getenv("BORKED3DS_V3DV_TRACE_MIRROR_MAP") != nullptr;
     if (trace_mirror_map) {
         static std::set<u32> seen_map_offsets;
@@ -292,11 +294,30 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
             };
             LOG_INFO(HW_GPU,
                      "TRACE_MIRROR_MAP main_offset={} low=[ {}] mid=[ {}] high_indexed=[ {}]",
-                     main_offset, join_set(low_idx), join_set(mid_idx), join_set(high_idx));
+                     main_offset, join_set(scan.low), join_set(scan.mid), join_set(scan.high));
         }
     }
 
-    if (high_idx.empty()) {
+    return scan;
+}
+
+} // Anonymous namespace
+
+LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 main_offset) {
+    // v118-MIRROR (Plan A, per-VS base): V3D miscompiles DYNAMIC indexed reads of the upper float
+    // uniform bank f[64..95] (used by the dialogue-glyph texcoord, f[64 + address_registers.y]),
+    // while it handles dynamic reads of the LOW bank correctly (the position already uses
+    // f[32 + aL.x]). The fix mirrors the needed upper-bank slots into a CONTIGUOUS low window the VS
+    // does not otherwise read, then re-fetches them through a dynamic LOW index.
+    const LowMirrorPlan kNoMirror{false, 0, 0};
+
+    const UniformReadScan scan = ScanVertexShaderUniformReads(program_code, main_offset);
+    if (!scan.analyzed) {
+        // If control-flow analysis fails the generator falls back too; never mirror in that case.
+        return kNoMirror;
+    }
+
+    if (scan.high.empty()) {
         return kNoMirror; // no dynamic upper-bank read -> nothing to mirror
     }
     // A VS that also reads the low bank f[<32] cannot be safely mirrored: the generated
@@ -304,9 +325,10 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
     // practice SHARED between the dialogue glyphs and 3D geometry (observed: main_offset=0 drives both
     // Sonic's text and his model). Any base/count that helps the text starves the 3D high reads (and
     // vice-versa) -> corrupted geometry. Only mirror VSs dedicated to the upper-bank text path, i.e.
-    // those that never touch f[<32]; those have a free full f[0..31] window (base=0, count=32). Hybrid
-    // VSs (Sonic Lost World) are left to the original path -- flat text, but intact 3D.
-    if (!low_idx.empty()) {
+    // those that never touch f[<32]; those have a free full f[0..31] window (base=0, count=32).
+    // Hybrid VSs (Sonic Lost World) are NOT mirrored -- since vDIRA they are instead routed to the
+    // per-draw software vertex shader fallback (see VertexShaderNeedsSoftwareVSFallback below).
+    if (!scan.low.empty()) {
         return kNoMirror;
     }
     const u32 base = 0u;
@@ -316,6 +338,20 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
 
 bool VertexShaderWantsLowMirror(const ProgramCode& program_code, u32 main_offset) {
     return VertexShaderLowMirrorPlan(program_code, main_offset).ok;
+}
+
+bool VertexShaderNeedsSoftwareVSFallback(const ProgramCode& program_code, u32 main_offset) {
+    // vDIRA (Direction A, v119): a HYBRID VS -- one that reads BOTH the low bank f[<32] (3D
+    // matrices / constants) AND the upper bank f[64..95] through a dynamic index (glyph texcoords)
+    // -- can be fixed neither by the hardware GLSL path (V3D 7.1 freezes the dynamic upper-bank
+    // index into a constant) nor by the v118 low-bank mirror (any fixed low window clobbers or
+    // starves its low reads). The only correct execution for such a draw is the SOFTWARE vertex
+    // shader (mainline Citra's use_hw_shader=0 path), applied per draw: the Vulkan rasterizer
+    // returns false from AccelerateDrawBatch for exactly these draws, and PicaCore::DrawArrays
+    // falls through to LoadVertices. Everything else (pure-text VSs -> mirror, pure-3D VSs ->
+    // hardware) is unaffected, keeping the software cost limited to the miscompiled draws.
+    const UniformReadScan scan = ScanVertexShaderUniformReads(program_code, main_offset);
+    return scan.analyzed && !scan.high.empty() && !scan.low.empty();
 }
 
 class ShaderWriter {

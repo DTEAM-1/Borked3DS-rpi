@@ -42,4 +42,14 @@ struct LowMirrorPlan {
 
 LowMirrorPlan VertexShaderLowMirrorPlan(const Pica::ProgramCode& program_code, u32 main_offset);
 
+/// vDIRA (Direction A, v119): true if this VS must be routed to the per-draw SOFTWARE vertex
+/// shader fallback on V3DV. That is the case when it reads the upper float-uniform bank f[64..95]
+/// through a dynamic (address-register) index -- the pattern V3D 7.1 miscompiles into a constant
+/// index -- AND it also reads the low bank f[<32], which makes the v118 low-bank mirror
+/// inapplicable (hybrid text+3D VS, e.g. the Sonic Lost World glyph VS: low f[0..6] + upper
+/// f[64..69]). Pure upper-bank VSs keep the cheaper hardware mirror (LowMirrorPlan.ok == true);
+/// VSs without any dynamic upper-bank read stay fully hardware. Returns false when control-flow
+/// analysis fails (conservative: same behaviour as the mirror gate).
+bool VertexShaderNeedsSoftwareVSFallback(const Pica::ProgramCode& program_code, u32 main_offset);
+
 } // namespace Pica::Shader::Generator::GLSL
