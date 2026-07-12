@@ -3125,6 +3125,48 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
                     count, static_cast<u32>(is_indexed), regs.pipeline.num_vertices);
     }
 
+    // vDIRA (Direction A, v119): per-draw SOFTWARE vertex-shader fallback for the V3DV upper-bank
+    // miscompile. V3D 7.1 freezes DYNAMIC indexed reads of f[64..95] into a constant index in
+    // hardware GLSL vertex shaders. The v118 low-bank mirror fixes VSs dedicated to the text path,
+    // but must skip HYBRID VSs that read both f[<32] and f[64+aL] (e.g. the Sonic Lost World glyph
+    // VS) -- those still render flat/invisible text. Route exactly those draws back to the software
+    // vertex path: returning false here makes PicaCore::DrawArrays fall through to LoadVertices()
+    // (software VS -> vertex_batch -> software draw path, which already carries the v116-B
+    // per-vertex constant-attribute fix). Same principle as mainline Citra's use_hw_shader=0, but
+    // surgical: 3D stays hardware, only the miscompiled draws pay the software cost. Placed before
+    // any accel-path state is touched, so the early return leaves nothing inconsistent. Gated by
+    // BORKED3DS_V3DV_DIRA_SW_FALLBACK. BORKED3DS_V3DV_TRACE_DIRA=1 logs one line per DISTINCT VS
+    // routed software plus a periodic draw counter (numeric-only, log-readable measure).
+    static const bool dira_sw_fallback =
+        std::getenv("BORKED3DS_V3DV_DIRA_SW_FALLBACK") != nullptr;
+    if (dira_sw_fallback &&
+        GLSL::VertexShaderNeedsSoftwareVSFallback(pica.vs_setup.program_code,
+                                                  regs.vs.main_offset)) {
+        static const bool trace_dira = std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
+        if (trace_dira) {
+            static std::atomic<u64> dira_draw_counter{0};
+            static std::mutex dira_seen_mutex;
+            static std::set<u32> dira_seen_offsets;
+            const u64 dira_count = ++dira_draw_counter;
+            bool first_for_vs = false;
+            std::size_t distinct_vs = 0;
+            {
+                std::scoped_lock lock{dira_seen_mutex};
+                first_for_vs =
+                    dira_seen_offsets.insert(static_cast<u32>(regs.vs.main_offset)).second;
+                distinct_vs = dira_seen_offsets.size();
+            }
+            if (first_for_vs || (dira_count % 512u) == 0u) {
+                LOG_INFO(Render_Vulkan,
+                         "vDIRA software_vs_fallback draw_count={} main_offset={} distinct_vs={}"
+                         " num_vertices={} indexed={}",
+                         dira_count, static_cast<u32>(regs.vs.main_offset), distinct_vs,
+                         regs.pipeline.num_vertices, static_cast<u32>(is_indexed));
+            }
+        }
+        return false;
+    }
+
     // v114 diagnostic:
     // v110 proved raw_enter_noargs is safe. Now emit raw_enter_noargs plus raw_enter_simple,
     // then return before stage=1. No shader setup, no SPIR-V, no pipeline, no descriptors,
@@ -6934,7 +6976,7 @@ void RasterizerVulkan::SetupIndexArray() {
 }
 
 void RasterizerVulkan::DrawTriangles() {
-    LOG_TRACE(Render_Vulkan, "Starting DrawTriangles with batch size {}", vertex_batch.size());
+    LOG_DEBUG(Render_Vulkan, "Starting DrawTriangles with batch size {}", vertex_batch.size());
 
     if (vertex_batch.empty()) {
         LOG_DEBUG(Render_Vulkan, "Empty vertex batch, skipping draw");
@@ -6952,7 +6994,7 @@ void RasterizerVulkan::DrawTriangles() {
                      vertex_batch.size());
         }
         Draw(false, false);
-        LOG_TRACE(Render_Vulkan, "RasterizerVulkan::DrawTriangles draw_submitted");
+        LOG_DEBUG(Render_Vulkan, "RasterizerVulkan::DrawTriangles draw_submitted");
     } catch (const vk::SystemError& e) {
         LOG_CRITICAL(Render_Vulkan, "Vulkan error in DrawTriangles: {}", e.what());
     } catch (const std::exception& e) {
@@ -8106,8 +8148,7 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
     const PAddr src_addr = config.GetPhysicalInputAddress();
     const PAddr dst_addr = config.GetPhysicalOutputAddress();
     const bool result = res_cache.AccelerateDisplayTransfer(config);
-    if (IsDrawTraceEnabled())
-        LOG_WARNING(Render_Vulkan,
+    LOG_WARNING(Render_Vulkan,
                 "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
                 " input_fmt={} output_fmt={} flip_v={} result={}",
                 src_addr, dst_addr,
@@ -8415,7 +8456,7 @@ void RasterizerVulkan::SyncColorWriteMask() {
             (static_cast<u32>(bl.factor_source_a.Value()) << 15) |
             (static_cast<u32>(bl.factor_dest_a.Value()) << 20) |
             (static_cast<u32>(regs.framebuffer.framebuffer.allow_color_write != 0) << 25);
-        if (IsDrawTraceEnabled() && sig != last_sig) {
+        if (sig != last_sig) {
             last_sig = sig;
             LOG_INFO(Render_Vulkan,
                      "TRACE_BLEND blend_enable={} allow_color_write={} color_write_mask={:#x} "
