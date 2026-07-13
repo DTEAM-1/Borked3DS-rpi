@@ -7915,6 +7915,35 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      static_cast<u32>(pipeline_info.blending.color_write_mask),
                      static_cast<bool>(framebuffer->Handle()),
                      draw_rect.GetWidth(), draw_rect.GetHeight());
+            // vDIRA v119d (fragment kill-chain): everything that can silently erase this draw's
+            // pixels while leaving the clearAttachments luma tile intact (the tile ignores
+            // viewport/scissor/pipeline state; the draw does not). One numeric line: texture unit 0
+            // binding state, blending/alpha-test/depth state, cull mode, the dynamic viewport
+            // actually applied, and the CLIP-SPACE position of the batch's first vertex (read via
+            // memcpy of the first 16 bytes: position is attribute 0 of the software layout by
+            // construction, so this compiles independently of the HardwareVertex definition).
+            const auto dira_textures = regs.texturing.GetTextures();
+            float dira_pos0[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            std::memcpy(dira_pos0, vertex_batch.data(), sizeof(dira_pos0));
+            LOG_INFO(Render_Vulkan,
+                     "vDIRA sw_draw state count={} tex0_en={} tex0_fmt={} tex0_addr=0x{:08X}"
+                     " blend_en={} alpha_test_en={} alpha_func={} alpha_ref={} depth_test={}"
+                     " depth_write={} stencil_test={} cull={} vp=({},{},{},{})"
+                     " pos0=({:.3f},{:.3f},{:.3f},{:.3f})",
+                     dira_sw_enter_count, static_cast<u32>(dira_textures[0].enabled),
+                     static_cast<u32>(dira_textures[0].format),
+                     dira_textures[0].config.GetPhysicalAddress(),
+                     static_cast<u32>(regs.framebuffer.output_merger.alphablend_enable.Value()),
+                     static_cast<u32>(regs.framebuffer.output_merger.alpha_test.enable.Value()),
+                     static_cast<u32>(regs.framebuffer.output_merger.alpha_test.func.Value()),
+                     static_cast<u32>(regs.framebuffer.output_merger.alpha_test.ref.Value()),
+                     static_cast<u32>(pipeline_info.depth_stencil.depth_test_enable.Value()),
+                     static_cast<u32>(pipeline_info.depth_stencil.depth_write_enable.Value()),
+                     static_cast<u32>(pipeline_info.depth_stencil.stencil_test_enable.Value()),
+                     static_cast<u32>(regs.rasterizer.cull_mode.Value()),
+                     pipeline_info.dynamic.viewport.left, pipeline_info.dynamic.viewport.top,
+                     pipeline_info.dynamic.viewport.right, pipeline_info.dynamic.viewport.bottom,
+                     dira_pos0[0], dira_pos0[1], dira_pos0[2], dira_pos0[3]);
         }
 
         // vDIRA LUMA TILE probe (BORKED3DS_V3DV_DIRA_LUMA_TILE=1): binary discriminator between
