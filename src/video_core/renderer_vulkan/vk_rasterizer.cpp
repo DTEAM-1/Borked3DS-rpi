@@ -7944,6 +7944,35 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      pipeline_info.dynamic.viewport.left, pipeline_info.dynamic.viewport.top,
                      pipeline_info.dynamic.viewport.right, pipeline_info.dynamic.viewport.bottom,
                      dira_pos0[0], dira_pos0[1], dira_pos0[2], dira_pos0[3]);
+            // vDIRA v119e (atlas content check): for A8 (format 8) draws -- the font-atlas text
+            // draws -- sample the CPU-side (emulated memory) content of the texture. Geometry is
+            // on-screen, the atlas is bound, alpha-test is "alpha > 0", yet nothing renders: if the
+            // CPU-side atlas holds real glyph data (nonzero bytes) while the screen stays empty,
+            // the loss is GPU-side (surface never uploaded, or a broken A8 swizzle sampling a
+            // constant 0 alpha). If the CPU-side bytes are all zero, the game has not written the
+            // atlas where we think it lives. Numeric-only, sampled draws only.
+            if (dira_textures[0].enabled &&
+                static_cast<u32>(dira_textures[0].format) == 8u) {
+                const PAddr dira_atlas_addr = dira_textures[0].config.GetPhysicalAddress();
+                const MemoryRef dira_atlas_ref = memory.GetPhysicalRef(dira_atlas_addr);
+                const u32 dira_probe_size =
+                    static_cast<u32>(std::min<std::size_t>(dira_atlas_ref.GetSize(), 4096u));
+                u32 dira_nonzero = 0;
+                u64 dira_sum = 0;
+                const u8* dira_atlas_ptr = dira_atlas_ref.GetPtr();
+                if (dira_atlas_ptr != nullptr) {
+                    for (u32 i = 0; i < dira_probe_size; ++i) {
+                        const u8 b = dira_atlas_ptr[i];
+                        dira_nonzero += (b != 0) ? 1u : 0u;
+                        dira_sum += b;
+                    }
+                }
+                LOG_INFO(Render_Vulkan,
+                         "vDIRA atlas_cpu_content count={} addr=0x{:08X} probe_size={} nonzero={}"
+                         " sum={} ptr_valid={}",
+                         dira_sw_enter_count, dira_atlas_addr, dira_probe_size, dira_nonzero,
+                         dira_sum, dira_atlas_ptr != nullptr);
+            }
         }
 
         // vDIRA LUMA TILE probe (BORKED3DS_V3DV_DIRA_LUMA_TILE=1): binary discriminator between
