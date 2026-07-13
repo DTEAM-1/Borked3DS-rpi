@@ -2335,6 +2335,23 @@ void PicaCore::DrawArrays(bool is_indexed) {
     if (trace_draw) {
         LOG_INFO(HW_GPU, "TRACE_DRAW_PICA falling back to software vertex path");
     }
+    // vDIRA probe 5 (route tracing): every draw that reaches the normal software tail. In the
+    // test4 configuration nearly everything accelerates, so this stays quiet; the declined glyph
+    // draw must show up here if the normal path (not the safe-HW blocks) routed it software.
+    {
+        static const bool dira_trace_tail = IsEnvEnabled("BORKED3DS_V3DV_TRACE_DIRA");
+        if (dira_trace_tail) {
+            static std::atomic<u64> dira_tail_counter{0};
+            const u64 dira_tail_count = ++dira_tail_counter;
+            if (dira_tail_count <= 8 || (dira_tail_count % 512u) == 0u) {
+                LOG_INFO(HW_GPU,
+                         "vDIRA pica tail_software count={} draw_index={} indexed={}"
+                         " num_vertices={}",
+                         dira_tail_count, draw_index, is_indexed,
+                         regs.internal.pipeline.num_vertices);
+            }
+        }
+    }
     LoadVertices(is_indexed);
 
     if (trace_hotpath) {
