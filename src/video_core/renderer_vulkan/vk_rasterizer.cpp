@@ -6983,6 +6983,19 @@ void RasterizerVulkan::DrawTriangles() {
         return;
     }
 
+    // vDIRA probe 4 (route tracing): software batch reached the Vulkan rasterizer entry.
+    {
+        static const bool dira_trace_dt = std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
+        if (dira_trace_dt) {
+            static std::atomic<u64> dira_dt_counter{0};
+            const u64 dira_dt_count = ++dira_dt_counter;
+            if (dira_dt_count <= 8 || (dira_dt_count % 512u) == 0u) {
+                LOG_INFO(Render_Vulkan, "vDIRA draw_triangles count={} batch_size={}",
+                         dira_dt_count, vertex_batch.size());
+            }
+        }
+    }
+
     try {
         pipeline_info.rasterization.topology.Assign(Pica::PipelineRegs::TriangleTopology::List);
         pipeline_info.vertex_layout = software_layout;
@@ -7797,12 +7810,30 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      vertex_batch.size());
         }
 
+        // vDIRA probe 1 (route tracing): the batch survived every strict-compat gate and reached
+        // the real software submit path.
+        static const bool dira_trace_sw = std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
+        static std::atomic<u64> dira_sw_enter_counter{0};
+        const u64 dira_sw_enter_count = dira_trace_sw ? ++dira_sw_enter_counter : 0;
+        if (dira_trace_sw && (dira_sw_enter_count <= 8 || (dira_sw_enter_count % 512u) == 0u)) {
+            LOG_INFO(Render_Vulkan, "vDIRA sw_draw enter count={} batch_size={}",
+                     dira_sw_enter_count, vertex_batch.size());
+        }
+
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, true);
         if (!pipeline_ready) {
             if (IsDrawTraceEnabled()) {
                 LOG_INFO(Render_Vulkan,
                          "TRACE_DRAW software_path pipeline_not_ready vertex_batch_size={} strict_compat={}",
                          vertex_batch.size(), static_cast<u32>(IsStrictCompatEnabled()));
+            }
+            // vDIRA probe 2 (route tracing): a not-ready pipeline silently DROPS the software draw
+            // (return false, never retried). Our glyph draw happens ONCE at boot, exactly when the
+            // trivial-VS pipeline is cold -- log every occurrence, this is a prime suspect.
+            if (dira_trace_sw) {
+                LOG_INFO(Render_Vulkan,
+                         "vDIRA sw_draw pipeline_not_ready DROPPED count={} batch_size={}",
+                         dira_sw_enter_count, vertex_batch.size());
             }
             return false;
         }
@@ -7825,6 +7856,18 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             cmdbuf.bindVertexBuffers(0, stream_buffer.Handle(), offset);
             cmdbuf.draw(vertex_count, 1, 0, 0);
         });
+
+        // vDIRA probe 3 (route tracing): the software draw was actually recorded into a Vulkan
+        // command buffer. color_addr identifies WHICH render target received it, so an invisible
+        // result can be traced to a surface-composition problem rather than a dropped draw.
+        if (dira_trace_sw && (dira_sw_enter_count <= 8 || (dira_sw_enter_count % 512u) == 0u)) {
+            LOG_INFO(Render_Vulkan,
+                     "vDIRA sw_draw submitted count={} vertex_count={} color_addr=0x{:08x}"
+                     " depth_addr=0x{:08x}",
+                     dira_sw_enter_count, vertex_count,
+                     regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        }
 
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
