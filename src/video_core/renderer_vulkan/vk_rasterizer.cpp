@@ -7800,6 +7800,32 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                         "TRACE_DRAW strict_compat v115d_a7z75 before_accelerate_draw_batch_internal");
         }
         succeeded = AccelerateDrawBatchInternal(is_indexed);
+        // vDIRA probe 6 (v119b, comparison side): rare log of the framebuffer identity bound for
+        // ACCELERATED draws, to compare fb_handle with the software-side probe. If the handles
+        // match for the same guest color_addr, both paths render into the same Vulkan image and the
+        // invisibility is a content/state problem; if they differ, the software path resolves a
+        // different (or color-less) framebuffer and that is the bug.
+        {
+            static const bool dira_trace_accel =
+                std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
+            if (dira_trace_accel) {
+                static std::atomic<u64> dira_accel_counter{0};
+                const u64 dira_accel_count = ++dira_accel_counter;
+                if (dira_accel_count <= 4 || (dira_accel_count % 1024u) == 0u) {
+                    LOG_INFO(Render_Vulkan,
+                             "vDIRA accel_draw fb_identity count={} color_addr=0x{:08x}"
+                             " using_color={} write_color={} color_write_mask=0x{:x}"
+                             " fb_valid={} rect_w={} rect_h={} succeeded={}",
+                             dira_accel_count,
+                             regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                             static_cast<u32>(using_color_fb), static_cast<u32>(write_color_fb),
+                             static_cast<u32>(pipeline_info.blending.color_write_mask),
+                             static_cast<bool>(framebuffer->Handle()),
+                             draw_rect.GetWidth(), draw_rect.GetHeight(),
+                             static_cast<u32>(succeeded));
+                }
+            }
+        }
         if (a7z40_draw_wrapper_trace) {
             V114ShaderMultiplexFileTraceNumber("v115d_a7z40 after_accelerate_draw_batch_internal",
                                                static_cast<u64>(succeeded));
@@ -7858,15 +7884,70 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         });
 
         // vDIRA probe 3 (route tracing): the software draw was actually recorded into a Vulkan
-        // command buffer. color_addr identifies WHICH render target received it, so an invisible
-        // result can be traced to a surface-composition problem rather than a dropped draw.
+        // command buffer. Extended (v119b): also log the ACTUAL binding identity -- the resolved
+        // Vulkan framebuffer handle and the color-write flags that drove its resolution. The regs
+        // color_addr is only the GUEST'S intent; if using_color_fb resolved false (e.g. stale
+        // pipeline_info.blending.color_write_mask), the bound framebuffer has NO color attachment
+        // and both the draw and the luma tile write nowhere visible. Comparing fb_handle here with
+        // the accelerated-side probe tells whether both paths really render into the same target.
         if (dira_trace_sw && (dira_sw_enter_count <= 8 || (dira_sw_enter_count % 512u) == 0u)) {
             LOG_INFO(Render_Vulkan,
                      "vDIRA sw_draw submitted count={} vertex_count={} color_addr=0x{:08x}"
-                     " depth_addr=0x{:08x}",
+                     " depth_addr=0x{:08x} using_color={} write_color={} color_write_mask=0x{:x}"
+                     " fb_valid={} rect_w={} rect_h={}",
                      dira_sw_enter_count, vertex_count,
                      regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
-                     regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+                     regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                     static_cast<u32>(using_color_fb), static_cast<u32>(write_color_fb),
+                     static_cast<u32>(pipeline_info.blending.color_write_mask),
+                     static_cast<bool>(framebuffer->Handle()),
+                     draw_rect.GetWidth(), draw_rect.GetHeight());
+        }
+
+        // vDIRA LUMA TILE probe (BORKED3DS_V3DV_DIRA_LUMA_TILE=1): binary discriminator between
+        // "the software draw renders but its CONTENT is killed by state (cull/blend/alpha/texture)"
+        // and "the render target is never composited to the screen". A clearAttachments of a small
+        // solid-WHITE tile into the SAME target, in the SAME render pass, right after the software
+        // draw, depends on none of that state. Tile visible on screen (light square) => the target
+        // is composited, the problem is the draw content. Tile absent => the target itself never
+        // reaches the screen (surface cache / composition). Luminance-only by design.
+        static const bool dira_luma_tile =
+            std::getenv("BORKED3DS_V3DV_DIRA_LUMA_TILE") != nullptr;
+        if (dira_luma_tile) {
+            const auto probe_rect = fb_helper.DrawRect();
+            if (probe_rect.GetWidth() > 0 && probe_rect.GetHeight() > 0) {
+                scheduler.Record([probe_rect](vk::CommandBuffer cmdbuf) {
+                    vk::ClearAttachment color_attachment{};
+                    color_attachment.aspectMask = vk::ImageAspectFlagBits::eColor;
+                    color_attachment.colorAttachment = 0;
+                    color_attachment.clearValue.color =
+                        vk::ClearColorValue{std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}};
+
+                    const u32 tile_width =
+                        std::min<u32>(48, static_cast<u32>(probe_rect.GetWidth()));
+                    const u32 tile_height =
+                        std::min<u32>(48, static_cast<u32>(probe_rect.GetHeight()));
+
+                    vk::ClearRect clear_rect{};
+                    clear_rect.rect.offset = vk::Offset2D{
+                        static_cast<s32>(probe_rect.left),
+                        static_cast<s32>(probe_rect.bottom),
+                    };
+                    clear_rect.rect.extent = vk::Extent2D{tile_width, tile_height};
+                    clear_rect.baseArrayLayer = 0;
+                    clear_rect.layerCount = 1;
+
+                    const std::array<vk::ClearAttachment, 1> clear_attachments{color_attachment};
+                    const std::array<vk::ClearRect, 1> clear_rects{clear_rect};
+                    cmdbuf.clearAttachments(clear_attachments, clear_rects);
+                });
+                if (dira_trace_sw) {
+                    LOG_INFO(Render_Vulkan,
+                             "vDIRA luma_tile recorded count={} tile=48x48 color_addr=0x{:08x}",
+                             dira_sw_enter_count,
+                             regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress());
+                }
+            }
         }
 
         if (IsDrawTraceEnabled()) {
