@@ -3139,7 +3139,20 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
     // routed software plus a periodic draw counter (numeric-only, log-readable measure).
     static const bool dira_sw_fallback =
         std::getenv("BORKED3DS_V3DV_DIRA_SW_FALLBACK") != nullptr;
-    if (dira_sw_fallback &&
+    // vDIRA v119c: optional vertex-count threshold (BORKED3DS_V3DV_DIRA_MAX_VERTICES, 0/absent =
+    // unlimited). The static hybrid-VS analysis over-captures: the same VSs drive both the small
+    // glyph quads (6..96 vertices) AND large 3D meshes (hundreds to thousands). Sending the big
+    // meshes software both washes the scene (observed as "pale" rendering) and loads the already
+    // saturated CPU core, while their dynamic upper-bank reads are not exercised by geometry in
+    // practice (v118 baseline: 3D visually intact in hardware). The threshold keeps the fallback
+    // surgical: only draws at or below the limit are declined to software.
+    static const u32 dira_max_vertices = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_DIRA_MAX_VERTICES");
+        return v ? static_cast<u32>(std::strtoul(v, nullptr, 0)) : 0u;
+    }();
+    const bool dira_size_ok =
+        dira_max_vertices == 0u || regs.pipeline.num_vertices <= dira_max_vertices;
+    if (dira_sw_fallback && dira_size_ok &&
         GLSL::VertexShaderNeedsSoftwareVSFallback(pica.vs_setup.program_code,
                                                   regs.vs.main_offset)) {
         static const bool trace_dira = std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
@@ -8020,6 +8033,23 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         const auto& texture = pica_textures[texture_index];
 
         auto bind_null = [&](const char* reason) {
+            // vDIRA v119c: every NULL bind of texture unit 0 is logged (numeric, sampled) with its
+            // reason, PICA format and address. The invisible text's draw must show up here if its
+            // font texture is being replaced by the null surface -- and the format field tells
+            // whether the A8-only force-bind even applies to this scene's text.
+            static const bool dira_trace_tex0 =
+                std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
+            if (dira_trace_tex0 && texture_index == 0) {
+                static std::atomic<u64> dira_tex0_null_counter{0};
+                const u64 dira_tex0_null_count = ++dira_tex0_null_counter;
+                if (dira_tex0_null_count <= 8 || (dira_tex0_null_count % 512u) == 0u) {
+                    LOG_INFO(Render_Vulkan,
+                             "vDIRA tex0_null count={} reason={} format={} type={} addr=0x{:08X}",
+                             dira_tex0_null_count, reason, static_cast<u32>(texture.format),
+                             static_cast<u32>(texture.config.type.Value()),
+                             texture.config.GetPhysicalAddress());
+                }
+            }
             if (IsDrawTraceEnabled() && texture_index < 3) {
                 LOG_INFO(Render_Vulkan, "TRACE_DRAW tex{} -> null reason={} type={} format={}",
                          texture_index, reason, static_cast<u32>(texture.config.type.Value()),
@@ -8047,6 +8077,19 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
                 Sampler& sampler = res_cache.GetSampler(texture.config);
                 const vk::ImageView base_view = surface.ImageView();
                 if (IsValidImageView(base_view)) {
+                    // vDIRA v119c: also visible under TRACE_DIRA (numeric counter), so a run
+                    // without the flood-y draw trace still shows whether the A8 force-bind fired.
+                    static const bool dira_trace_force_a8 =
+                        std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
+                    if (dira_trace_force_a8) {
+                        static std::atomic<u64> dira_force_a8_counter{0};
+                        const u64 dira_force_a8_count = ++dira_force_a8_counter;
+                        if (dira_force_a8_count <= 8 || (dira_force_a8_count % 512u) == 0u) {
+                            LOG_INFO(Render_Vulkan,
+                                     "vDIRA tex0_force_a8_bound count={} addr=0x{:08X}",
+                                     dira_force_a8_count, texture.config.GetPhysicalAddress());
+                        }
+                    }
                     if (IsDrawTraceEnabled()) {
                         LOG_INFO(Render_Vulkan,
                                  "TRACE_DRAW tex0 force-bound disabled A8 reason=force_bind_disabled_a8 format={} addr=0x{:08X}",
