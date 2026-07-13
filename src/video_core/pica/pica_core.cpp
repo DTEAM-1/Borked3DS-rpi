@@ -1992,6 +1992,34 @@ void PicaCore::DrawArrays(bool is_indexed) {
                 LOG_WARNING(HW_GPU,
                             "TRACE_DRAW_PICA strict_compat v115d_mux early_direct_after_accelerate_draw_batch draw_index={} result={}",
                             draw_index, static_cast<u32>(v115d_mux_early_accelerated));
+
+                // vDIRA (Direction A, v119): this early-direct mux used to `return` UNCONDITIONALLY,
+                // discarding the AccelerateDrawBatch() result -- a declined draw was simply DROPPED,
+                // never reaching the software vertex path. That made the backend's per-draw software
+                // fallback (hybrid VSs hit by the V3DV upper-bank miscompile, e.g. the Sonic Lost
+                // World glyph VS) a silent no-op in the safe-HW-handoff configuration. When the
+                // fallback is enabled and the backend declines, run the software path exactly as the
+                // tail of DrawArrays does: LoadVertices() (software VS, carries the v116-B constant
+                // attribute fix) followed by rasterizer->DrawTriangles(). Without the flag the
+                // historical behaviour (unconditional return) is preserved bit-for-bit.
+                if (!v115d_mux_early_accelerated &&
+                    IsEnvEnabled("BORKED3DS_V3DV_DIRA_SW_FALLBACK")) {
+                    static std::atomic<u64> dira_pica_sw_counter{0};
+                    const u64 dira_pica_sw_count = ++dira_pica_sw_counter;
+                    static const bool dira_trace =
+                        IsEnvEnabled("BORKED3DS_V3DV_TRACE_DIRA");
+                    if (dira_trace &&
+                        (dira_pica_sw_count <= 4 || (dira_pica_sw_count % 512u) == 0u)) {
+                        LOG_INFO(HW_GPU,
+                                 "vDIRA pica software_path_taken count={} draw_index={}"
+                                 " indexed={} num_vertices={}",
+                                 dira_pica_sw_count, draw_index, is_indexed,
+                                 regs.internal.pipeline.num_vertices);
+                    }
+                    LoadVertices(is_indexed);
+                    rasterizer->DrawTriangles();
+                    return;
+                }
                 return;
             }
 
