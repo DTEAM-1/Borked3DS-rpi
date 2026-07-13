@@ -1776,8 +1776,35 @@ void PicaCore::DrawArrays(bool is_indexed) {
                                 "TRACE_DRAW_PICA strict_compat v115d_a7z76 before_accelerate_draw_batch_call");
                 }
                 V115DA7Z85EmitDrawArraysBackendOnce();
-                (void)rasterizer->AccelerateDrawBatch(is_indexed);
+                const bool v115d_a7z72_accelerated = rasterizer->AccelerateDrawBatch(is_indexed);
                 V115DA7Z86EmitDrawArraysAfterBackendOnce();
+                // vDIRA (Direction A, v119): this silent-early-backend block used to fire-and-forget
+                // the backend call ((void) cast + unconditional return), so a draw DECLINED by
+                // AccelerateDrawBatch -- the per-draw software fallback for hybrid VSs hit by the
+                // V3DV upper-bank miscompile -- was silently dropped. This block sits BEFORE the
+                // early-direct mux and grabs the safe candidates first, so it is the site that
+                // actually swallowed the Sonic Lost World glyph draws. Same treatment as the mux:
+                // when the fallback flag is set and the backend declines, run the software vertex
+                // path exactly as the tail of DrawArrays does (LoadVertices + DrawTriangles).
+                // Without the flag the historical fire-and-forget behaviour is preserved.
+                if (!v115d_a7z72_accelerated &&
+                    IsEnvEnabled("BORKED3DS_V3DV_DIRA_SW_FALLBACK")) {
+                    static std::atomic<u64> dira_a7z72_sw_counter{0};
+                    const u64 dira_a7z72_sw_count = ++dira_a7z72_sw_counter;
+                    static const bool dira_a7z72_trace =
+                        IsEnvEnabled("BORKED3DS_V3DV_TRACE_DIRA");
+                    if (dira_a7z72_trace &&
+                        (dira_a7z72_sw_count <= 4 || (dira_a7z72_sw_count % 512u) == 0u)) {
+                        LOG_INFO(HW_GPU,
+                                 "vDIRA pica a7z72 software_path_taken count={} draw_index={}"
+                                 " indexed={} num_vertices={}",
+                                 dira_a7z72_sw_count, draw_index, is_indexed,
+                                 regs.internal.pipeline.num_vertices);
+                    }
+                    LoadVertices(is_indexed);
+                    rasterizer->DrawTriangles();
+                    return;
+                }
                 return;
             }
         }
