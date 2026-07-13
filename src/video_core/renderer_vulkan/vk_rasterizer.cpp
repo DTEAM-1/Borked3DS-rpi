@@ -7955,23 +7955,37 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 static_cast<u32>(dira_textures[0].format) == 8u) {
                 const PAddr dira_atlas_addr = dira_textures[0].config.GetPhysicalAddress();
                 const MemoryRef dira_atlas_ref = memory.GetPhysicalRef(dira_atlas_addr);
-                const u32 dira_probe_size =
-                    static_cast<u32>(std::min<std::size_t>(dira_atlas_ref.GetSize(), 4096u));
+                // v119f: scan the WHOLE texture (A8 = 1 byte/pixel, size = width*height), not just
+                // the first 4 KiB -- PICA textures are 8x8-tiled and a font atlas's top-left corner
+                // is typically the blank space glyph, so leading zeros prove nothing. Also report
+                // the offset of the first nonzero byte to locate where real glyph data begins.
+                const u32 dira_atlas_w = static_cast<u32>(dira_textures[0].config.width.Value());
+                const u32 dira_atlas_h = static_cast<u32>(dira_textures[0].config.height.Value());
+                const u32 dira_atlas_size = dira_atlas_w * dira_atlas_h;
+                const u32 dira_probe_size = static_cast<u32>(
+                    std::min<std::size_t>(dira_atlas_ref.GetSize(), dira_atlas_size));
                 u32 dira_nonzero = 0;
                 u64 dira_sum = 0;
+                u32 dira_first_nonzero = 0xFFFFFFFFu;
                 const u8* dira_atlas_ptr = dira_atlas_ref.GetPtr();
                 if (dira_atlas_ptr != nullptr) {
                     for (u32 i = 0; i < dira_probe_size; ++i) {
                         const u8 b = dira_atlas_ptr[i];
-                        dira_nonzero += (b != 0) ? 1u : 0u;
-                        dira_sum += b;
+                        if (b != 0) {
+                            ++dira_nonzero;
+                            dira_sum += b;
+                            if (dira_first_nonzero == 0xFFFFFFFFu) {
+                                dira_first_nonzero = i;
+                            }
+                        }
                     }
                 }
                 LOG_INFO(Render_Vulkan,
-                         "vDIRA atlas_cpu_content count={} addr=0x{:08X} probe_size={} nonzero={}"
-                         " sum={} ptr_valid={}",
-                         dira_sw_enter_count, dira_atlas_addr, dira_probe_size, dira_nonzero,
-                         dira_sum, dira_atlas_ptr != nullptr);
+                         "vDIRA atlas_cpu_content count={} addr=0x{:08X} w={} h={} probe_size={}"
+                         " nonzero={} sum={} first_nonzero_off={} ptr_valid={}",
+                         dira_sw_enter_count, dira_atlas_addr, dira_atlas_w, dira_atlas_h,
+                         dira_probe_size, dira_nonzero, dira_sum, dira_first_nonzero,
+                         dira_atlas_ptr != nullptr);
             }
         }
 
