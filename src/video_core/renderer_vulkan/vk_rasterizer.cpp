@@ -7853,8 +7853,21 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         // the real software submit path.
         static const bool dira_trace_sw = std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
         static std::atomic<u64> dira_sw_enter_counter{0};
+        static std::atomic<u64> dira_sw_a8_counter{0};
         const u64 dira_sw_enter_count = dira_trace_sw ? ++dira_sw_enter_counter : 0;
-        if (dira_trace_sw && (dira_sw_enter_count <= 8 || (dira_sw_enter_count % 512u) == 0u)) {
+        // v120b: A8 (font-atlas) software draws are ALWAYS logged (capped at 64 + every 128th),
+        // mirroring the GL differential probe -- they are the comparison's whole point and too
+        // rare for the generic first-8/%512 sampling to catch reliably.
+        const auto dira_tex_pre = regs.texturing.GetTextures();
+        const bool dira_is_a8 =
+            dira_trace_sw && dira_tex_pre[0].enabled &&
+            static_cast<u32>(dira_tex_pre[0].format) == 8u;
+        const u64 dira_a8_count = dira_is_a8 ? ++dira_sw_a8_counter : 0u;
+        const bool dira_should_log =
+            dira_trace_sw &&
+            (dira_sw_enter_count <= 8 || (dira_sw_enter_count % 512u) == 0u ||
+             (dira_is_a8 && (dira_a8_count <= 64 || (dira_a8_count % 128u) == 0u)));
+        if (dira_should_log) {
             LOG_INFO(Render_Vulkan, "vDIRA sw_draw enter count={} batch_size={}",
                      dira_sw_enter_count, vertex_batch.size());
         }
@@ -7903,7 +7916,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         // pipeline_info.blending.color_write_mask), the bound framebuffer has NO color attachment
         // and both the draw and the luma tile write nowhere visible. Comparing fb_handle here with
         // the accelerated-side probe tells whether both paths really render into the same target.
-        if (dira_trace_sw && (dira_sw_enter_count <= 8 || (dira_sw_enter_count % 512u) == 0u)) {
+        if (dira_should_log) {
             LOG_INFO(Render_Vulkan,
                      "vDIRA sw_draw submitted count={} vertex_count={} color_addr=0x{:08x}"
                      " depth_addr=0x{:08x} using_color={} write_color={} color_write_mask=0x{:x}"
@@ -7944,6 +7957,38 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      pipeline_info.dynamic.viewport.left, pipeline_info.dynamic.viewport.top,
                      pipeline_info.dynamic.viewport.right, pipeline_info.dynamic.viewport.bottom,
                      dira_pos0[0], dira_pos0[1], dira_pos0[2], dira_pos0[3]);
+            // vDIRA v120c (blend forensics): the ONLY state never inspected. A PICA->Vulkan blend
+            // translation coming out as (dst-keeping) factors, or an active logic-op (which in
+            // Vulkan silently disables ALL blending), makes the draw execute completely while
+            // changing zero pixels -- the exact observed signature (glyphs invisible, luma tile
+            // unaffected since clearAttachments bypasses blending). Logs BOTH the raw PICA values
+            // and the translated pipeline_info values, so a translation bug shows as a mismatch.
+            LOG_INFO(Render_Vulkan,
+                     "vDIRA sw_draw blend count={} pica_eq_rgb={} pica_eq_a={} pica_src_rgb={}"
+                     " pica_dst_rgb={} pica_src_a={} pica_dst_a={} pica_logic_op={} pipe_enable={}"
+                     " pipe_eq_rgb={} pipe_eq_a={} pipe_src_rgb={} pipe_dst_rgb={} pipe_src_a={}"
+                     " pipe_dst_a={}",
+                     dira_sw_enter_count,
+                     static_cast<u32>(
+                         regs.framebuffer.output_merger.alpha_blending.blend_equation_rgb.Value()),
+                     static_cast<u32>(
+                         regs.framebuffer.output_merger.alpha_blending.blend_equation_a.Value()),
+                     static_cast<u32>(
+                         regs.framebuffer.output_merger.alpha_blending.factor_source_rgb.Value()),
+                     static_cast<u32>(
+                         regs.framebuffer.output_merger.alpha_blending.factor_dest_rgb.Value()),
+                     static_cast<u32>(
+                         regs.framebuffer.output_merger.alpha_blending.factor_source_a.Value()),
+                     static_cast<u32>(
+                         regs.framebuffer.output_merger.alpha_blending.factor_dest_a.Value()),
+                     static_cast<u32>(regs.framebuffer.output_merger.logic_op.Value()),
+                     static_cast<u32>(pipeline_info.blending.blend_enable.Value()),
+                     static_cast<u32>(pipeline_info.blending.color_blend_eq.Value()),
+                     static_cast<u32>(pipeline_info.blending.alpha_blend_eq.Value()),
+                     static_cast<u32>(pipeline_info.blending.src_color_blend_factor.Value()),
+                     static_cast<u32>(pipeline_info.blending.dst_color_blend_factor.Value()),
+                     static_cast<u32>(pipeline_info.blending.src_alpha_blend_factor.Value()),
+                     static_cast<u32>(pipeline_info.blending.dst_alpha_blend_factor.Value()));
             // vDIRA v119e (atlas content check): for A8 (format 8) draws -- the font-atlas text
             // draws -- sample the CPU-side (emulated memory) content of the texture. Geometry is
             // on-screen, the atlas is bound, alpha-test is "alpha > 0", yet nothing renders: if the
