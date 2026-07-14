@@ -1185,6 +1185,42 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
                  vk::to_string(traits.native), vk::to_string(effective_format));
     }
 
+    // vDIRA v119g (channel census): for A8 uploads, count nonzero bytes PER RGBA CHANNEL in the
+    // staging buffer the codec produced. The sampled-alpha-is-zero symptom (glyphs present in
+    // emulated memory, surface bound, geometry on screen, alpha-test 'alpha > 0' discarding
+    // everything) means the codec's converted-RGBA layout carries the glyph intensity in some
+    // channel other than alpha under the identity view mapping. This census names that channel, and
+    // the fix becomes a one-line view swizzle. Numeric only, first 8 + every 64th A8 upload.
+    {
+        static const bool dira_trace_a8_upload =
+            std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
+        if (dira_trace_a8_upload && pixel_format == VideoCore::PixelFormat::A8) {
+            static std::atomic<u64> dira_a8_upload_counter{0};
+            const u64 dira_a8_upload_count = ++dira_a8_upload_counter;
+            if (dira_a8_upload_count <= 8 || (dira_a8_upload_count % 64u) == 0u) {
+                const std::size_t dira_len =
+                    std::min<std::size_t>(staging.mapped.size(), staging.size);
+                const auto dira_span = staging.mapped.first(dira_len);
+                u32 dira_nz[4] = {0, 0, 0, 0};
+                u64 dira_sum[4] = {0, 0, 0, 0};
+                for (std::size_t i = 0; i + 3 < dira_len; i += 4) {
+                    for (int c = 0; c < 4; ++c) {
+                        const u8 b = dira_span[i + c];
+                        dira_nz[c] += (b != 0) ? 1u : 0u;
+                        dira_sum[c] += b;
+                    }
+                }
+                LOG_INFO(Render_Vulkan,
+                         "vDIRA a8_upload_channels count={} rect_w={} rect_h={} size={}"
+                         " nz_r={} nz_g={} nz_b={} nz_a={} sum_r={} sum_g={} sum_b={} sum_a={}",
+                         dira_a8_upload_count, upload.texture_rect.GetWidth(),
+                         upload.texture_rect.GetHeight(), staging.size, dira_nz[0], dira_nz[1],
+                         dira_nz[2], dira_nz[3], dira_sum[0], dira_sum[1], dira_sum[2],
+                         dira_sum[3]);
+            }
+        }
+    }
+
     if (NeedsPi5UIUploadExpansion(pixel_format) &&
         ConsumeTraceBudget(g_pi5_ui_upload_trace_budget)) {
         LOG_INFO(Render_Vulkan,
