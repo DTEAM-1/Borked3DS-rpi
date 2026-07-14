@@ -646,8 +646,19 @@ bool RasterizerOpenGL::Draw(bool accelerate, bool is_indexed) {
                 std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
             if (dira_trace_gl) {
                 static std::atomic<u64> dira_gl_sw_counter{0};
+                static std::atomic<u64> dira_gl_a8_counter{0};
                 const u64 dira_gl_sw_count = ++dira_gl_sw_counter;
-                if (dira_gl_sw_count <= 8 || (dira_gl_sw_count % 512u) == 0u) {
+                const auto dira_textures_pre = regs.texturing.GetTextures();
+                // v120b: A8 (font-atlas) software draws are ALWAYS logged (capped at 64 + every
+                // 128th) -- they are the differential's whole point and too rare for the generic
+                // first-8/%512 sampling to catch reliably.
+                const bool dira_gl_is_a8 = dira_textures_pre[0].enabled &&
+                                           static_cast<u32>(dira_textures_pre[0].format) == 8u;
+                const u64 dira_gl_a8_count = dira_gl_is_a8 ? ++dira_gl_a8_counter : 0u;
+                const bool dira_gl_should_log =
+                    dira_gl_sw_count <= 8 || (dira_gl_sw_count % 512u) == 0u ||
+                    (dira_gl_is_a8 && (dira_gl_a8_count <= 64 || (dira_gl_a8_count % 128u) == 0u));
+                if (dira_gl_should_log) {
                     const auto dira_textures = regs.texturing.GetTextures();
                     float dira_pos0[4] = {0.0f, 0.0f, 0.0f, 0.0f};
                     if (!vertex_batch.empty()) {
