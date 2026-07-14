@@ -3,6 +3,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
+
 #include "video_core/shader/generator/pica_fs_config.h"
 
 namespace Pica::Shader {
@@ -15,6 +17,22 @@ FramebufferConfig::FramebufferConfig(const Pica::RegsInternal& regs, const Profi
     alpha_test_func.Assign(output_merger.alpha_test.enable
                                ? output_merger.alpha_test.func.Value()
                                : Pica::FramebufferRegs::CompareFunc::Always);
+
+    // vDIRA v121 (binary cut, diagnostic only): BORKED3DS_V3DV_DIRA_ALPHA_TEST_ALWAYS=1 forces the
+    // alpha test to Always in every generated fragment shader. Every remaining candidate for the
+    // invisible-glyph bug (wrong software texcoords, ClampToBorder sampler with a zero-alpha
+    // border, stale descriptor at draw time, mistranslated TEV alpha combiner) shares one
+    // observable: the sampled alpha is 0 and the PICA alpha test 'alpha > 0' discards the
+    // fragment. With the test forced off: glyphs appear as SOLID BOXES -> fragments were being
+    // alpha-discarded, the sampling chain is the culprit; still nothing -> fragments never write
+    // at all, the fault is below the fragment stage (rasterization/attachment). Reversible, off
+    // without the flag; expect visual noise on other alpha-tested content (e.g. foliage) while
+    // active.
+    static const bool dira_alpha_test_always =
+        std::getenv("BORKED3DS_V3DV_DIRA_ALPHA_TEST_ALWAYS") != nullptr;
+    if (dira_alpha_test_always) {
+        alpha_test_func.Assign(Pica::FramebufferRegs::CompareFunc::Always);
+    }
 
     // Emulate logic op in the shader if needed and not supported.
     logic_op.Assign(Pica::FramebufferRegs::LogicOp::Copy);
