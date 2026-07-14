@@ -4,6 +4,9 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
+#include <cstdlib>
+
 #include <glad/gl.h>
 
 #include "common/alignment.h"
@@ -632,6 +635,59 @@ bool RasterizerOpenGL::Draw(bool accelerate, bool is_indexed) {
         shader_manager.UseTrivialGeometryShader();
         shader_manager.ApplyTo(state, accurate_mul);
         state.Apply();
+
+        // vDIRA v120 (GL/VK differential probe): the OpenGL twin of the Vulkan "sw_draw state"
+        // probe -- SAME fields, SAME order, so a text-scene run on each backend can be diffed line
+        // by line. OpenGL renders these software glyph draws correctly; Vulkan renders them
+        // transparent. The first field that differs between the two logs designates the fix.
+        // Numeric-only, gated by BORKED3DS_V3DV_TRACE_DIRA, first 8 + every 512th software draw.
+        {
+            static const bool dira_trace_gl =
+                std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
+            if (dira_trace_gl) {
+                static std::atomic<u64> dira_gl_sw_counter{0};
+                const u64 dira_gl_sw_count = ++dira_gl_sw_counter;
+                if (dira_gl_sw_count <= 8 || (dira_gl_sw_count % 512u) == 0u) {
+                    const auto dira_textures = regs.texturing.GetTextures();
+                    float dira_pos0[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                    if (!vertex_batch.empty()) {
+                        std::memcpy(dira_pos0, vertex_batch.data(), sizeof(dira_pos0));
+                    }
+                    LOG_INFO(Render_OpenGL,
+                             "vDIRA gl_sw_draw state count={} vertex_count={} color_addr=0x{:08x}"
+                             " depth_addr=0x{:08x} tex0_en={} tex0_fmt={} tex0_addr=0x{:08X}"
+                             " blend_en={} alpha_test_en={} alpha_func={} alpha_ref={}"
+                             " depth_test={} depth_write={} stencil_test={} cull={}"
+                             " vp=({},{},{},{}) scissor=({},{},{},{})"
+                             " pos0=({:.3f},{:.3f},{:.3f},{:.3f})",
+                             dira_gl_sw_count, vertex_batch.size(),
+                             regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                             regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress(),
+                             static_cast<u32>(dira_textures[0].enabled),
+                             static_cast<u32>(dira_textures[0].format),
+                             dira_textures[0].config.GetPhysicalAddress(),
+                             static_cast<u32>(
+                                 regs.framebuffer.output_merger.alphablend_enable.Value()),
+                             static_cast<u32>(
+                                 regs.framebuffer.output_merger.alpha_test.enable.Value()),
+                             static_cast<u32>(
+                                 regs.framebuffer.output_merger.alpha_test.func.Value()),
+                             static_cast<u32>(
+                                 regs.framebuffer.output_merger.alpha_test.ref.Value()),
+                             static_cast<u32>(state.depth.test_enabled),
+                             static_cast<u32>(state.depth.write_mask == GL_TRUE),
+                             static_cast<u32>(state.stencil.test_enabled),
+                             static_cast<u32>(regs.rasterizer.cull_mode.Value()),
+                             static_cast<s32>(state.viewport.x), static_cast<s32>(state.viewport.y),
+                             static_cast<s32>(state.viewport.width),
+                             static_cast<s32>(state.viewport.height),
+                             static_cast<s32>(state.scissor.x), static_cast<s32>(state.scissor.y),
+                             static_cast<s32>(state.scissor.width),
+                             static_cast<s32>(state.scissor.height), dira_pos0[0], dira_pos0[1],
+                             dira_pos0[2], dira_pos0[3]);
+                }
+            }
+        }
 
         std::size_t max_vertices = 3 * (VERTEX_BUFFER_SIZE / (3 * sizeof(HardwareVertex)));
         for (std::size_t base_vertex = 0; base_vertex < vertex_batch.size();
