@@ -7982,7 +7982,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      static_cast<u32>(
                          regs.framebuffer.output_merger.alpha_blending.factor_dest_a.Value()),
                      static_cast<u32>(regs.framebuffer.output_merger.logic_op.Value()),
-                     static_cast<u32>(pipeline_info.blending.blend_enable.Value()),
+                     static_cast<u32>(pipeline_info.blending.blend_enable),
                      static_cast<u32>(pipeline_info.blending.color_blend_eq.Value()),
                      static_cast<u32>(pipeline_info.blending.alpha_blend_eq.Value()),
                      static_cast<u32>(pipeline_info.blending.src_color_blend_factor.Value()),
