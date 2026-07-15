@@ -50,6 +50,22 @@ using namespace Common::Literals;
 using namespace Pica::Shader::Generator;
 
 constexpr u64 STREAM_BUFFER_SIZE = 64_MiB;
+
+// vDIRA v127 (BORKED3DS_V3DV_DIRA_OCCLUSION_QUERY=1): GPU-side occlusion-query census of the
+// software A8 draws. Every host-side link is now proven (v121b..v126: pipeline ready, dynamic
+// state forced at exec, dedicated vertex buffer, deferred lambda executes); the one remaining
+// unknown is whether the GPU rasterizes ANY sample for these draws. A non-precise occlusion
+// query around each probed draw answers it numerically (0 = zero samples passed scissor/depth;
+// >0 = fragments exist and are lost AFTER rasterization -> attachment store/resolve side).
+// Pool reset is recorded at the first software draw, BEFORE BeginRendering, where STRICT_COMPAT
+// guarantees we are outside any render pass (scheduler.Finish() just ran and RegisterOnSubmit
+// closed the pass). Results are read back lazily on the rasterizer thread: the same Finish()
+// preceding every software draw guarantees prior queries have completed.
+constexpr u32 DIRA_OCC_POOL_SIZE = 1024;
+vk::QueryPool dira_occ_pool{};
+bool dira_occ_reset_recorded = false;
+std::atomic<u32> dira_occ_next{0};
+u32 dira_occ_read = 0; // rasterizer thread only
 constexpr u64 UNIFORM_BUFFER_SIZE = 4_MiB;
 constexpr u64 TEXTURE_BUFFER_SIZE = 2_MiB;
 
@@ -7680,6 +7696,25 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_draw_rect_before_begin_rendering");
     }
+    // vDIRA v127: create the occlusion query pool and queue its reset OUTSIDE any render pass.
+    // This exact spot is only guaranteed pass-free on the software path under STRICT_COMPAT
+    // (scheduler.Finish() above + RegisterOnSubmit(EndRendering)), hence the gates.
+    static const bool dira_occ_enabled =
+        std::getenv("BORKED3DS_V3DV_DIRA_OCCLUSION_QUERY") != nullptr;
+    if (dira_occ_enabled && !accelerate && IsStrictCompatEnabled() && !dira_occ_reset_recorded) {
+        if (!dira_occ_pool) {
+            dira_occ_pool = instance.GetDevice().createQueryPool({
+                .queryType = vk::QueryType::eOcclusion,
+                .queryCount = DIRA_OCC_POOL_SIZE,
+            });
+        }
+        scheduler.Record([pool = dira_occ_pool](vk::CommandBuffer cmdbuf) {
+            cmdbuf.resetQueryPool(pool, 0, DIRA_OCC_POOL_SIZE);
+        });
+        dira_occ_reset_recorded = true;
+        LOG_INFO(Render_Vulkan, "vDIRA occlusion pool created, reset queued, size={}",
+                 DIRA_OCC_POOL_SIZE);
+    }
     renderpass_cache.BeginRendering(framebuffer, draw_rect);
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_begin_rendering");
@@ -8014,12 +8049,43 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         // vDIRA v126: count every software draw lambda handed to the scheduler.
         ++dira_sw_record_counter;
 
+        // vDIRA v127: drain finished occlusion queries (numeric verdicts of PREVIOUS software A8
+        // draws -- the STRICT_COMPAT Finish() before every software draw guarantees completion),
+        // then allocate one query slot for THIS draw if it is an A8 probe candidate.
+        u32 dira_occ_idx = DIRA_OCC_POOL_SIZE; // invalid = no query for this draw
+        if (dira_occ_enabled && dira_is_a8 && dira_occ_reset_recorded) {
+            const u32 dira_occ_submitted = dira_occ_next.load(std::memory_order_relaxed);
+            while (dira_occ_read < dira_occ_submitted) {
+                u64 dira_occ_data[2] = {0, 0};
+                const vk::Result dira_occ_res = instance.GetDevice().getQueryPoolResults(
+                    dira_occ_pool, dira_occ_read, 1, sizeof(dira_occ_data), dira_occ_data,
+                    sizeof(dira_occ_data),
+                    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWithAvailability);
+                if (dira_occ_res != vk::Result::eSuccess || dira_occ_data[1] == 0) {
+                    break; // not ready yet -- retry at the next A8 draw
+                }
+                LOG_INFO(Render_Vulkan, "vDIRA sw_draw occlusion idx={} samples={}",
+                         dira_occ_read, dira_occ_data[0]);
+                ++dira_occ_read;
+            }
+            const u32 dira_occ_alloc = dira_occ_next.fetch_add(1, std::memory_order_relaxed);
+            if (dira_occ_alloc < DIRA_OCC_POOL_SIZE) {
+                dira_occ_idx = dira_occ_alloc;
+            }
+        }
+
         scheduler.Record([this, offset = offset, vertex_count = dira_effective_vertex_count,
                           dira_vb_handle = dira_vb_src->Handle(),
                           dira_vp = pipeline_info.dynamic.viewport,
-                          dira_sc = pipeline_info.dynamic.scissor](vk::CommandBuffer cmdbuf) {
+                          dira_sc = pipeline_info.dynamic.scissor,
+                          dira_occ_q = dira_occ_idx](vk::CommandBuffer cmdbuf) {
             // vDIRA v126: proof of life -- the deferred software-draw lambda actually ran.
             ++dira_sw_exec_counter;
+            // vDIRA v127: non-precise occlusion query around the draw (legal inside the pass).
+            const bool dira_occ_active = dira_occ_q < DIRA_OCC_POOL_SIZE;
+            if (dira_occ_active) {
+                cmdbuf.beginQuery(dira_occ_pool, dira_occ_q, {});
+            }
             // vDIRA v124 (BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE=1): re-record viewport and scissor at
             // EXECUTION time, unconditionally, right before the software draw. Everything proven so
             // far (pipeline, state, batch data, both trivial-VS flavors) was proven at RECORD time;
@@ -8055,6 +8121,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
             cmdbuf.bindVertexBuffers(0, dira_vb_handle, offset);
             cmdbuf.draw(vertex_count, 1, 0, 0);
+            // vDIRA v127: close the occlusion window right after the draw.
+            if (dira_occ_active) {
+                cmdbuf.endQuery(dira_occ_pool, dira_occ_q);
+            }
         });
 
         // vDIRA probe 3 (route tracing): the software draw was actually recorded into a Vulkan
