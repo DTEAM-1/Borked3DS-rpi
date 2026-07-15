@@ -7914,7 +7914,29 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         }
 
         const u32 vertex_size = vertex_count * sizeof(HardwareVertex);
-        const auto [buffer, offset, _] = stream_buffer.Map(vertex_size, sizeof(HardwareVertex));
+
+        // vDIRA v125 (BORKED3DS_V3DV_DIRA_DEDICATED_VB=1): route the software A8 vertex data
+        // through a PRIVATE, lightly-used stream buffer instead of the shared ring. Everything
+        // proven so far was proven at RECORD time; the one thing the (visible) clearAttachments
+        // luma tile does NOT depend on -- and the (invisible) draw DOES -- is the BUFFER CONTENT at
+        // deferred EXECUTION time. If the shared ring recycles the region between record and GPU
+        // execution (software-path fencing), the GPU reads zeros -> w=0 -> fully clipped -> zero
+        // fragments, exactly the proven symptom, and it also explains why the v122 fullscreen
+        // triangle (written into the SAME mapped ring) showed nothing. A 4 MiB private ring
+        // consumed only by rare A8 draws (~9 KiB each) effectively never wraps: marks appearing
+        // under this flag prove the ring-lifetime theory and the fix is proper software-path
+        // fencing/allocation.
+        static const bool dira_dedicated_vb_enabled =
+            std::getenv("BORKED3DS_V3DV_DIRA_DEDICATED_VB") != nullptr;
+        StreamBuffer* dira_vb_src = &stream_buffer;
+        if (dira_dedicated_vb_enabled && dira_is_a8) {
+            static StreamBuffer dira_dedicated_vb{instance, scheduler,
+                                                  vk::BufferUsageFlagBits::eVertexBuffer,
+                                                  4u * 1024u * 1024u};
+            dira_vb_src = &dira_dedicated_vb;
+        }
+
+        const auto [buffer, offset, _] = dira_vb_src->Map(vertex_size, sizeof(HardwareVertex));
 
         std::memcpy(buffer, vertex_batch.data(), vertex_size);
 
@@ -7973,9 +7995,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      v2[0], v2[1], v2[2], v2[3], sizeof(HardwareVertex));
         }
 
-        stream_buffer.Commit(vertex_size);
+        dira_vb_src->Commit(vertex_size);
 
         scheduler.Record([this, offset = offset, vertex_count = dira_effective_vertex_count,
+                          dira_vb_handle = dira_vb_src->Handle(),
                           dira_vp = pipeline_info.dynamic.viewport,
                           dira_sc = pipeline_info.dynamic.scissor](vk::CommandBuffer cmdbuf) {
             // vDIRA v124 (BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE=1): re-record viewport and scissor at
@@ -8011,7 +8034,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 };
                 cmdbuf.setScissor(0, dira_scissor);
             }
-            cmdbuf.bindVertexBuffers(0, stream_buffer.Handle(), offset);
+            cmdbuf.bindVertexBuffers(0, dira_vb_handle, offset);
             cmdbuf.draw(vertex_count, 1, 0, 0);
         });
 
