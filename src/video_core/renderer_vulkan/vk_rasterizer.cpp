@@ -7917,9 +7917,66 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         const auto [buffer, offset, _] = stream_buffer.Map(vertex_size, sizeof(HardwareVertex));
 
         std::memcpy(buffer, vertex_batch.data(), vertex_size);
+
+        // vDIRA v122 substitution test (BORKED3DS_V3DV_DIRA_FULLSCREEN_TRI=1): for software A8
+        // draws, overwrite the first three vertices IN THE MAPPED GPU BUFFER with a known
+        // fullscreen triangle (NDC (-1,-1) (3,-1) (-1,3), w=1, white color, mid-atlas texcoords)
+        // and draw only those 3 vertices. Combined with FORCE_OPAQUE_SW + ALPHA_TEST_ALWAYS this
+        // triangle MUST cover the screen if the vertex-fetch + trivial-VS + rasterization stack
+        // works at all: visible wash => the stack is healthy and the BATCH DATA is degenerate
+        // (pica-side software vertex production); still nothing => the fetch/pipeline itself is
+        // broken (deferred bindVertexBuffers offset, stream-buffer lifetime, or trivial VS).
+        static const bool dira_fullscreen_tri =
+            std::getenv("BORKED3DS_V3DV_DIRA_FULLSCREEN_TRI") != nullptr;
+        u32 dira_effective_vertex_count = vertex_count;
+        if (dira_fullscreen_tri && dira_is_a8 && vertex_count >= 3) {
+            constexpr u32 kFloatsPerVertex = sizeof(HardwareVertex) / sizeof(float);
+            float* dira_verts = reinterpret_cast<float*>(buffer);
+            const std::array<std::array<float, 4>, 3> dira_positions = {{
+                {-1.0f, -1.0f, 0.0f, 1.0f},
+                {3.0f, -1.0f, 0.0f, 1.0f},
+                {-1.0f, 3.0f, 0.0f, 1.0f},
+            }};
+            for (u32 v = 0; v < 3; ++v) {
+                float* dst = dira_verts + v * kFloatsPerVertex;
+                for (u32 c = 0; c < kFloatsPerVertex; ++c) {
+                    dst[c] = 0.5f; // benign default for texcoords and the rest
+                }
+                dst[0] = dira_positions[v][0]; // position
+                dst[1] = dira_positions[v][1];
+                dst[2] = dira_positions[v][2];
+                dst[3] = dira_positions[v][3];
+                dst[4] = 1.0f; // color = opaque white
+                dst[5] = 1.0f;
+                dst[6] = 1.0f;
+                dst[7] = 1.0f;
+            }
+            dira_effective_vertex_count = 3;
+        }
+
+        // vDIRA v122 (first-triangle census): pos0 only ever proved VERTEX 0 sane. If vertices
+        // 1..N are degenerate (identical, or w=0 -> fully clipped), every triangle has zero area
+        // and rasterization produces nothing while vertex 0 still looks perfect. Log the complete
+        // first triangle for A8 draws.
+        if (dira_should_log && dira_is_a8 && vertex_count >= 3) {
+            constexpr u32 kStrideFloats = sizeof(HardwareVertex) / sizeof(float);
+            float v0[4], v1[4], v2[4];
+            const float* src_floats = reinterpret_cast<const float*>(vertex_batch.data());
+            std::memcpy(v0, src_floats, sizeof(v0));
+            std::memcpy(v1, src_floats + kStrideFloats, sizeof(v1));
+            std::memcpy(v2, src_floats + 2 * kStrideFloats, sizeof(v2));
+            LOG_INFO(Render_Vulkan,
+                     "vDIRA sw_draw tri0 count={} v0=({:.3f},{:.3f},{:.3f},{:.3f})"
+                     " v1=({:.3f},{:.3f},{:.3f},{:.3f}) v2=({:.3f},{:.3f},{:.3f},{:.3f})"
+                     " stride_bytes={}",
+                     dira_sw_enter_count, v0[0], v0[1], v0[2], v0[3], v1[0], v1[1], v1[2], v1[3],
+                     v2[0], v2[1], v2[2], v2[3], sizeof(HardwareVertex));
+        }
+
         stream_buffer.Commit(vertex_size);
 
-        scheduler.Record([this, offset = offset, vertex_count](vk::CommandBuffer cmdbuf) {
+        scheduler.Record([this, offset = offset,
+                          vertex_count = dira_effective_vertex_count](vk::CommandBuffer cmdbuf) {
             cmdbuf.bindVertexBuffers(0, stream_buffer.Handle(), offset);
             cmdbuf.draw(vertex_count, 1, 0, 0);
         });
