@@ -190,6 +190,31 @@ constexpr std::array<vk::DescriptorSetLayoutBinding, 2> UTILITY_BINDINGS = {{
      vk::ShaderStageFlagBits::eFragment}, // tex_normal
 }};
 
+namespace {
+/// vDIRA v123 (BORKED3DS_V3DV_DIRA_TRIVIAL_VS_GLSL=1): build the trivial vertex shader from the
+/// GLSL generator compiled through glslang instead of the direct SPIR-V generator. Rationale: this
+/// fork already migrated every PROGRAMMABLE vertex shader to the GLSL->glslang path (see
+/// UseProgrammableVertexShader: the SPIRV generator is commented out) and those shaders work on
+/// V3DV -- the trivial VS was the only one left on the direct SPIR-V generator, and it feeds
+/// EXCLUSIVELY the software-vertex draw path, which is precisely the path that produces zero
+/// fragments on V3DV (proven by the v122 fullscreen-triangle substitution: correct pipeline,
+/// correct state, correct data injected straight into the GPU buffer, still nothing). The
+/// spirv_shader_gen setting never covered this shader, so it was never innocented. Default
+/// behaviour (flag absent) is unchanged.
+std::vector<u32> MakeTrivialVertexShaderCode(const Instance& instance) {
+    const bool has_clip = instance.IsShaderClipDistanceSupported();
+    static const bool use_glsl_trivial_vs =
+        std::getenv("BORKED3DS_V3DV_DIRA_TRIVIAL_VS_GLSL") != nullptr;
+    if (use_glsl_trivial_vs) {
+        const std::string program = GLSL::GenerateTrivialVertexShader(has_clip, true);
+        return CompileGLSLtoSPIRV(program, vk::ShaderStageFlagBits::eVertex,
+                                  instance.GetDevice());
+    }
+    const auto spirv = SPIRV::GenerateTrivialVertexShader(has_clip);
+    return std::vector<u32>(spirv.begin(), spirv.end());
+}
+} // namespace
+
 PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              RenderManager& renderpass_cache_, DescriptorUpdateQueue& update_queue_)
     : instance{instance_}, scheduler{scheduler_}, renderpass_cache{renderpass_cache_},
@@ -200,8 +225,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), BUFFER_BINDINGS, 32},
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), TEXTURE_BINDINGS<1>},
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), UTILITY_BINDINGS, 32}},
-      trivial_vertex_shader{
-          instance, SPIRV::GenerateTrivialVertexShader(instance.IsShaderClipDistanceSupported())} {
+      trivial_vertex_shader{instance, MakeTrivialVertexShaderCode(instance)} {
     scheduler.RegisterOnDispatch([this] { update_queue.Flush(); });
     const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
     profile = Pica::Shader::Profile{
