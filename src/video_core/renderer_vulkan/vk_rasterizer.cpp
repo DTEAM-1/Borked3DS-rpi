@@ -7975,8 +7975,42 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         stream_buffer.Commit(vertex_size);
 
-        scheduler.Record([this, offset = offset,
-                          vertex_count = dira_effective_vertex_count](vk::CommandBuffer cmdbuf) {
+        scheduler.Record([this, offset = offset, vertex_count = dira_effective_vertex_count,
+                          dira_vp = pipeline_info.dynamic.viewport,
+                          dira_sc = pipeline_info.dynamic.scissor](vk::CommandBuffer cmdbuf) {
+            // vDIRA v124 (BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE=1): re-record viewport and scissor at
+            // EXECUTION time, unconditionally, right before the software draw. Everything proven so
+            // far (pipeline, state, batch data, both trivial-VS flavors) was proven at RECORD time;
+            // Vulkan dynamic state is UNDEFINED at the start of every new command buffer, and
+            // BindPipeline only re-records it on CPU-side change detection. A software draw landing
+            // in a fresh command buffer without a detected change executes with an undefined
+            // viewport -> zero fragments regardless of data -- while clearAttachments (the visible
+            // luma tile) ignores viewport/scissor entirely. Values are captured at record time from
+            // the same pipeline_info the accelerated path uses.
+            static const bool dira_force_dynstate =
+                std::getenv("BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE") != nullptr;
+            if (dira_force_dynstate) {
+                const vk::Viewport dira_viewport = {
+                    .x = static_cast<f32>(dira_vp.left),
+                    .y = static_cast<f32>(dira_vp.top),
+                    .width = static_cast<f32>(dira_vp.GetWidth()),
+                    .height = static_cast<f32>(dira_vp.GetHeight()),
+                    .minDepth = 0.f,
+                    .maxDepth = 1.f,
+                };
+                cmdbuf.setViewport(0, dira_viewport);
+                const vk::Rect2D dira_scissor = {
+                    .offset{
+                        .x = static_cast<s32>(dira_sc.left),
+                        .y = static_cast<s32>(dira_sc.bottom),
+                    },
+                    .extent{
+                        .width = dira_sc.GetWidth(),
+                        .height = dira_sc.GetHeight(),
+                    },
+                };
+                cmdbuf.setScissor(0, dira_scissor);
+            }
             cmdbuf.bindVertexBuffers(0, stream_buffer.Handle(), offset);
             cmdbuf.draw(vertex_count, 1, 0, 0);
         });
