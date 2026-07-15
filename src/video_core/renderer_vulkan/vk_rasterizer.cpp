@@ -7854,6 +7854,20 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         static const bool dira_trace_sw = std::getenv("BORKED3DS_V3DV_TRACE_DIRA") != nullptr;
         static std::atomic<u64> dira_sw_enter_counter{0};
         static std::atomic<u64> dira_sw_a8_counter{0};
+        // vDIRA v126 (suspect #2, deferred-execution census): everything proven so far was proven
+        // at RECORD time; v125 (private 4 MiB ring) cleared the ring-lifetime theory. The next
+        // unproven link is whether the deferred lambda queued via scheduler.Record for the
+        // software draw is EVER executed by the scheduler (a dropped/never-flushed chunk records
+        // nothing into the real command buffer -> zero fragments, while clearAttachments recorded
+        // through a DIFFERENT lambda could still live in a chunk that does run).
+        // dira_sw_record_counter is bumped at record time, dira_sw_exec_counter is bumped INSIDE
+        // the lambda (function-local statics are accessible in lambdas without capture). No
+        // logging inside the lambda (scheduler worker thread) -- a periodic line OUTSIDE compares
+        // both. Reading grid: executed==0 while recorded grows -> lambda never runs (suspect #2
+        // PROVEN); executed tracks recorded with a small bounded delta (draws pending in the
+        // current unflushed chunk) -> lambda runs (suspect #2 cleared -> next step: readback).
+        static std::atomic<u64> dira_sw_record_counter{0};
+        static std::atomic<u64> dira_sw_exec_counter{0};
         const u64 dira_sw_enter_count = dira_trace_sw ? ++dira_sw_enter_counter : 0;
         // v120b: A8 (font-atlas) software draws are ALWAYS logged (capped at 64 + every 128th),
         // mirroring the GL differential probe -- they are the comparison's whole point and too
@@ -7997,10 +8011,15 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         dira_vb_src->Commit(vertex_size);
 
+        // vDIRA v126: count every software draw lambda handed to the scheduler.
+        ++dira_sw_record_counter;
+
         scheduler.Record([this, offset = offset, vertex_count = dira_effective_vertex_count,
                           dira_vb_handle = dira_vb_src->Handle(),
                           dira_vp = pipeline_info.dynamic.viewport,
                           dira_sc = pipeline_info.dynamic.scissor](vk::CommandBuffer cmdbuf) {
+            // vDIRA v126: proof of life -- the deferred software-draw lambda actually ran.
+            ++dira_sw_exec_counter;
             // vDIRA v124 (BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE=1): re-record viewport and scissor at
             // EXECUTION time, unconditionally, right before the software draw. Everything proven so
             // far (pipeline, state, batch data, both trivial-VS flavors) was proven at RECORD time;
@@ -8057,6 +8076,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      static_cast<u32>(pipeline_info.blending.color_write_mask),
                      static_cast<bool>(framebuffer->Handle()),
                      draw_rect.GetWidth(), draw_rect.GetHeight());
+            // vDIRA v126 (suspect #2 census, logged OUTSIDE the lambda): recorded vs executed
+            // software-draw lambdas. executed frozen at 0 => the deferred lambda never runs.
+            const u64 dira_recorded = dira_sw_record_counter.load(std::memory_order_relaxed);
+            const u64 dira_executed = dira_sw_exec_counter.load(std::memory_order_relaxed);
+            LOG_INFO(Render_Vulkan,
+                     "vDIRA sw_draw exec_counter count={} recorded={} executed={} delta={}",
+                     dira_sw_enter_count, dira_recorded, dira_executed,
+                     dira_recorded - dira_executed);
             // vDIRA v119d (fragment kill-chain): everything that can silently erase this draw's
             // pixels while leaving the clearAttachments luma tile intact (the tile ignores
             // viewport/scissor/pipeline state; the draw does not). One numeric line: texture unit 0
