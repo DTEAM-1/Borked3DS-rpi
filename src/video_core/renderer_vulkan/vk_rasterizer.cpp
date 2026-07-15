@@ -7872,6 +7872,21 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      dira_sw_enter_count, vertex_batch.size());
         }
 
+        // vDIRA v121b (the corrected binary cut): BORKED3DS_V3DV_DIRA_FORCE_OPAQUE_SW=1 disables
+        // blending for software A8 (font-atlas) draws. Rationale: the previous alpha-test-Always
+        // probe was NOT decisive -- fragments passing the test still enter srcAlpha/1-srcAlpha
+        // blending, and a sampled alpha of 0 yields dst unchanged (invisible), indistinguishable
+        // from "no fragments". With blending OFF every rasterized fragment writes its color
+        // directly: marks at the text locations => fragments exist and the sampling chain
+        // (texcoords / sampler / descriptor / TEV) is the culprit; still nothing => zero fragments
+        // is finally proven and the fault is at the data/pipeline level. Diagnostic, reversible;
+        // the modified blend state is re-synced by the next SyncBlendEnabled reg write.
+        static const bool dira_force_opaque_sw =
+            std::getenv("BORKED3DS_V3DV_DIRA_FORCE_OPAQUE_SW") != nullptr;
+        if (dira_force_opaque_sw && dira_is_a8) {
+            pipeline_info.blending.blend_enable = 0;
+        }
+
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, true);
         if (!pipeline_ready) {
             if (IsDrawTraceEnabled()) {
