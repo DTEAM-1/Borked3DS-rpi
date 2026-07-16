@@ -1093,15 +1093,25 @@ private:
             ++shader.scope;
             shader.AddLine("int fixed_offset = offset >= -128 && offset <= 127 ? offset : 0;");
             shader.AddLine("int index = min((base_index + fixed_offset) & 0x7F, 95);");
-            // v116c-DIAG: BORKED3DS_V3DV_TBO_INDEX_TEST=1 bypasses texelFetch entirely and returns
-            // a luminance ramp derived from `index` (64..95 -> 0..1). Run with FS_SHOW_UV=1:
-            //   - per-glyph cells in DIFFERENT grays -> index varies, reg_tmp5->output works, so the
-            //     texelFetch READ is the fault (TMU visibility / VS texel-buffer on V3D).
-            //   - still flat -> index is constant here / reg_tmp5 never reaches the output -> the
-            //     fault is upstream of the read, not in it.
-            // Compared against the current texelFetch result (flat white), this splits the tree.
+            // v116c-DIAG / v129 recalibrated: BORKED3DS_V3DV_TBO_INDEX_TEST=1 bypasses texelFetch
+            // entirely and returns a HIGH-CONTRAST parity pattern derived from `index`. Run with
+            // FS_SHOW_UV=1. The v116c shallow ramp ((index-64)/31) was unusable for VSs whose
+            // dynamic upper-bank read spans only a few slots (Sonic Lost World: index 64..69 ->
+            // ramp 0.00..0.16, six near-black grays indistinguishable to the eye). Parity maps
+            // adjacent glyph indices to full black vs full white, so a per-glyph checkerboard is
+            // unmistakable in pure luminance regardless of index span or how FS_SHOW_UV maps the
+            // texcoord channels:
+            //   - alternating dark/bright per glyph cell -> `index` (hence aL.y) VARIES and reaches
+            //     the output -> the fault is the texelFetch READ (V3D texel-buffer path) -> the
+            //     2D-image fix (GL LUT analog) applies.
+            //   - uniform (all one level) -> `index` is FROZEN upstream (address register / MOVA) ->
+            //     no storage change helps; the address-register computation is the target.
+            // parity mapped to 0.25 vs 0.75 (NOT 0/1): FS_SHOW_UV displays fract(abs(texcoord0.x)),
+            // and fract(1.0)==0.0 would collapse a 0/1 parity to all-black. 0.25 and 0.75 both
+            // survive fract intact -> a clean dark/bright alternation per glyph. All three
+            // components carry the same value, so FS_SHOW_UV_AXIS (x or y) is irrelevant here.
             if (std::getenv("BORKED3DS_V3DV_TBO_INDEX_TEST") != nullptr) {
-                shader.AddLine("return vec4(vec3(clamp(float(index - 64) / 31.0, 0.0, 1.0)), 1.0);");
+                shader.AddLine("return vec4(vec3(0.25 + 0.5 * float((index - 64) & 1)), 1.0);");
             } else if (std::getenv("BORKED3DS_V3DV_LOW_MIRROR") != nullptr) {
                 // v118-MIRROR (Plan A, per-VS base): the needed upper-bank slots f[64..64+count) are
                 // mirrored by the Vulkan uniform upload (RasterizerVulkan::UploadUniforms) into a
