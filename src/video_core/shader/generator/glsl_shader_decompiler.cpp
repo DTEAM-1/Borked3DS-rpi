@@ -329,7 +329,49 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
     // Hybrid VSs (Sonic Lost World) are NOT mirrored -- since vDIRA they are instead routed to the
     // per-draw software vertex shader fallback (see VertexShaderNeedsSoftwareVSFallback below).
     if (!scan.low.empty()) {
-        return kNoMirror;
+        // vDIRA v128 (BORKED3DS_V3DV_HYBRID_MIRROR=1): try to mirror hybrid VSs into the free
+        // window ABOVE their known low reads. Justification: v127 proved samples=0 for every
+        // software-A8 draw -- the software Vulkan path is dead at the V3DV driver level, so the
+        // fallback for hybrid VSs (Sonic Lost World glyphs) actually delivers nothing. A mirror
+        // into f[max(low)+1 .. 31] is the only chance left for the ACCELERATED path to serve the
+        // glyphs; it reads the mirror via a dynamic LOW-bank index, the one uniform path V3DV
+        // compiles correctly (v118 baseline). The write also happens in the upload, so guest data
+        // in those slots is CLOBBERED for this VS -- if the 3D side of the shared VS reads
+        // f[base + aL] where base <= max(low) and aL is large enough to reach the mirror window,
+        // the 3D visual is expected to be corrupted. This is exactly the risk the v118 code
+        // refused to take; v128 takes it because the alternative (software fallback) is proven
+        // ineffective, and the outcome is now measurable in one shot: text visible + 3D intact ->
+        // ship; text visible + 3D broken -> the shared-VS conflict is real, dual-VS emission
+        // becomes the next step; nothing visible -> V3DV also miscompiles the low-bank read here,
+        // which closes the accelerated Vulkan path entirely for this class of shader.
+        static const bool hybrid_mirror =
+            std::getenv("BORKED3DS_V3DV_HYBRID_MIRROR") != nullptr;
+        if (!hybrid_mirror) {
+            return kNoMirror;
+        }
+        // Highest low base index actually read by the VS. `scan.low` is a std::set of u32, so
+        // the last element is the maximum. base = highest_low + 1; count = 32 - base (so the
+        // mirror never leaves the low bank). Refuse if there is no room for at least one slot
+        // (i.e. the VS reads f[31] statically or through a low-classed dynamic index).
+        const u32 highest_low = *scan.low.rbegin();
+        if (highest_low >= 31u) {
+            return kNoMirror;
+        }
+        const u32 hybrid_base = highest_low + 1u;
+        const u32 hybrid_count = 32u - hybrid_base;
+        // One-shot log per distinct VS so the applied plan is visible in the field.
+        static const bool trace_mirror_map =
+            std::getenv("BORKED3DS_V3DV_TRACE_MIRROR_MAP") != nullptr;
+        if (trace_mirror_map) {
+            static std::set<u32> seen_hybrid;
+            if (seen_hybrid.insert(main_offset).second) {
+                LOG_INFO(HW_GPU,
+                         "vDIRA v128 hybrid_mirror plan main_offset={} base={} count={} "
+                         "highest_low={}",
+                         main_offset, hybrid_base, hybrid_count, highest_low);
+            }
+        }
+        return LowMirrorPlan{true, hybrid_base, hybrid_count};
     }
     const u32 base = 0u;
     const u32 count = 32u;
@@ -351,7 +393,21 @@ bool VertexShaderNeedsSoftwareVSFallback(const ProgramCode& program_code, u32 ma
     // falls through to LoadVertices. Everything else (pure-text VSs -> mirror, pure-3D VSs ->
     // hardware) is unaffected, keeping the software cost limited to the miscompiled draws.
     const UniformReadScan scan = ScanVertexShaderUniformReads(program_code, main_offset);
-    return scan.analyzed && !scan.high.empty() && !scan.low.empty();
+    const bool is_hybrid = scan.analyzed && !scan.high.empty() && !scan.low.empty();
+    if (!is_hybrid) {
+        return false;
+    }
+    // vDIRA v128: v127 proved samples=0 for every software-A8 draw -- the software Vulkan path is
+    // dead at the V3DV driver level. When BORKED3DS_V3DV_HYBRID_MIRROR=1 grants this hybrid VS a
+    // usable mirror plan, PREFER the accelerated path (its low-bank read is V3DV-safe) over the
+    // dead software path. Reevaluated per call: LowMirrorPlan is a pure function of program_code
+    // + main_offset + env, so this stays consistent with the upload and shader code paths that
+    // already use LowMirrorPlan directly. If HYBRID_MIRROR is off, LowMirrorPlan still returns
+    // kNoMirror for hybrids -> the historical software route is preserved for A/B comparison.
+    if (VertexShaderLowMirrorPlan(program_code, main_offset).ok) {
+        return false;
+    }
+    return true;
 }
 
 class ShaderWriter {
