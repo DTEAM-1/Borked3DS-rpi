@@ -265,27 +265,25 @@ vec4 secondary_fragment_color = vec4(0.0);
                 out += "color = vec4(1.0, 0.0, 1.0, 1.0);\n";
             }
         }
-        // v130 cross-reference probe: BORKED3DS_FS_FORCE_TEXT_WHITE=1 forces ONLY text draws
-        // (alpha_test_func == 6, the confirmed glyph signature) to opaque white, leaving every
-        // other draw's color untouched. This isolates the "black quad vs no quad" ambiguity that
-        // FS_SHOW_UV cannot resolve for a colorblind reader on a dark field: FS_SHOW_UV renders
-        // fract(abs(texcoord0)) which is ~0 (black) whenever the texcoord is frozen at the atlas
-        // origin, so a rasterizing-but-mistextured glyph quad is indistinguishable from a quad
-        // that never rasterized. Forcing text-only white removes texture, UV and TEV from the
-        // equation entirely -- a rasterized text fragment is white regardless. Gated at shader-gen
-        // time on the atf6 signature so the rest of the scene stays readable as context.
-        //   - WHITE blocks in the failing dialog zones -> the text quads DO rasterize; the defect
-        //     is purely their texcoord (frozen at the atlas origin, sampling an empty cell), and
-        //     that texcoord bypasses get_offset_register_sw (TBO_INDEX_TEST left it untouched) ->
-        //     the broken text is a DIFFERENT path from the working f[64+aL.y] glyphs.
-        //   - NO white in the failing zones (working zones still white) -> the failing text quads
-        //     do NOT rasterize -> a geometry/draw defect (culling, degenerate position, index
-        //     buffer), not a texturing defect.
+        // v131 identification sweep: BORKED3DS_FS_FORCE_ATF=<n> forces ONLY draws whose
+        // alpha_test_func == n to opaque white, leaving the rest of the scene as context. v130
+        // proved atf==6 lights the PLANTS, not the text, so the "text uses atf6" note in the older
+        // comments is wrong -- the working AND broken text use some other compare-func value. This
+        // turns identification into a cheap no-rebuild sweep: set n = 0..7 across relaunches (cache
+        // purged each time so shaders regenerate and re-read the env) and note which value whitens
+        // (a) the working small-box text, (b) the broken large-box text and the white marker
+        // rectangle in the lower-right of the failing zones. That value is the broken-text draw's
+        // signature; once known, every future text probe can gate on it precisely instead of
+        // guessing. alpha_test_func is a 3-bit field, so the full candidate set is 0..7
+        // (Never/Always/Equal/NotEqual/Less/LessEqual/Greater/GreaterEqual in PICA order).
         {
-            const char* ftw_env = std::getenv("BORKED3DS_FS_FORCE_TEXT_WHITE");
-            if (ftw_env != nullptr && ftw_env[0] == '1' &&
-                static_cast<u32>(config.framebuffer.alpha_test_func.Value()) == 6u) {
-                out += "color = vec4(1.0, 1.0, 1.0, 1.0);\n";
+            const char* fatf_env = std::getenv("BORKED3DS_FS_FORCE_ATF");
+            if (fatf_env != nullptr && fatf_env[0] != '\0') {
+                const int want_atf = std::atoi(fatf_env);
+                if (want_atf >= 0 &&
+                    static_cast<int>(config.framebuffer.alpha_test_func.Value()) == want_atf) {
+                    out += "color = vec4(1.0, 1.0, 1.0, 1.0);\n";
+                }
             }
         }
         // v115-E debug probe: BORKED3DS_FS_HIGHLIGHT_TEX=1 keeps the rest of the scene
