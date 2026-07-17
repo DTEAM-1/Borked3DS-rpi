@@ -7936,6 +7936,27 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             pipeline_info.blending.blend_enable = 0;
         }
 
+        // vDIRA v132: BORKED3DS_V3DV_DIRA_DEPTH_ALWAYS=1 forces the software A8 (font-atlas) draw's
+        // depth compare op to Always, so no rasterized fragment can be killed by the depth test.
+        // This is the LAST un-neutralized fragment-kill mechanism: v121b/v127 already forced
+        // alpha-test-Always and blending-off, yet occlusion still measured samples=0. An occlusion
+        // query counts only samples that PASS the depth/stencil test, so a fragment discarded by
+        // depth is indistinguishable from "never rasterized" -- and the v127 state log showed
+        // depth_test=1. The luma_tile (vkCmdClearAttachments) lands in the missing-text zones
+        // because a color clear ignores depth entirely, exactly the asymmetry expected if depth is
+        // the killer. Reading, with LUMA_TILE=1 as reference: if the glyph marks now appear
+        // alongside the tile, the 2D overlay draws were being depth-rejected against the scene
+        // (the real fix then lives in how these draws' depth state/Z is emitted, matching the GL
+        // path where UI text is not depth-culled); if still only the tile shows, depth is cleared
+        // and the fault is genuinely upstream of per-fragment tests (zero coverage). Gated on
+        // dira_is_a8 so only the font draws are affected; re-synced by the next SyncDepthTest.
+        static const bool dira_depth_always =
+            std::getenv("BORKED3DS_V3DV_DIRA_DEPTH_ALWAYS") != nullptr;
+        if (dira_depth_always && dira_is_a8) {
+            pipeline_info.depth_stencil.depth_compare_op.Assign(
+                Pica::FramebufferRegs::CompareFunc::Always);
+        }
+
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, true);
         if (!pipeline_ready) {
             if (IsDrawTraceEnabled()) {
@@ -8167,7 +8188,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             LOG_INFO(Render_Vulkan,
                      "vDIRA sw_draw state count={} tex0_en={} tex0_fmt={} tex0_addr=0x{:08X}"
                      " blend_en={} alpha_test_en={} alpha_func={} alpha_ref={} depth_test={}"
-                     " depth_write={} stencil_test={} cull={} vp=({},{},{},{})"
+                     " depth_write={} depth_cmp={} stencil_test={} cull={} vp=({},{},{},{})"
                      " pos0=({:.3f},{:.3f},{:.3f},{:.3f})",
                      dira_sw_enter_count, static_cast<u32>(dira_textures[0].enabled),
                      static_cast<u32>(dira_textures[0].format),
@@ -8178,6 +8199,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      static_cast<u32>(regs.framebuffer.output_merger.alpha_test.ref.Value()),
                      static_cast<u32>(pipeline_info.depth_stencil.depth_test_enable.Value()),
                      static_cast<u32>(pipeline_info.depth_stencil.depth_write_enable.Value()),
+                     static_cast<u32>(pipeline_info.depth_stencil.depth_compare_op.Value()),
                      static_cast<u32>(pipeline_info.depth_stencil.stencil_test_enable.Value()),
                      static_cast<u32>(regs.rasterizer.cull_mode.Value()),
                      pipeline_info.dynamic.viewport.left, pipeline_info.dynamic.viewport.top,
