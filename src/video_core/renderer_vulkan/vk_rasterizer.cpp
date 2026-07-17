@@ -7957,6 +7957,28 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 Pica::FramebufferRegs::CompareFunc::Always);
         }
 
+        // vDIRA v134 (root cause, found by elimination v132/v133): the software path runs
+        // scheduler.Finish() before every draw, which begins a FRESH command buffer with NO
+        // pipeline bound on the GPU. But PipelineCache::BindPipeline only records vkCmdBindPipeline
+        // when pipeline_dirty == (current_pipeline != pipeline) || IsStateDirty(Pipeline) is true.
+        // When consecutive glyph draws reuse the same pipeline and the scheduler's Pipeline dirty
+        // flag is clear, the bind is SKIPPED -> the draw executes with no pipeline -> zero
+        // fragments, while clearAttachments (the luma tile, which needs no pipeline) stays visible.
+        // Every other kill mechanism was ruled out: state, geometry (tri0 valid), scissor
+        // (FORCE_FULL_SCISSOR), viewport, depth, alpha discard and blending. This is the same class
+        // of bug v124 patched for viewport/scissor (which also gate on is_dirty). Marking the
+        // Pipeline state dirty forces BindPipeline to re-record the bind into the fresh command
+        // buffer. Gated for A/B validation; once confirmed it should become unconditional for the
+        // software path (and FORCE_DYNSTATE folded in, since is_dirty then also re-arms dyn state).
+        // API note: Scheduler::MakeDirty(flag) CLEARS the state bit; IsStateDirty() reports dirty
+        // when the bit is clear, so this is the correct call to force a re-bind (MarkStateNonDirty
+        // is its inverse, used at the end of BindPipeline).
+        static const bool dira_force_pipeline_bind =
+            std::getenv("BORKED3DS_V3DV_DIRA_FORCE_PIPELINE_BIND") != nullptr;
+        if (dira_force_pipeline_bind) {
+            scheduler.MakeDirty(StateFlags::Pipeline);
+        }
+
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, true);
         if (!pipeline_ready) {
             if (IsDrawTraceEnabled()) {
