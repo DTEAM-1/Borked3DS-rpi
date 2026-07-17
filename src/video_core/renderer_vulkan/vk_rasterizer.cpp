@@ -8128,16 +8128,39 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                     .maxDepth = 1.f,
                 };
                 cmdbuf.setViewport(0, dira_viewport);
-                const vk::Rect2D dira_scissor = {
-                    .offset{
-                        .x = static_cast<s32>(dira_sc.left),
-                        .y = static_cast<s32>(dira_sc.bottom),
-                    },
-                    .extent{
-                        .width = dira_sc.GetWidth(),
-                        .height = dira_sc.GetHeight(),
-                    },
-                };
+                // vDIRA v133: BORKED3DS_V3DV_DIRA_FORCE_FULL_SCISSOR=1 overrides the captured PICA
+                // scissor with a full-viewport rect. tri0 proved the geometry is valid and
+                // FULLSCREEN_TRI still rasterized nothing under FORCE_DYNSTATE, so the last thing
+                // that can silently clip every fragment (while leaving the clearAttachments luma
+                // tile untouched -- it uses its own rect) is an empty or off-screen scissor. Note
+                // the original path builds offset.y from dira_sc.bottom with a positive height,
+                // which lands the rect below the framebuffer if bottom is the high coordinate.
+                // Full white flood with this flag => the scissor was the killer, and the real fix
+                // is to emit the software draw's scissor correctly (top-origin, clamped). Still
+                // nothing => the scissor is innocent too and the fault is the vertex fetch/bind.
+                static const bool dira_full_scissor =
+                    std::getenv("BORKED3DS_V3DV_DIRA_FORCE_FULL_SCISSOR") != nullptr;
+                vk::Rect2D dira_scissor;
+                if (dira_full_scissor) {
+                    dira_scissor = vk::Rect2D{
+                        .offset{.x = 0, .y = 0},
+                        .extent{
+                            .width = static_cast<u32>(dira_vp.GetWidth()),
+                            .height = static_cast<u32>(dira_vp.GetHeight()),
+                        },
+                    };
+                } else {
+                    dira_scissor = vk::Rect2D{
+                        .offset{
+                            .x = static_cast<s32>(dira_sc.left),
+                            .y = static_cast<s32>(dira_sc.bottom),
+                        },
+                        .extent{
+                            .width = dira_sc.GetWidth(),
+                            .height = dira_sc.GetHeight(),
+                        },
+                    };
+                }
                 cmdbuf.setScissor(0, dira_scissor);
             }
             cmdbuf.bindVertexBuffers(0, dira_vb_handle, offset);
@@ -8189,6 +8212,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      "vDIRA sw_draw state count={} tex0_en={} tex0_fmt={} tex0_addr=0x{:08X}"
                      " blend_en={} alpha_test_en={} alpha_func={} alpha_ref={} depth_test={}"
                      " depth_write={} depth_cmp={} stencil_test={} cull={} vp=({},{},{},{})"
+                     " sc=({},{},{},{})"
                      " pos0=({:.3f},{:.3f},{:.3f},{:.3f})",
                      dira_sw_enter_count, static_cast<u32>(dira_textures[0].enabled),
                      static_cast<u32>(dira_textures[0].format),
@@ -8204,6 +8228,8 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      static_cast<u32>(regs.rasterizer.cull_mode.Value()),
                      pipeline_info.dynamic.viewport.left, pipeline_info.dynamic.viewport.top,
                      pipeline_info.dynamic.viewport.right, pipeline_info.dynamic.viewport.bottom,
+                     pipeline_info.dynamic.scissor.left, pipeline_info.dynamic.scissor.top,
+                     pipeline_info.dynamic.scissor.right, pipeline_info.dynamic.scissor.bottom,
                      dira_pos0[0], dira_pos0[1], dira_pos0[2], dira_pos0[3]);
             // vDIRA v120c (blend forensics): the ONLY state never inspected. A PICA->Vulkan blend
             // translation coming out as (dst-keeping) factors, or an active logic-op (which in
