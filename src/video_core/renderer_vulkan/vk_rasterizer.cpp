@@ -7912,9 +7912,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             dira_trace_sw && dira_tex_pre[0].enabled &&
             static_cast<u32>(dira_tex_pre[0].format) == 8u;
         const u64 dira_a8_count = dira_is_a8 ? ++dira_sw_a8_counter : 0u;
+        // vDIRA v139: sample non-A8 software draws more densely (was %512). The decisive
+        // comparison is now between A8 glyph draws (occlusion 0) and non-A8 software draws
+        // (occlusion 36..392) travelling the SAME path, so both families must appear in the state
+        // log with their attachment formats to see whether they run in different render passes.
         const bool dira_should_log =
             dira_trace_sw &&
-            (dira_sw_enter_count <= 8 || (dira_sw_enter_count % 512u) == 0u ||
+            (dira_sw_enter_count <= 8 || (dira_sw_enter_count % 64u) == 0u ||
              (dira_is_a8 && (dira_a8_count <= 64 || (dira_a8_count % 128u) == 0u)));
         if (dira_should_log) {
             LOG_INFO(Render_Vulkan, "vDIRA sw_draw enter count={} batch_size={}",
@@ -8266,7 +8270,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      "vDIRA sw_draw state count={} tex0_en={} tex0_fmt={} tex0_addr=0x{:08X}"
                      " blend_en={} alpha_test_en={} alpha_func={} alpha_ref={} depth_test={}"
                      " depth_write={} depth_cmp={} stencil_test={} cull={} vp=({},{},{},{})"
-                     " sc=({},{},{},{})"
+                     " sc=({},{},{},{}) att_color={} att_depth={}"
                      " pos0=({:.3f},{:.3f},{:.3f},{:.3f})",
                      dira_sw_enter_count, static_cast<u32>(dira_textures[0].enabled),
                      static_cast<u32>(dira_textures[0].format),
@@ -8284,6 +8288,8 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      pipeline_info.dynamic.viewport.right, pipeline_info.dynamic.viewport.bottom,
                      pipeline_info.dynamic.scissor.left, pipeline_info.dynamic.scissor.top,
                      pipeline_info.dynamic.scissor.right, pipeline_info.dynamic.scissor.bottom,
+                     static_cast<u32>(pipeline_info.attachments.color),
+                     static_cast<u32>(pipeline_info.attachments.depth),
                      dira_pos0[0], dira_pos0[1], dira_pos0[2], dira_pos0[3]);
             // vDIRA v120c (blend forensics): the ONLY state never inspected. A PICA->Vulkan blend
             // translation coming out as (dst-keeping) factors, or an active logic-op (which in
