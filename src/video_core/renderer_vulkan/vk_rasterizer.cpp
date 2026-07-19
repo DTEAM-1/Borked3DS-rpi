@@ -8096,7 +8096,24 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         // draws -- the STRICT_COMPAT Finish() before every software draw guarantees completion),
         // then allocate one query slot for THIS draw if it is an A8 probe candidate.
         u32 dira_occ_idx = DIRA_OCC_POOL_SIZE; // invalid = no query for this draw
-        if (dira_occ_enabled && dira_is_a8 && dira_occ_reset_recorded) {
+        // vDIRA v135: BORKED3DS_V3DV_DIRA_OCC_ALL=1 widens the occlusion census from A8-only to
+        // EVERY software draw, and records each query's texture format alongside it. Rationale:
+        // the accelerated path DOES rasterize these glyphs (historically they showed as flat
+        // white with a frozen texcoord), while the software path measures zero samples -- and the
+        // v133 log shows 3D draws (tex0_fmt=12/13, depth_test=1, cull=2) also travelling the
+        // software path. If those non-A8 software draws ALSO measure zero, the defect is not the
+        // font draws at all but the software path as a whole producing no fragments (pipeline
+        // creation / rasterizer discard class of bug), which would also explain the repeated
+        // "Sonic is too dark / no longer blue" observations: other software draws are missing
+        // from the frame too. If instead non-A8 draws measure >0 while A8 draws measure 0, the
+        // fault is genuinely specific to the font draws and the search narrows to their texture
+        // or format handling. Either way this is one numeric measurement, no visual judgement.
+        static const bool dira_occ_all = std::getenv("BORKED3DS_V3DV_DIRA_OCC_ALL") != nullptr;
+        static std::array<u32, DIRA_OCC_POOL_SIZE> dira_occ_fmt{};
+        const u32 dira_cur_fmt = dira_tex_pre[0].enabled
+                                     ? static_cast<u32>(dira_tex_pre[0].format)
+                                     : 0xFFFFFFFFu;
+        if (dira_occ_enabled && (dira_is_a8 || dira_occ_all) && dira_occ_reset_recorded) {
             const u32 dira_occ_submitted = dira_occ_next.load(std::memory_order_relaxed);
             while (dira_occ_read < dira_occ_submitted) {
                 u64 dira_occ_data[2] = {0, 0};
@@ -8107,13 +8124,14 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 if (dira_occ_res != vk::Result::eSuccess || dira_occ_data[1] == 0) {
                     break; // not ready yet -- retry at the next A8 draw
                 }
-                LOG_INFO(Render_Vulkan, "vDIRA sw_draw occlusion idx={} samples={}",
-                         dira_occ_read, dira_occ_data[0]);
+                LOG_INFO(Render_Vulkan, "vDIRA sw_draw occlusion idx={} samples={} tex0_fmt={}",
+                         dira_occ_read, dira_occ_data[0], dira_occ_fmt[dira_occ_read]);
                 ++dira_occ_read;
             }
             const u32 dira_occ_alloc = dira_occ_next.fetch_add(1, std::memory_order_relaxed);
             if (dira_occ_alloc < DIRA_OCC_POOL_SIZE) {
                 dira_occ_idx = dira_occ_alloc;
+                dira_occ_fmt[dira_occ_alloc] = dira_cur_fmt;
             }
         }
 
