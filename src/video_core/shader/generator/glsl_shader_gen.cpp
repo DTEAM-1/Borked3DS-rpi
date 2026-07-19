@@ -160,6 +160,23 @@ void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
     }
 }
 
+// vDIRA v140 (ROOT CAUSE FIX, BORKED3DS_V3DV_CLIP_EPSILON=1): the PICA fixed clip plane is emitted
+// as gl_ClipDistance[0] = -vtx_pos.z, and a user clip plane discards anything with a NEGATIVE
+// distance. 2D overlay geometry -- dialogue glyphs -- comes out of the software vertex shader with
+// z EXACTLY 0.0 (measured: pos0=(x,y,0.000,1.000)), so all three vertices of every glyph triangle
+// land with gl_ClipDistance[0] == 0.0, i.e. exactly ON the clip plane. V3DV then eliminates the
+// primitive outright: the triangle has no area inside the clip volume. That is why those draws
+// measured occlusion samples=0 while 3D draws (z=-497 -> distance +497) rasterized normally on the
+// very same path, pipeline, viewport and scissor; why the fullscreen-triangle substitution also
+// vanished (it was written with z=0.0f too, so it was clipped by the same rule); and why the text
+// renders correctly under Mesa's GL driver, which keeps the boundary case. A tiny positive bias
+// pushes the exactly-zero case just inside the volume while remaining negligible for real 3D
+// geometry, whose distances are orders of magnitude larger.
+std::string_view ClipPlaneZeroBias() {
+    static const bool enabled = IsEnabledEnv("BORKED3DS_V3DV_CLIP_EPSILON");
+    return enabled ? std::string_view{" + 1e-4"} : std::string_view{""};
+}
+
 } // Anonymous namespace
 
 constexpr std::string_view VSPicaUniformBlockDef = R"(
@@ -291,8 +308,10 @@ void main() {
     gl_Position = vec4(vtx_pos.x, vtx_pos.y, -vtx_pos.z, vtx_pos.w);
 )";
     if (use_clip_planes) {
+        out += fmt::format("\n        gl_ClipDistance[0] = -vtx_pos.z{}; "
+                           "// fixed PICA clipping plane z <= 0\n",
+                           ClipPlaneZeroBias());
         out += R"(
-        gl_ClipDistance[0] = -vtx_pos.z; // fixed PICA clipping plane z <= 0
         if (enable_clip1) {
             gl_ClipDistance[1] = dot(clip_coef, vtx_pos);
         } else {
@@ -475,7 +494,7 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
         out += "    gl_Position = vec4(vtx_pos.x, vtx_pos.y, -vtx_pos.z, vtx_pos.w);\n";
         if (config.state.use_clip_planes) {
             V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl emit_clip_planes_source");
-            out += "    gl_ClipDistance[0] = -vtx_pos.z;\n"; // fixed PICA clipping plane z <= 0
+            out += fmt::format("    gl_ClipDistance[0] = -vtx_pos.z{};\n", ClipPlaneZeroBias()); // fixed PICA clipping plane z <= 0
             out += "    if (enable_clip1) {\n";
             out += "        gl_ClipDistance[1] = dot(clip_coef, vtx_pos);\n";
             out += "    } else {\n";
@@ -612,7 +631,7 @@ struct Vertex {
     out += "    vtx_pos = SanitizeVertex(vtx_pos);\n";
     out += "    gl_Position = vec4(vtx_pos.x, vtx_pos.y, -vtx_pos.z, vtx_pos.w);\n";
     if (state.use_clip_planes) {
-        out += "    gl_ClipDistance[0] = -vtx_pos.z;\n"; // fixed PICA clipping plane z <= 0
+        out += fmt::format("    gl_ClipDistance[0] = -vtx_pos.z{};\n", ClipPlaneZeroBias()); // fixed PICA clipping plane z <= 0
         out += "    if (enable_clip1) {\n";
         out += "        gl_ClipDistance[1] = dot(clip_coef, vtx_pos);\n";
         out += "    } else {\n";
