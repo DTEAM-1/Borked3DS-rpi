@@ -8109,11 +8109,25 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         // fault is genuinely specific to the font draws and the search narrows to their texture
         // or format handling. Either way this is one numeric measurement, no visual judgement.
         static const bool dira_occ_all = std::getenv("BORKED3DS_V3DV_DIRA_OCC_ALL") != nullptr;
+        // vDIRA v136: BORKED3DS_V3DV_DIRA_OCC_SKIP_A8=1 EXCLUDES the A8 font draws from the census.
+        // v135 was inconclusive because the 1024-slot pool was exhausted by glyph draws (idx
+        // 0..1023) before a single 3D software draw could claim a slot, so the decisive comparison
+        // never happened. Skipping A8 dedicates the whole pool to the non-A8 software draws and
+        // answers the actual question: does the software path rasterize ANYTHING? samples>0 on
+        // those draws means the path works and the defect is specific to the font draws; samples=0
+        // across the board means no software draw ever produces a fragment, pointing at pipeline
+        // creation (rasterizer discard / invalid rasterization state) rather than anything
+        // glyph-related. It also removes the per-draw query readback from the glyph-heavy path,
+        // which is what made this run crawl.
+        static const bool dira_occ_skip_a8 =
+            std::getenv("BORKED3DS_V3DV_DIRA_OCC_SKIP_A8") != nullptr;
         static std::array<u32, DIRA_OCC_POOL_SIZE> dira_occ_fmt{};
         const u32 dira_cur_fmt = dira_tex_pre[0].enabled
                                      ? static_cast<u32>(dira_tex_pre[0].format)
                                      : 0xFFFFFFFFu;
-        if (dira_occ_enabled && (dira_is_a8 || dira_occ_all) && dira_occ_reset_recorded) {
+        const bool dira_occ_wanted =
+            dira_occ_skip_a8 ? (dira_cur_fmt != 8u) : (dira_is_a8 || dira_occ_all);
+        if (dira_occ_enabled && dira_occ_wanted && dira_occ_reset_recorded) {
             const u32 dira_occ_submitted = dira_occ_next.load(std::memory_order_relaxed);
             while (dira_occ_read < dira_occ_submitted) {
                 u64 dira_occ_data[2] = {0, 0};
