@@ -240,9 +240,11 @@ namespace {
 // geometry sitting on or past the boundary is moved; genuine depths are orders of magnitude larger
 // and untouched. Note this shader is built once in the PipelineCache constructor, so the flag is
 // read at startup and a shader-cache purge alone does not regenerate it.
+// Enabled by default: this is a correctness fix for the GL/Vulkan clip-convention mismatch, not a
+// tuning knob. BORKED3DS_V3DV_NO_NEG_ZERO_FIX=1 restores the old behaviour for diagnostics.
 bool IsNegZeroFixEnabled() {
-    static const bool enabled = std::getenv("BORKED3DS_V3DV_NEG_ZERO_FIX") != nullptr;
-    return enabled;
+    static const bool disabled = std::getenv("BORKED3DS_V3DV_NO_NEG_ZERO_FIX") != nullptr;
+    return !disabled;
 }
 } // Anonymous namespace
 

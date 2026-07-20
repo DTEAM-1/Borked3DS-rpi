@@ -147,23 +147,6 @@ bool ShouldA7Z3DumpGeneratedVertexShader() {
            IsEnabledEnv("BORKED3DS_V3DV_A7Z3_DUMP_GENERATED_VS_GLSL");
 }
 
-// vDIRA v145: dump the TRIVIAL vertex shader as well. The existing dump hook only fires from
-// GenerateVertexShader, so the trivial VS -- the one the software path (and therefore Sonic's
-// glyph draws) actually executes -- has never been inspected. The z fixup is provably emitted in
-// the accelerated VS, yet an equivalent bias applied to the vertex DATA restores the text while
-// the shader-side fixup does not, which points at the trivial VS being a different program than
-// the one under inspection. Written to a separate file so both can be compared side by side.
-void V145DumpGeneratedTrivialVertexShader(const std::string& source) {
-    if (!ShouldA7Z3DumpGeneratedVertexShader()) {
-        return;
-    }
-    std::ofstream file("/tmp/borked3ds_v145_trivial_vs.glsl", std::ios::out | std::ios::trunc);
-    if (file) {
-        file << source;
-        file.flush();
-    }
-}
-
 void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
     if (!ShouldA7Z3DumpGeneratedVertexShader()) {
         return;
@@ -241,8 +224,10 @@ void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
 // are left untouched. Applied in the shader so it covers the software path (Sonic) and the
 // accelerated path (Kid Icarus Uprising) alike.
 std::string ClipZFixupLine(const char* indent) {
-    static const bool enabled = IsEnabledEnv("BORKED3DS_V3DV_NEG_ZERO_FIX");
-    if (!enabled) {
+    // Enabled by default (correctness fix for the GL/Vulkan clip-convention mismatch).
+    // BORKED3DS_V3DV_NO_NEG_ZERO_FIX=1 restores the old behaviour for diagnostics.
+    static const bool disabled = IsEnabledEnv("BORKED3DS_V3DV_NO_NEG_ZERO_FIX");
+    if (disabled) {
         return std::string{};
     }
     return fmt::format("{0}float v3dv_zlim = -1e-3 * abs(vtx_pos.w);\n"
@@ -393,8 +378,6 @@ void main() {
     }
 
     out += "}\n";
-
-    V145DumpGeneratedTrivialVertexShader(out);
 
     return out;
 }
