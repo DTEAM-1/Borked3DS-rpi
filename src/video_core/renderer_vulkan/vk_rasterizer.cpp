@@ -8293,7 +8293,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      " blend_en={} alpha_test_en={} alpha_func={} alpha_ref={} depth_test={}"
                      " depth_write={} depth_cmp={} stencil_test={} cull={} vp=({},{},{},{})"
                      " sc=({},{},{},{}) att_color={} att_depth={}"
-                     " pos0=({:.3f},{:.3f},{:.3f},{:.3f})",
+                     " pos0=({:.6e},{:.6e},{:.6e},{:.6e})",
                      dira_sw_enter_count, static_cast<u32>(dira_textures[0].enabled),
                      static_cast<u32>(dira_textures[0].format),
                      dira_textures[0].config.GetPhysicalAddress(),
