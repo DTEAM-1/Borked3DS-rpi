@@ -8792,23 +8792,47 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
         (float)src_rect.bottom / (float)scaled_height, (float)src_rect.left / (float)scaled_width,
         (float)src_rect.top / (float)scaled_height, (float)src_rect.right / (float)scaled_width);
 
-    // v147 : sonde SCREEN_RECT cote source. Lecture attendue pour un ecran correct :
-    // src_rect.left == 0 et src_rect.right == scaled_width (le framebuffer invite occupe toute
-    // la largeur de la surface trouvee dans le cache). Un src_rect.left non nul signifie que
-    // l'adresse demandee tombe A L'INTERIEUR d'une surface plus grande et que le decalage a ete
-    // calcule avec le stride de la surface, pas celui du framebuffer -> decalage horizontal a
-    // l'ecran une fois la rotation appliquee. Comparer l'ecran du haut (correct) et l'ecran du
-    // bas (decale) sur ce meme log est la mesure decisive.
+    // v147b : sonde SCREEN_RECT cote source, DECLENCHEE PAR ANOMALIE.
+    // La v147 echantillonnait une trame sur 240 : trop clairsemee pour mesurer une frequence.
+    // Ici on imprime CHAQUE cas anormal, plus un point de reference periodique, avec le compte
+    // cumule des deux -- ce qui donne directement la proportion de trames fautives.
+    // Cas normal attendu pour les deux ecrans : pixel_stride == cfg_w, src_rect colle a
+    // l'origine, et la surface trouvee a exactement les dimensions demandees.
     if (IsScreenRectTraceEnabled()) {
-        static std::atomic<u64> screen_rect_counter{0};
-        const u64 screen_rect_count = ++screen_rect_counter;
-        if (screen_rect_count <= 16 || (screen_rect_count % 240u) == 0u) {
+        static std::atomic<u64> screen_rect_total{0};
+        static std::atomic<u64> screen_rect_bad{0};
+        static std::atomic<u64> screen_rect_bad_logged{0};
+
+        const bool bad_stride = (pixel_stride != config.width.Value());
+        const bool bad_origin = (src_rect.left != 0u) || (src_rect.bottom != 0u);
+        const bool bad_extent =
+            (scaled_width != src_params.width) || (scaled_height != src_params.height);
+        const bool anomaly = bad_stride || bad_origin || bad_extent;
+
+        const u64 total = ++screen_rect_total;
+        const u64 bad = anomaly ? ++screen_rect_bad : screen_rect_bad.load();
+
+        bool emit = false;
+        if (anomaly) {
+            const u64 logged = ++screen_rect_bad_logged;
+            emit = (logged <= 32u) || ((logged % 60u) == 0u);
+        } else {
+            emit = (total <= 4u) || ((total % 600u) == 0u);
+        }
+
+        if (emit) {
+            // screen= est deduit de la hauteur du framebuffer invite : 400 -> ecran du haut,
+            // 320 -> ecran du bas. AccelerateDisplay ne recoit pas l'index d'ecran.
+            const u32 screen_tag = (config.height.Value() == 400u) ? 0u : 2u;
             LOG_INFO(Render_Vulkan,
-                     "TRACE_SCREEN_RECT accel_display count={} addr=0x{:08X} cfg_w={} cfg_h={}"
+                     "TRACE_SCREEN_RECT accel_display anomaly={} screen={} total={} bad={}"
+                     " bad_stride={} bad_origin={} bad_extent={} addr=0x{:08X} cfg_w={} cfg_h={}"
                      " cfg_stride={} pixel_stride={} src_w={} src_h={} src_stride={}"
                      " src_rect=(l={},b={},r={},t={}) scaled_w={} scaled_h={}"
                      " texcoord=(l={:.6f},b={:.6f},r={:.6f},t={:.6f})",
-                     screen_rect_count, framebuffer_addr, config.width.Value(),
+                     static_cast<u32>(anomaly), screen_tag, total, bad,
+                     static_cast<u32>(bad_stride), static_cast<u32>(bad_origin),
+                     static_cast<u32>(bad_extent), framebuffer_addr, config.width.Value(),
                      static_cast<u32>(config.height.Value()), config.stride, pixel_stride,
                      src_params.width, src_params.height, src_params.stride, src_rect.left,
                      src_rect.bottom, src_rect.right, src_rect.top, scaled_width, scaled_height,

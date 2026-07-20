@@ -1036,21 +1036,39 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
         break;
     }
 
-    // v147 : sonde SCREEN_RECT cote destination. x/y/w/h est le rectangle ou le quad est pose
-    // dans la fenetre ; texcoords est la fenetre echantillonnee dans la texture d'ecran. Un
-    // decalage horizontal a l'ecran vient soit d'un x errone (placement, framebuffer_layout.cpp),
-    // soit d'un couple texcoord left/right decale (echantillonnage, AccelerateDisplay). Ce log,
-    // compare entre l'ecran du haut (screen_id 0/1) et celui du bas (screen_id 2), tranche.
+    // v147b : sonde SCREEN_RECT cote destination, DECLENCHEE PAR ANOMALIE.
+    // Cas normal : la fenetre echantillonnee couvre toute la texture d'ecran, donc les quatre
+    // texcoords valent exactement 0 ou 1. Toute valeur intermediaire signifie qu'on echantillonne
+    // une sous-partie -- c'est la signature d'un decalage ou d'une mise a l'echelle parasite.
     if (IsScreenRectTraceEnabled()) {
-        static u64 screen_rect_dst_counter = 0;
-        const u64 screen_rect_dst_count = ++screen_rect_dst_counter;
-        if (screen_rect_dst_count <= 24 || (screen_rect_dst_count % 240u) == 0u) {
+        static u64 screen_rect_dst_total = 0;
+        static u64 screen_rect_dst_bad = 0;
+        static u64 screen_rect_dst_bad_logged = 0;
+
+        const auto is_full = [](float v) { return v <= 0.0001f || v >= 0.9999f; };
+        const bool anomaly = !(is_full(texcoords.left) && is_full(texcoords.bottom) &&
+                               is_full(texcoords.right) && is_full(texcoords.top));
+
+        ++screen_rect_dst_total;
+        if (anomaly) {
+            ++screen_rect_dst_bad;
+        }
+
+        bool emit = false;
+        if (anomaly) {
+            ++screen_rect_dst_bad_logged;
+            emit = (screen_rect_dst_bad_logged <= 32u) || ((screen_rect_dst_bad_logged % 60u) == 0u);
+        } else {
+            emit = (screen_rect_dst_total <= 6u) || ((screen_rect_dst_total % 600u) == 0u);
+        }
+
+        if (emit) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_SCREEN_RECT draw_single count={} screen_id={} orientation={}"
-                     " dst=(x={:.2f},y={:.2f},w={:.2f},h={:.2f})"
-                     " texcoord=(l={:.6f},b={:.6f},r={:.6f},t={:.6f})"
-                     " tex_w={} tex_h={}",
-                     screen_rect_dst_count, screen_id, static_cast<u32>(orientation), x, y, w, h,
+                     "TRACE_SCREEN_RECT draw_single anomaly={} screen_id={} total={} bad={}"
+                     " orientation={} dst=(x={:.2f},y={:.2f},w={:.2f},h={:.2f})"
+                     " texcoord=(l={:.6f},b={:.6f},r={:.6f},t={:.6f}) tex_w={} tex_h={}",
+                     static_cast<u32>(anomaly), screen_id, screen_rect_dst_total,
+                     screen_rect_dst_bad, static_cast<u32>(orientation), x, y, w, h,
                      texcoords.left, texcoords.bottom, texcoords.right, texcoords.top,
                      screen_info.texture.width, screen_info.texture.height);
         }
