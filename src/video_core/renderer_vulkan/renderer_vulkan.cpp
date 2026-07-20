@@ -37,6 +37,14 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+// v147 (Metroid, decalage horizontal de l'ecran du bas) : sonde d'OBSERVATION pure, numerique.
+// BORKED3DS_V3DV_TRACE_SCREEN_RECT=1 imprime le rectangle de DESTINATION de chaque ecran ainsi
+// que les texcoords utilisees pour l'echantillonner. Le pendant cote rasterizer imprime la
+// resolution du sous-rectangle source. Aucune ecriture, aucun forcage, aucune teinte.
+[[nodiscard]] bool IsScreenRectTraceEnabled() {
+    return IsEnvEnabledLocal("BORKED3DS_V3DV_TRACE_SCREEN_RECT");
+}
+
 [[nodiscard]] u32 GetEnvU32Local(const char* name, u32 fallback) {
     const char* value = std::getenv(name);
     if (value == nullptr || value[0] == '\0') {
@@ -1028,6 +1036,26 @@ void RendererVulkan::DrawSingleScreen(u32 screen_id, float x, float y, float w, 
         break;
     }
 
+    // v147 : sonde SCREEN_RECT cote destination. x/y/w/h est le rectangle ou le quad est pose
+    // dans la fenetre ; texcoords est la fenetre echantillonnee dans la texture d'ecran. Un
+    // decalage horizontal a l'ecran vient soit d'un x errone (placement, framebuffer_layout.cpp),
+    // soit d'un couple texcoord left/right decale (echantillonnage, AccelerateDisplay). Ce log,
+    // compare entre l'ecran du haut (screen_id 0/1) et celui du bas (screen_id 2), tranche.
+    if (IsScreenRectTraceEnabled()) {
+        static u64 screen_rect_dst_counter = 0;
+        const u64 screen_rect_dst_count = ++screen_rect_dst_counter;
+        if (screen_rect_dst_count <= 24 || (screen_rect_dst_count % 240u) == 0u) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_SCREEN_RECT draw_single count={} screen_id={} orientation={}"
+                     " dst=(x={:.2f},y={:.2f},w={:.2f},h={:.2f})"
+                     " texcoord=(l={:.6f},b={:.6f},r={:.6f},t={:.6f})"
+                     " tex_w={} tex_h={}",
+                     screen_rect_dst_count, screen_id, static_cast<u32>(orientation), x, y, w, h,
+                     texcoords.left, texcoords.bottom, texcoords.right, texcoords.top,
+                     screen_info.texture.width, screen_info.texture.height);
+        }
+    }
+
     const u64 size = sizeof(ScreenRectVertex) * vertices.size();
     auto [data, offset, invalidate] = vertex_buffer.Map(size, 16);
     std::memcpy(data, vertices.data(), size);
@@ -1420,6 +1448,26 @@ void RendererVulkan::DrawScreens(Frame* frame, const Layout::FramebufferLayout& 
     const auto& top_screen = layout.top_screen;
     const auto& bottom_screen = layout.bottom_screen;
     draw_info.modelview = MakeOrthographicMatrix(layout.width, layout.height);
+
+    // v147 : sonde SCREEN_RECT cote disposition. Les deux rectangles sortent tels quels de
+    // framebuffer_layout.cpp. Si bottom.left n'est pas coherent avec top.left / layout.width,
+    // le defaut est dans le calcul de disposition et non dans le rendu.
+    if (IsScreenRectTraceEnabled()) {
+        static u64 screen_rect_layout_counter = 0;
+        const u64 screen_rect_layout_count = ++screen_rect_layout_counter;
+        if (screen_rect_layout_count <= 8 || (screen_rect_layout_count % 240u) == 0u) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_SCREEN_RECT layout count={} win={}x{} rotated={} top=(l={},t={},r={},b={})"
+                     " bottom=(l={},t={},r={},b={}) top_en={} bottom_en={} additional_en={}",
+                     screen_rect_layout_count, layout.width, layout.height,
+                     static_cast<u32>(layout.is_rotated), top_screen.left, top_screen.top,
+                     top_screen.right, top_screen.bottom, bottom_screen.left, bottom_screen.top,
+                     bottom_screen.right, bottom_screen.bottom,
+                     static_cast<u32>(layout.top_screen_enabled),
+                     static_cast<u32>(layout.bottom_screen_enabled),
+                     static_cast<u32>(layout.additional_screen_enabled));
+        }
+    }
 
     draw_info.layer = 0;
     if (!Settings::values.swap_screen.GetValue()) {

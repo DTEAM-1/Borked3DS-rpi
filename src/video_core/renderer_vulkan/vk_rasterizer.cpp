@@ -122,6 +122,16 @@ struct DrawParams {
     return IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
 }
 
+// v147 (Metroid, decalage horizontal de l'ecran du bas) : sonde d'OBSERVATION pure, numerique,
+// sans aucune teinte. BORKED3DS_V3DV_TRACE_SCREEN_RECT=1 imprime, cote rasterizer, la resolution
+// du sous-rectangle de la surface presentee (src_rect) et les texcoords qui en decoulent. Le
+// pendant cote renderer imprime le rectangle de destination a l'ecran. Les deux ensemble
+// separent definitivement "le quad est mal place" de "le contenu est mal echantillonne dans un
+// quad correct". Aucune ecriture, aucun forcage.
+[[nodiscard]] bool IsScreenRectTraceEnabled() {
+    return IsEnvEnabled("BORKED3DS_V3DV_TRACE_SCREEN_RECT");
+}
+
 [[nodiscard]] bool IsForceAccelStageTraceEnabled() {
     // v100/v114 diagnostic:
     // Keep forced stage tracing available. v100 still stopped after the PICA pre_call before
@@ -8781,6 +8791,31 @@ bool RasterizerVulkan::AccelerateDisplay(const Pica::FramebufferConfig& config,
     screen_info.texcoords = Common::Rectangle<f32>(
         (float)src_rect.bottom / (float)scaled_height, (float)src_rect.left / (float)scaled_width,
         (float)src_rect.top / (float)scaled_height, (float)src_rect.right / (float)scaled_width);
+
+    // v147 : sonde SCREEN_RECT cote source. Lecture attendue pour un ecran correct :
+    // src_rect.left == 0 et src_rect.right == scaled_width (le framebuffer invite occupe toute
+    // la largeur de la surface trouvee dans le cache). Un src_rect.left non nul signifie que
+    // l'adresse demandee tombe A L'INTERIEUR d'une surface plus grande et que le decalage a ete
+    // calcule avec le stride de la surface, pas celui du framebuffer -> decalage horizontal a
+    // l'ecran une fois la rotation appliquee. Comparer l'ecran du haut (correct) et l'ecran du
+    // bas (decale) sur ce meme log est la mesure decisive.
+    if (IsScreenRectTraceEnabled()) {
+        static std::atomic<u64> screen_rect_counter{0};
+        const u64 screen_rect_count = ++screen_rect_counter;
+        if (screen_rect_count <= 16 || (screen_rect_count % 240u) == 0u) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_SCREEN_RECT accel_display count={} addr=0x{:08X} cfg_w={} cfg_h={}"
+                     " cfg_stride={} pixel_stride={} src_w={} src_h={} src_stride={}"
+                     " src_rect=(l={},b={},r={},t={}) scaled_w={} scaled_h={}"
+                     " texcoord=(l={:.6f},b={:.6f},r={:.6f},t={:.6f})",
+                     screen_rect_count, framebuffer_addr, config.width.Value(),
+                     static_cast<u32>(config.height.Value()), config.stride, pixel_stride,
+                     src_params.width, src_params.height, src_params.stride, src_rect.left,
+                     src_rect.bottom, src_rect.right, src_rect.top, scaled_width, scaled_height,
+                     screen_info.texcoords.left, screen_info.texcoords.bottom,
+                     screen_info.texcoords.right, screen_info.texcoords.top);
+        }
+    }
 
     screen_info.image_view =
         (use_copy_present_view && IsValidImageView(copy_view)) ? copy_view
