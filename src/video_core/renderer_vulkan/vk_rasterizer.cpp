@@ -7908,9 +7908,11 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         // mirroring the GL differential probe -- they are the comparison's whole point and too
         // rare for the generic first-8/%512 sampling to catch reliably.
         const auto dira_tex_pre = regs.texturing.GetTextures();
+        // v146 nettoyage : dira_is_a8 ne dépend PLUS de dira_trace_sw. Un flag de LOGGING ne
+        // doit jamais gouverner le comportement -- sans TRACE_DIRA=1 plusieurs sondes étaient
+        // silencieusement inactives, ce qui a faussé des tests entiers.
         const bool dira_is_a8 =
-            dira_trace_sw && dira_tex_pre[0].enabled &&
-            static_cast<u32>(dira_tex_pre[0].format) == 8u;
+            dira_tex_pre[0].enabled && static_cast<u32>(dira_tex_pre[0].format) == 8u;
         const u64 dira_a8_count = dira_is_a8 ? ++dira_sw_a8_counter : 0u;
         // vDIRA v139: sample non-A8 software draws more densely (was %512). The decisive
         // comparison is now between A8 glyph draws (occlusion 0) and non-A8 software draws
@@ -7923,64 +7925,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         if (dira_should_log) {
             LOG_INFO(Render_Vulkan, "vDIRA sw_draw enter count={} batch_size={}",
                      dira_sw_enter_count, vertex_batch.size());
-        }
-
-        // vDIRA v121b (the corrected binary cut): BORKED3DS_V3DV_DIRA_FORCE_OPAQUE_SW=1 disables
-        // blending for software A8 (font-atlas) draws. Rationale: the previous alpha-test-Always
-        // probe was NOT decisive -- fragments passing the test still enter srcAlpha/1-srcAlpha
-        // blending, and a sampled alpha of 0 yields dst unchanged (invisible), indistinguishable
-        // from "no fragments". With blending OFF every rasterized fragment writes its color
-        // directly: marks at the text locations => fragments exist and the sampling chain
-        // (texcoords / sampler / descriptor / TEV) is the culprit; still nothing => zero fragments
-        // is finally proven and the fault is at the data/pipeline level. Diagnostic, reversible;
-        // the modified blend state is re-synced by the next SyncBlendEnabled reg write.
-        static const bool dira_force_opaque_sw =
-            std::getenv("BORKED3DS_V3DV_DIRA_FORCE_OPAQUE_SW") != nullptr;
-        if (dira_force_opaque_sw && dira_is_a8) {
-            pipeline_info.blending.blend_enable = 0;
-        }
-
-        // vDIRA v132: BORKED3DS_V3DV_DIRA_DEPTH_ALWAYS=1 forces the software A8 (font-atlas) draw's
-        // depth compare op to Always, so no rasterized fragment can be killed by the depth test.
-        // This is the LAST un-neutralized fragment-kill mechanism: v121b/v127 already forced
-        // alpha-test-Always and blending-off, yet occlusion still measured samples=0. An occlusion
-        // query counts only samples that PASS the depth/stencil test, so a fragment discarded by
-        // depth is indistinguishable from "never rasterized" -- and the v127 state log showed
-        // depth_test=1. The luma_tile (vkCmdClearAttachments) lands in the missing-text zones
-        // because a color clear ignores depth entirely, exactly the asymmetry expected if depth is
-        // the killer. Reading, with LUMA_TILE=1 as reference: if the glyph marks now appear
-        // alongside the tile, the 2D overlay draws were being depth-rejected against the scene
-        // (the real fix then lives in how these draws' depth state/Z is emitted, matching the GL
-        // path where UI text is not depth-culled); if still only the tile shows, depth is cleared
-        // and the fault is genuinely upstream of per-fragment tests (zero coverage). Gated on
-        // dira_is_a8 so only the font draws are affected; re-synced by the next SyncDepthTest.
-        static const bool dira_depth_always =
-            std::getenv("BORKED3DS_V3DV_DIRA_DEPTH_ALWAYS") != nullptr;
-        if (dira_depth_always && dira_is_a8) {
-            pipeline_info.depth_stencil.depth_compare_op.Assign(
-                Pica::FramebufferRegs::CompareFunc::Always);
-        }
-
-        // vDIRA v134 (root cause, found by elimination v132/v133): the software path runs
-        // scheduler.Finish() before every draw, which begins a FRESH command buffer with NO
-        // pipeline bound on the GPU. But PipelineCache::BindPipeline only records vkCmdBindPipeline
-        // when pipeline_dirty == (current_pipeline != pipeline) || IsStateDirty(Pipeline) is true.
-        // When consecutive glyph draws reuse the same pipeline and the scheduler's Pipeline dirty
-        // flag is clear, the bind is SKIPPED -> the draw executes with no pipeline -> zero
-        // fragments, while clearAttachments (the luma tile, which needs no pipeline) stays visible.
-        // Every other kill mechanism was ruled out: state, geometry (tri0 valid), scissor
-        // (FORCE_FULL_SCISSOR), viewport, depth, alpha discard and blending. This is the same class
-        // of bug v124 patched for viewport/scissor (which also gate on is_dirty). Marking the
-        // Pipeline state dirty forces BindPipeline to re-record the bind into the fresh command
-        // buffer. Gated for A/B validation; once confirmed it should become unconditional for the
-        // software path (and FORCE_DYNSTATE folded in, since is_dirty then also re-arms dyn state).
-        // API note: Scheduler::MakeDirty(flag) CLEARS the state bit; IsStateDirty() reports dirty
-        // when the bit is clear, so this is the correct call to force a re-bind (MarkStateNonDirty
-        // is its inverse, used at the end of BindPipeline).
-        static const bool dira_force_pipeline_bind =
-            std::getenv("BORKED3DS_V3DV_DIRA_FORCE_PIPELINE_BIND") != nullptr;
-        if (dira_force_pipeline_bind) {
-            scheduler.MakeDirty(StateFlags::Pipeline);
         }
 
         const bool pipeline_ready = pipeline_cache.BindPipeline(pipeline_info, true);
@@ -8011,88 +7955,9 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
         const u32 vertex_size = vertex_count * sizeof(HardwareVertex);
 
-        // vDIRA v125 (BORKED3DS_V3DV_DIRA_DEDICATED_VB=1): route the software A8 vertex data
-        // through a PRIVATE, lightly-used stream buffer instead of the shared ring. Everything
-        // proven so far was proven at RECORD time; the one thing the (visible) clearAttachments
-        // luma tile does NOT depend on -- and the (invisible) draw DOES -- is the BUFFER CONTENT at
-        // deferred EXECUTION time. If the shared ring recycles the region between record and GPU
-        // execution (software-path fencing), the GPU reads zeros -> w=0 -> fully clipped -> zero
-        // fragments, exactly the proven symptom, and it also explains why the v122 fullscreen
-        // triangle (written into the SAME mapped ring) showed nothing. A 4 MiB private ring
-        // consumed only by rare A8 draws (~9 KiB each) effectively never wraps: marks appearing
-        // under this flag prove the ring-lifetime theory and the fix is proper software-path
-        // fencing/allocation.
-        static const bool dira_dedicated_vb_enabled =
-            std::getenv("BORKED3DS_V3DV_DIRA_DEDICATED_VB") != nullptr;
-        StreamBuffer* dira_vb_src = &stream_buffer;
-        if (dira_dedicated_vb_enabled && dira_is_a8) {
-            static StreamBuffer dira_dedicated_vb{instance, scheduler,
-                                                  vk::BufferUsageFlagBits::eVertexBuffer,
-                                                  4u * 1024u * 1024u};
-            dira_vb_src = &dira_dedicated_vb;
-        }
-
-        const auto [buffer, offset, _] = dira_vb_src->Map(vertex_size, sizeof(HardwareVertex));
+        const auto [buffer, offset, _] = stream_buffer.Map(vertex_size, sizeof(HardwareVertex));
 
         std::memcpy(buffer, vertex_batch.data(), vertex_size);
-
-        // vDIRA v122 substitution test (BORKED3DS_V3DV_DIRA_FULLSCREEN_TRI=1): for software A8
-        // draws, overwrite the first three vertices IN THE MAPPED GPU BUFFER with a known
-        // fullscreen triangle (NDC (-1,-1) (3,-1) (-1,3), w=1, white color, mid-atlas texcoords)
-        // and draw only those 3 vertices. Combined with FORCE_OPAQUE_SW + ALPHA_TEST_ALWAYS this
-        // triangle MUST cover the screen if the vertex-fetch + trivial-VS + rasterization stack
-        // works at all: visible wash => the stack is healthy and the BATCH DATA is degenerate
-        // (pica-side software vertex production); still nothing => the fetch/pipeline itself is
-        // broken (deferred bindVertexBuffers offset, stream-buffer lifetime, or trivial VS).
-        static const bool dira_fullscreen_tri =
-            std::getenv("BORKED3DS_V3DV_DIRA_FULLSCREEN_TRI") != nullptr;
-        u32 dira_effective_vertex_count = vertex_count;
-        if (dira_fullscreen_tri && dira_is_a8 && vertex_count >= 3) {
-            constexpr u32 kFloatsPerVertex = sizeof(HardwareVertex) / sizeof(float);
-            float* dira_verts = reinterpret_cast<float*>(buffer);
-            const std::array<std::array<float, 4>, 3> dira_positions = {{
-                {-1.0f, -1.0f, 0.0f, 1.0f},
-                {3.0f, -1.0f, 0.0f, 1.0f},
-                {-1.0f, 3.0f, 0.0f, 1.0f},
-            }};
-            for (u32 v = 0; v < 3; ++v) {
-                float* dst = dira_verts + v * kFloatsPerVertex;
-                for (u32 c = 0; c < kFloatsPerVertex; ++c) {
-                    dst[c] = 0.5f; // benign default for texcoords and the rest
-                }
-                dst[0] = dira_positions[v][0]; // position
-                dst[1] = dira_positions[v][1];
-                dst[2] = dira_positions[v][2];
-                dst[3] = dira_positions[v][3];
-                dst[4] = 1.0f; // color = opaque white
-                dst[5] = 1.0f;
-                dst[6] = 1.0f;
-                dst[7] = 1.0f;
-            }
-            dira_effective_vertex_count = 3;
-        }
-
-        // vDIRA v141 (direct data test, BORKED3DS_V3DV_DIRA_Z_BIAS=<float>): shift the z component
-        // of every vertex of A8 glyph draws inside the mapped GPU buffer. The measured glyph
-        // vertices all carry z EXACTLY 0.0 with w=1.0, which puts them precisely ON the PICA fixed
-        // clip plane (gl_ClipDistance[0] = -z = 0.0) and precisely on the near limit of the Vulkan
-        // depth range once the trivial VS emits gl_Position.z = -z. Every draw that DOES rasterize
-        // on this same path carries z far from zero (-497 with w=497). v140 tried to bias this
-        // inside the shader, but that patch only takes effect if use_clip_planes is true for this
-        // shader -- unverified. Biasing the DATA tests the hypothesis with no such dependency and
-        // no rebuild per value: a negative bias moves z off the boundary in the direction real 3D
-        // geometry already sits (gl_Position.z = -z becomes positive, clip distance becomes
-        // positive). Text appearing at some bias proves the boundary is the killer and hands us
-        // the fix; nothing at any bias clears z entirely and the search moves to the texcoord.
-        static const char* const dira_z_bias_env = std::getenv("BORKED3DS_V3DV_DIRA_Z_BIAS");
-        if (dira_z_bias_env != nullptr && dira_z_bias_env[0] != '\0' && dira_is_a8) {
-            const float dira_z_bias = static_cast<float>(std::atof(dira_z_bias_env));
-            constexpr u32 kFloatsPerVertex = sizeof(HardwareVertex) / sizeof(float);
-            float* const dira_zverts = reinterpret_cast<float*>(buffer);
-            for (u32 v = 0; v < dira_effective_vertex_count; ++v) {
-                dira_zverts[v * kFloatsPerVertex + 2] += dira_z_bias; // position.z
-            }
-        }
 
         // vDIRA v122 (first-triangle census): pos0 only ever proved VERTEX 0 sane. If vertices
         // 1..N are degenerate (identical, or w=0 -> fully clipped), every triangle has zero area
@@ -8113,7 +7978,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                      v2[0], v2[1], v2[2], v2[3], sizeof(HardwareVertex));
         }
 
-        dira_vb_src->Commit(vertex_size);
+        stream_buffer.Commit(vertex_size);
 
         // vDIRA v126: count every software draw lambda handed to the scheduler.
         ++dira_sw_record_counter;
@@ -8175,10 +8040,8 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
 
-        scheduler.Record([this, offset = offset, vertex_count = dira_effective_vertex_count,
-                          dira_vb_handle = dira_vb_src->Handle(),
-                          dira_vp = pipeline_info.dynamic.viewport,
-                          dira_sc = pipeline_info.dynamic.scissor,
+        scheduler.Record([this, offset = offset, vertex_count,
+                          dira_vb_handle = stream_buffer.Handle(),
                           dira_occ_q = dira_occ_idx](vk::CommandBuffer cmdbuf) {
             // vDIRA v126: proof of life -- the deferred software-draw lambda actually ran.
             ++dira_sw_exec_counter;
@@ -8186,62 +8049,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             const bool dira_occ_active = dira_occ_q < DIRA_OCC_POOL_SIZE;
             if (dira_occ_active) {
                 cmdbuf.beginQuery(dira_occ_pool, dira_occ_q, {});
-            }
-            // vDIRA v124 (BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE=1): re-record viewport and scissor at
-            // EXECUTION time, unconditionally, right before the software draw. Everything proven so
-            // far (pipeline, state, batch data, both trivial-VS flavors) was proven at RECORD time;
-            // Vulkan dynamic state is UNDEFINED at the start of every new command buffer, and
-            // BindPipeline only re-records it on CPU-side change detection. A software draw landing
-            // in a fresh command buffer without a detected change executes with an undefined
-            // viewport -> zero fragments regardless of data -- while clearAttachments (the visible
-            // luma tile) ignores viewport/scissor entirely. Values are captured at record time from
-            // the same pipeline_info the accelerated path uses.
-            static const bool dira_force_dynstate =
-                std::getenv("BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE") != nullptr;
-            if (dira_force_dynstate) {
-                const vk::Viewport dira_viewport = {
-                    .x = static_cast<f32>(dira_vp.left),
-                    .y = static_cast<f32>(dira_vp.top),
-                    .width = static_cast<f32>(dira_vp.GetWidth()),
-                    .height = static_cast<f32>(dira_vp.GetHeight()),
-                    .minDepth = 0.f,
-                    .maxDepth = 1.f,
-                };
-                cmdbuf.setViewport(0, dira_viewport);
-                // vDIRA v133: BORKED3DS_V3DV_DIRA_FORCE_FULL_SCISSOR=1 overrides the captured PICA
-                // scissor with a full-viewport rect. tri0 proved the geometry is valid and
-                // FULLSCREEN_TRI still rasterized nothing under FORCE_DYNSTATE, so the last thing
-                // that can silently clip every fragment (while leaving the clearAttachments luma
-                // tile untouched -- it uses its own rect) is an empty or off-screen scissor. Note
-                // the original path builds offset.y from dira_sc.bottom with a positive height,
-                // which lands the rect below the framebuffer if bottom is the high coordinate.
-                // Full white flood with this flag => the scissor was the killer, and the real fix
-                // is to emit the software draw's scissor correctly (top-origin, clamped). Still
-                // nothing => the scissor is innocent too and the fault is the vertex fetch/bind.
-                static const bool dira_full_scissor =
-                    std::getenv("BORKED3DS_V3DV_DIRA_FORCE_FULL_SCISSOR") != nullptr;
-                vk::Rect2D dira_scissor;
-                if (dira_full_scissor) {
-                    dira_scissor = vk::Rect2D{
-                        .offset{.x = 0, .y = 0},
-                        .extent{
-                            .width = static_cast<u32>(dira_vp.GetWidth()),
-                            .height = static_cast<u32>(dira_vp.GetHeight()),
-                        },
-                    };
-                } else {
-                    dira_scissor = vk::Rect2D{
-                        .offset{
-                            .x = static_cast<s32>(dira_sc.left),
-                            .y = static_cast<s32>(dira_sc.bottom),
-                        },
-                        .extent{
-                            .width = dira_sc.GetWidth(),
-                            .height = dira_sc.GetHeight(),
-                        },
-                    };
-                }
-                cmdbuf.setScissor(0, dira_scissor);
             }
             cmdbuf.bindVertexBuffers(0, dira_vb_handle, offset);
             cmdbuf.draw(vertex_count, 1, 0, 0);
