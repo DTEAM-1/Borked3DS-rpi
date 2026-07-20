@@ -205,12 +205,32 @@ void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
 // and the accelerated path (Kid Icarus Uprising, whose text VS reads no dynamic upper-bank uniform
 // and therefore never enters the software path). Only the exactly-zero case is touched; the offset
 // is 1e-3 in PICA clip units, far below one depth quantum for real geometry.
+// vDIRA v144 (ROOT CAUSE FIX, BORKED3DS_V3DV_NEG_ZERO_FIX=1): OpenGL clips depth against
+// -w <= z <= w while Vulkan uses 0 <= z <= w. The shaders emit gl_Position.z = -vtx_pos.z with no
+// conversion between the two conventions, so 2D overlay geometry -- dialogue glyphs, which leave
+// the vertex stage with z at (or infinitesimally close to) 0 -- lands in the MIDDLE of the GL
+// volume but exactly on the near boundary of the Vulkan one. V3DV rejects that boundary and the
+// primitive never rasterizes. Real 3D geometry (z=-497, w=497) maps to the far boundary, which is
+// accepted, which is why only flat overlay draws vanish and why the text renders under GL.
+// Measured proof (Sonic Lost World): biasing the vertex DATA by z -= 0.001 or 0.5 restores the
+// text; +0.5 does not; unbiased does not. Occlusion reads 0 samples for those draws and 36..392
+// for 3D draws sharing the same path, pipeline, viewport and scissor.
+// v143 tried "if (vtx_pos.z == 0.0)" and failed even though the dumped shader proved the line was
+// emitted right after SanitizeVertex: the state log prints z with {:.3f}, so a value like 0.0004
+// also displays as 0.000, and an exact-equality test never fires. The validated data bias applied
+// unconditionally, which is why it worked. Hence a RELATIVE threshold against w rather than an
+// equality: anything not already comfortably inside the volume is pushed just inside it, scaled by
+// w so it is correct for any clip magnitude, while genuine 3D depths (orders of magnitude larger)
+// are left untouched. Applied in the shader so it covers the software path (Sonic) and the
+// accelerated path (Kid Icarus Uprising) alike.
 std::string ClipZFixupLine(const char* indent) {
     static const bool enabled = IsEnabledEnv("BORKED3DS_V3DV_NEG_ZERO_FIX");
     if (!enabled) {
         return std::string{};
     }
-    return fmt::format("{}if (vtx_pos.z == 0.0) vtx_pos.z = -1e-3;\n", indent);
+    return fmt::format("{0}float v3dv_zlim = -1e-3 * abs(vtx_pos.w);\n"
+                       "{0}if (vtx_pos.z > v3dv_zlim) vtx_pos.z = v3dv_zlim;\n",
+                       indent);
 }
 
 } // Anonymous namespace
