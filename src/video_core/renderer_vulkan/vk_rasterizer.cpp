@@ -8072,6 +8072,28 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             dira_effective_vertex_count = 3;
         }
 
+        // vDIRA v141 (direct data test, BORKED3DS_V3DV_DIRA_Z_BIAS=<float>): shift the z component
+        // of every vertex of A8 glyph draws inside the mapped GPU buffer. The measured glyph
+        // vertices all carry z EXACTLY 0.0 with w=1.0, which puts them precisely ON the PICA fixed
+        // clip plane (gl_ClipDistance[0] = -z = 0.0) and precisely on the near limit of the Vulkan
+        // depth range once the trivial VS emits gl_Position.z = -z. Every draw that DOES rasterize
+        // on this same path carries z far from zero (-497 with w=497). v140 tried to bias this
+        // inside the shader, but that patch only takes effect if use_clip_planes is true for this
+        // shader -- unverified. Biasing the DATA tests the hypothesis with no such dependency and
+        // no rebuild per value: a negative bias moves z off the boundary in the direction real 3D
+        // geometry already sits (gl_Position.z = -z becomes positive, clip distance becomes
+        // positive). Text appearing at some bias proves the boundary is the killer and hands us
+        // the fix; nothing at any bias clears z entirely and the search moves to the texcoord.
+        static const char* const dira_z_bias_env = std::getenv("BORKED3DS_V3DV_DIRA_Z_BIAS");
+        if (dira_z_bias_env != nullptr && dira_z_bias_env[0] != '\0' && dira_is_a8) {
+            const float dira_z_bias = static_cast<float>(std::atof(dira_z_bias_env));
+            constexpr u32 kFloatsPerVertex = sizeof(HardwareVertex) / sizeof(float);
+            float* const dira_zverts = reinterpret_cast<float*>(buffer);
+            for (u32 v = 0; v < dira_effective_vertex_count; ++v) {
+                dira_zverts[v * kFloatsPerVertex + 2] += dira_z_bias; // position.z
+            }
+        }
+
         // vDIRA v122 (first-triangle census): pos0 only ever proved VERTEX 0 sane. If vertices
         // 1..N are degenerate (identical, or w=0 -> fully clipped), every triangle has zero area
         // and rasterization produces nothing while vertex 0 still looks perfect. Log the complete
