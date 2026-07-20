@@ -3,6 +3,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
+
 #include "common/settings.h"
 #include "video_core/pica/regs_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -215,12 +217,61 @@ void VertexModule::Generate(Common::UniqueFunction<void, Sirit::Module&, const M
     OpFunctionEnd();
 }
 
+namespace {
+// vDIRA v146 (ROOT CAUSE FIX, BORKED3DS_V3DV_NEG_ZERO_FIX=1): OpenGL clips depth against
+// -w <= z <= w while Vulkan uses 0 <= z <= w, and this shader emits gl_Position.z = -z (and
+// gl_ClipDistance[0] = -z) with no conversion between the two conventions. Flat 2D overlay
+// geometry -- dialogue glyphs -- reaches this point with z EXACTLY 0.0 and w 1.0 (measured:
+// pos0=(1.666760e-02,-3.499923e-01,0.000000e+00,1.000000e+00)), so both derived values land on
+// exactly zero: dead centre of the GL volume, but precisely on the near boundary of the Vulkan
+// one. V3DV rejects that boundary and the primitive never rasterizes, which is why this text
+// renders under OpenGL but not Vulkan. Real 3D geometry (z=-497, w=497) maps to the far boundary
+// and is accepted, so only flat overlay draws vanish.
+// Measured proof (Sonic Lost World): biasing the vertex DATA by z -= 0.001 or 0.5 restores the
+// text; +0.5 does not; unbiased does not. Occlusion queries read 0 samples for those draws while
+// 3D draws sharing the same path, pipeline, viewport and scissor read 36..392.
+// Earlier attempts were placed in glsl_shader_gen.cpp and had no effect for a simple reason: the
+// Vulkan software path does not use the GLSL generator at all. PipelineCache builds its trivial
+// vertex shader from SPIRV::GenerateTrivialVertexShader (vk_pipeline_cache.cpp:203), i.e. THIS
+// function, so the GLSL fixup could never reach these draws -- and the GLSL trivial-VS dump file
+// was never even created, which confirmed it.
+// The fix clamps z to a small negative value scaled by |w| before the negation, so it propagates
+// to gl_Position.z and gl_ClipDistance[0] alike, exactly like the validated data-side bias. Only
+// geometry sitting on or past the boundary is moved; genuine depths are orders of magnitude larger
+// and untouched. Note this shader is built once in the PipelineCache constructor, so the flag is
+// read at startup and a shader-cache purge alone does not regenerate it.
+bool IsNegZeroFixEnabled() {
+    static const bool enabled = std::getenv("BORKED3DS_V3DV_NEG_ZERO_FIX") != nullptr;
+    return enabled;
+}
+} // Anonymous namespace
+
 std::vector<u32> GenerateTrivialVertexShader(bool use_clip_planes) {
     VertexModule module;
     module.Generate([use_clip_planes](Sirit::Module& spv,
                                       const VertexModule::ModuleIds& ids) -> void {
-        const Id pos_sanitized = spv.OpFunctionCall(
+        const Id pos_raw = spv.OpFunctionCall(
             ids.vec.Get(4), ids.sanitize_vertex, spv.OpLoad(ids.vec.Get(4), ids.vert_in_position));
+
+        // vDIRA v146: pull z just inside the Vulkan clip volume before it is negated, so both
+        // gl_Position.z and gl_ClipDistance[0] become strictly positive for flat 2D geometry
+        // (z == 0) instead of landing exactly on the rejected near boundary. |w| is computed with
+        // a select rather than OpFAbs to avoid pulling in the GLSL.std.450 extended instruction
+        // set, and OpSelect avoids introducing a function-scope variable (SPIR-V requires those in
+        // the entry block).
+        Id pos_sanitized = pos_raw;
+        if (IsNegZeroFixEnabled()) {
+            const Id pos_z = spv.OpCompositeExtract(ids.f32, pos_raw, 2);
+            const Id pos_w = spv.OpCompositeExtract(ids.f32, pos_raw, 3);
+            const Id w_is_negative =
+                spv.OpFOrdLessThan(ids.bool_, pos_w, spv.Constant(ids.f32, 0.0f));
+            const Id abs_w =
+                spv.OpSelect(ids.f32, w_is_negative, spv.OpFNegate(ids.f32, pos_w), pos_w);
+            const Id z_limit = spv.OpFMul(ids.f32, spv.Constant(ids.f32, -1.0e-3f), abs_w);
+            const Id z_too_high = spv.OpFOrdGreaterThan(ids.bool_, pos_z, z_limit);
+            const Id z_fixed = spv.OpSelect(ids.f32, z_too_high, z_limit, pos_z);
+            pos_sanitized = spv.OpCompositeInsert(ids.vec.Get(4), z_fixed, pos_raw, 2);
+        }
 
         // Negate Z
         const Id neg_z = spv.OpFNegate(ids.f32, spv.OpCompositeExtract(ids.f32, pos_sanitized, 2));
