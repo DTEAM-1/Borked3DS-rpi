@@ -172,9 +172,25 @@ void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
 // renders correctly under Mesa's GL driver, which keeps the boundary case. A tiny positive bias
 // pushes the exactly-zero case just inside the volume while remaining negligible for real 3D
 // geometry, whose distances are orders of magnitude larger.
-std::string_view ClipPlaneZeroBias() {
-    static const bool enabled = IsEnabledEnv("BORKED3DS_V3DV_CLIP_EPSILON");
-    return enabled ? std::string_view{" + 1e-4"} : std::string_view{""};
+// vDIRA v142 (ROOT CAUSE FIX, BORKED3DS_V3DV_NEG_ZERO_FIX=1): the vertex shaders emit
+// gl_Position.z as -vtx_pos.z. 2D overlay geometry -- dialogue glyphs -- arrives with z EXACTLY
+// +0.0, and negating it yields -0.0, an IEEE 754 NEGATIVE zero. V3DV evaluates the Vulkan clip
+// volume (0 <= z <= w) with the sign bit taken into account, so -0.0 falls below the lower bound
+// and the whole primitive is discarded before rasterization. Mesa's GL driver keeps the boundary
+// case, which is exactly why this text renders under OpenGL but not Vulkan.
+// Measured proof (Sonic Lost World, software path): biasing vertex z by -0.001 or -0.5 (making
+// gl_Position.z positive) makes the text appear; +0.5 (making it negative) does not; unbiased
+// (-0.0) does not. Occlusion queries read 0 samples in the failing cases and >0 in 3D draws on the
+// same path, pipeline, viewport and scissor.
+// The fix normalizes only the zero case: when vtx_pos.z is zero of either sign, emit +0.0. Any
+// other value is passed through untouched, so real depth and clipping behaviour is unchanged. It
+// lives in the shader rather than in the vertex data so it covers BOTH the software path and the
+// accelerated path (Kid Icarus Uprising's text VS reads no dynamic upper-bank uniform, so it never
+// enters the software path and a data-side bias could never reach it).
+std::string ClipZExpr() {
+    static const bool enabled = IsEnabledEnv("BORKED3DS_V3DV_NEG_ZERO_FIX");
+    return enabled ? std::string{"((vtx_pos.z == 0.0) ? 0.0 : -vtx_pos.z)"}
+                   : std::string{"-vtx_pos.z"};
 }
 
 } // Anonymous namespace
@@ -305,13 +321,12 @@ void main() {
     normquat = vert_normquat;
     view = vert_view;
     vec4 vtx_pos = SanitizeVertex(vert_position);
-    gl_Position = vec4(vtx_pos.x, vtx_pos.y, -vtx_pos.z, vtx_pos.w);
 )";
+    out += fmt::format("    gl_Position = vec4(vtx_pos.x, vtx_pos.y, {}, vtx_pos.w);\n",
+                       ClipZExpr());
     if (use_clip_planes) {
-        out += fmt::format("\n        gl_ClipDistance[0] = -vtx_pos.z{}; "
-                           "// fixed PICA clipping plane z <= 0\n",
-                           ClipPlaneZeroBias());
         out += R"(
+        gl_ClipDistance[0] = -vtx_pos.z; // fixed PICA clipping plane z <= 0
         if (enable_clip1) {
             gl_ClipDistance[1] = dot(clip_coef, vtx_pos);
         } else {
@@ -491,10 +506,10 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
                semantic(VSOutputAttributes::POSITION_Z) + ", " +
                semantic(VSOutputAttributes::POSITION_W) + ");\n";
         out += "    vtx_pos = SanitizeVertex(vtx_pos);\n";
-        out += "    gl_Position = vec4(vtx_pos.x, vtx_pos.y, -vtx_pos.z, vtx_pos.w);\n";
+        out += fmt::format("    gl_Position = vec4(vtx_pos.x, vtx_pos.y, {}, vtx_pos.w);\n", ClipZExpr());
         if (config.state.use_clip_planes) {
             V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl emit_clip_planes_source");
-            out += fmt::format("    gl_ClipDistance[0] = -vtx_pos.z{};\n", ClipPlaneZeroBias()); // fixed PICA clipping plane z <= 0
+            out += "    gl_ClipDistance[0] = -vtx_pos.z;\n"; // fixed PICA clipping plane z <= 0
             out += "    if (enable_clip1) {\n";
             out += "        gl_ClipDistance[1] = dot(clip_coef, vtx_pos);\n";
             out += "    } else {\n";
@@ -629,9 +644,9 @@ struct Vertex {
            semantic(VSOutputAttributes::POSITION_Z) + ", " +
            semantic(VSOutputAttributes::POSITION_W) + ");\n";
     out += "    vtx_pos = SanitizeVertex(vtx_pos);\n";
-    out += "    gl_Position = vec4(vtx_pos.x, vtx_pos.y, -vtx_pos.z, vtx_pos.w);\n";
+    out += fmt::format("    gl_Position = vec4(vtx_pos.x, vtx_pos.y, {}, vtx_pos.w);\n", ClipZExpr());
     if (state.use_clip_planes) {
-        out += fmt::format("    gl_ClipDistance[0] = -vtx_pos.z{};\n", ClipPlaneZeroBias()); // fixed PICA clipping plane z <= 0
+        out += "    gl_ClipDistance[0] = -vtx_pos.z;\n"; // fixed PICA clipping plane z <= 0
         out += "    if (enable_clip1) {\n";
         out += "        gl_ClipDistance[1] = dot(clip_coef, vtx_pos);\n";
         out += "    } else {\n";
