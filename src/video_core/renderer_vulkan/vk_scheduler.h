@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -23,6 +25,43 @@ enum class StateFlags {
 DECLARE_ENUM_FLAG_OPERATORS(StateFlags)
 
 class Instance;
+
+/// ---------------------------------------------------------------------------
+/// Sonde de synchronisation CPU/GPU -- BORKED3DS_V3DV_TRACE_SYNC
+///
+/// But : chiffrer le cout reel des points de synchronisation, plutot que de
+/// l'estimer. Chaque Finish() force l'EmuThread a attendre un aller-retour
+/// complet EmuThread -> VulkanWorker -> GPU -> EmuThread. La sonde compte les
+/// appels, mesure le temps bloque, et attribue les Finish() a leur site
+/// d'origine dans vk_texture_runtime.cpp.
+///
+/// Entierement inerte tant que la variable d'environnement est absente : le
+/// getenv n'est lu qu'UNE fois (static local), jamais par draw.
+///
+/// Un releve par seconde, en LOG_INFO, prefixe "TRACE_SYNC".
+/// ---------------------------------------------------------------------------
+struct SyncStats {
+    /// Vrai si BORKED3DS_V3DV_TRACE_SYNC est presente dans l'environnement.
+    /// Le getenv n'est evalue qu'au premier appel.
+    [[nodiscard]] static bool Enabled() noexcept;
+
+    /// Emet une ligne de releve si une seconde s'est ecoulee depuis la derniere.
+    /// Remet tous les compteurs a zero apres emission.
+    static void ReportIfDue();
+
+    // Compteurs generaux du scheduler
+    static std::atomic<u64> finish_calls;
+    static std::atomic<u64> finish_ns;
+    static std::atomic<u64> flush_calls;
+    static std::atomic<u64> dispatch_calls;
+    static std::atomic<u64> waitworker_calls;
+    static std::atomic<u64> waitworker_ns;
+
+    // Attribution par site d'appel (incrementes depuis vk_texture_runtime.cpp)
+    static std::atomic<u64> site_surface_dtor;
+    static std::atomic<u64> site_surface_download;
+    static std::atomic<u64> site_runtime_finish;
+};
 
 /// The scheduler abstracts command buffer and fence management with an interface that's able to do
 /// OpenGL-like operations on Vulkan command buffers.

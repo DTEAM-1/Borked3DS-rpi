@@ -2,8 +2,12 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <mutex>
 #include <utility>
+#include "common/logging/log.h"
 #include "common/profiling.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -23,6 +27,74 @@ std::unique_ptr<MasterSemaphore> MakeMasterSemaphore(const Instance& instance) {
 }
 
 } // Anonymous namespace
+
+// ---------------------------------------------------------------------------
+// Sonde de synchronisation CPU/GPU -- BORKED3DS_V3DV_TRACE_SYNC
+// ---------------------------------------------------------------------------
+
+std::atomic<u64> SyncStats::finish_calls{0};
+std::atomic<u64> SyncStats::finish_ns{0};
+std::atomic<u64> SyncStats::flush_calls{0};
+std::atomic<u64> SyncStats::dispatch_calls{0};
+std::atomic<u64> SyncStats::waitworker_calls{0};
+std::atomic<u64> SyncStats::waitworker_ns{0};
+std::atomic<u64> SyncStats::site_surface_dtor{0};
+std::atomic<u64> SyncStats::site_surface_download{0};
+std::atomic<u64> SyncStats::site_runtime_finish{0};
+
+bool SyncStats::Enabled() noexcept {
+    // getenv evalue UNE seule fois. Antipattern connu du projet : un getenv par
+    // draw coute plus cher que ce qu'il mesure.
+    static const bool enabled = (std::getenv("BORKED3DS_V3DV_TRACE_SYNC") != nullptr);
+    return enabled;
+}
+
+void SyncStats::ReportIfDue() {
+    using clock = std::chrono::steady_clock;
+
+    static std::mutex report_mutex;
+    static clock::time_point last = clock::now();
+
+    const clock::time_point now = clock::now();
+    if (now - last < std::chrono::seconds(1)) {
+        return;
+    }
+
+    std::unique_lock lock{report_mutex, std::try_to_lock};
+    if (!lock.owns_lock()) {
+        return;
+    }
+    // Re-verification sous verrou : un autre thread a pu emettre entre-temps.
+    if (now - last < std::chrono::seconds(1)) {
+        return;
+    }
+
+    const double window_ms =
+        std::chrono::duration_cast<std::chrono::microseconds>(now - last).count() / 1000.0;
+    last = now;
+
+    const u64 n_finish = finish_calls.exchange(0, std::memory_order_relaxed);
+    const u64 t_finish = finish_ns.exchange(0, std::memory_order_relaxed);
+    const u64 n_flush = flush_calls.exchange(0, std::memory_order_relaxed);
+    const u64 n_dispatch = dispatch_calls.exchange(0, std::memory_order_relaxed);
+    const u64 n_ww = waitworker_calls.exchange(0, std::memory_order_relaxed);
+    const u64 t_ww = waitworker_ns.exchange(0, std::memory_order_relaxed);
+    const u64 s_dtor = site_surface_dtor.exchange(0, std::memory_order_relaxed);
+    const u64 s_dl = site_surface_download.exchange(0, std::memory_order_relaxed);
+    const u64 s_rt = site_runtime_finish.exchange(0, std::memory_order_relaxed);
+
+    const double finish_ms = t_finish / 1.0e6;
+    const double ww_ms = t_ww / 1.0e6;
+    const double blocked_pct = window_ms > 0.0 ? (finish_ms + ww_ms) * 100.0 / window_ms : 0.0;
+    const double finish_avg_us = n_finish > 0 ? (t_finish / 1000.0) / double(n_finish) : 0.0;
+
+    LOG_INFO(Render_Vulkan,
+             "TRACE_SYNC finish={} finish_ms={:.2f} finish_avg_us={:.1f} flush={} dispatch={} "
+             "waitworker={} waitworker_ms={:.2f} blocked_pct={:.1f} "
+             "site_surf_dtor={} site_surf_dl={} site_rt_finish={} window_ms={:.1f}",
+             n_finish, finish_ms, finish_avg_us, n_flush, n_dispatch, n_ww, ww_ms, blocked_pct,
+             s_dtor, s_dl, s_rt, window_ms);
+}
 
 void Scheduler::CommandChunk::ExecuteAll(vk::CommandBuffer cmdbuf) {
     auto command = first;
@@ -51,15 +123,38 @@ Scheduler::Scheduler(const Instance& instance)
 Scheduler::~Scheduler() = default;
 
 void Scheduler::Flush(vk::Semaphore signal, vk::Semaphore wait) {
+    if (SyncStats::Enabled()) {
+        SyncStats::flush_calls.fetch_add(1, std::memory_order_relaxed);
+    }
     // When flushing, we only send data to the worker thread; no waiting is necessary.
     SubmitExecution(signal, wait);
 }
 
 void Scheduler::Finish(vk::Semaphore signal, vk::Semaphore wait) {
     // When finishing, we need to wait for the submission to have executed on the device.
+    //
+    // Note de mesure : SubmitExecution() n'emet PAS le vkQueueSubmit ; elle
+    // l'enregistre dans le chunk courant et le confie a VulkanWorker. Le Wait()
+    // qui suit bloque donc sur : reveil du worker + submit + execution GPU +
+    // reveil. C'est ce cumul que la sonde chiffre.
+    if (!SyncStats::Enabled()) {
+        const u64 presubmit_tick = CurrentTick();
+        SubmitExecution(signal, wait);
+        Wait(presubmit_tick);
+        return;
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
     const u64 presubmit_tick = CurrentTick();
     SubmitExecution(signal, wait);
     Wait(presubmit_tick);
+    const auto t1 = std::chrono::steady_clock::now();
+
+    SyncStats::finish_calls.fetch_add(1, std::memory_order_relaxed);
+    SyncStats::finish_ns.fetch_add(
+        u64(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()),
+        std::memory_order_relaxed);
+    SyncStats::ReportIfDue();
 }
 
 void Scheduler::WaitWorker() {
@@ -68,6 +163,10 @@ void Scheduler::WaitWorker() {
     }
 
     BORKED3DS_PROFILE("Vulkan", "Vulkan WaitWorker");
+
+    const bool trace = SyncStats::Enabled();
+    const auto t0 = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+
     DispatchWork();
 
     // Ensure the queue is drained.
@@ -78,7 +177,17 @@ void Scheduler::WaitWorker() {
 
     // Now wait for execution to finish.
     // This needs to be done in the same order as WorkerThread.
-    std::scoped_lock el{execution_mutex};
+    {
+        std::scoped_lock el{execution_mutex};
+    }
+
+    if (trace) {
+        const auto t1 = std::chrono::steady_clock::now();
+        SyncStats::waitworker_calls.fetch_add(1, std::memory_order_relaxed);
+        SyncStats::waitworker_ns.fetch_add(
+            u64(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()),
+            std::memory_order_relaxed);
+    }
 }
 
 void Scheduler::Wait(u64 tick) {
@@ -92,6 +201,10 @@ void Scheduler::Wait(u64 tick) {
 void Scheduler::DispatchWork() {
     if (!use_worker_thread || chunk->Empty()) {
         return;
+    }
+
+    if (SyncStats::Enabled()) {
+        SyncStats::dispatch_calls.fetch_add(1, std::memory_order_relaxed);
     }
 
     on_dispatch();

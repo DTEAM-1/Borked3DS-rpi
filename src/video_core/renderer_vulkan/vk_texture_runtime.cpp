@@ -594,6 +594,10 @@ u32 TextureRuntime::RemoveThreshold() {
 }
 
 void TextureRuntime::Finish() {
+    // Sonde TRACE_SYNC : attribution du Finish() a son site d'origine.
+    if (SyncStats::Enabled()) {
+        SyncStats::site_runtime_finish.fetch_add(1, std::memory_order_relaxed);
+    }
     scheduler.Finish();
 }
 
@@ -1126,6 +1130,11 @@ Surface::~Surface() {
     if (!handles[0].image_view) {
         return;
     }
+    // Sonde TRACE_SYNC : suspect n.1 -- un drain GPU complet a chaque eviction
+    // de surface du cache texture.
+    if (SyncStats::Enabled()) {
+        SyncStats::site_surface_dtor.fetch_add(1, std::memory_order_relaxed);
+    }
     scheduler->Finish();
     for (const auto& [alloc, image, image_view] : handles) {
         if (image) {
@@ -1389,6 +1398,11 @@ void Surface::UploadCustom(const VideoCore::Material* material, u32 level) {
 void Surface::Download(const VideoCore::BufferTextureCopy& download,
                        const VideoCore::StagingData& staging) {
     SCOPE_EXIT({
+        // Sonde TRACE_SYNC : suspect n.2 -- aller-retour complet a chaque
+        // readback de surface vers la RAM.
+        if (SyncStats::Enabled()) {
+            SyncStats::site_surface_download.fetch_add(1, std::memory_order_relaxed);
+        }
         scheduler->Finish();
         runtime->download_buffer.Commit(staging.size);
     });
