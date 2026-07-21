@@ -7690,12 +7690,37 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         LOG_INFO(Render_Vulkan, "TRACE_DRAW descriptors_flushed accelerate={}",
                  static_cast<u32>(accelerate));
     }
+    // vSYNC v149 -- POINT CHAUD MESURE, CORRIGE.
+    //
+    // Cet emplacement portait un scheduler.Finish() inconditionnel sur le chemin
+    // software sous STRICT_COMPAT. La sonde TRACE_SYNC l'a designe comme UNIQUE
+    // source de blocage du projet : distinct=1, ~700 appels/s, ~690 ms bloques
+    // par seconde, soit blocked_pct 60-69 % sur Metroid en zone 3D. Avec
+    // DIRA_SW_FALLBACK la plupart des draws passent ici : ~27 aller-retours GPU
+    // complets par trame, un par draw. Aucun parallelisme CPU/GPU possible.
+    //
+    // Pourquoi Flush() suffit : l'invariant documente plus bas ("hors render
+    // pass") ne vient PAS de l'attente, il vient du callback enregistre par
+    // RegisterOnSubmit(EndRendering). Ce callback est declenche par
+    // SubmitExecution(), donc par Flush() exactement comme par Finish().
+    // Flush() preserve donc l'invariant et supprime le seul blocage.
+    //
+    // Echappatoire : definir BORKED3DS_V3DV_STRICT_SERIALIZE_SW_DRAWS restaure
+    // l'ancien comportement bloquant. Convention de PRESENCE -- pour desactiver,
+    // RETIRER la variable de la ligne, ne jamais la mettre a 0.
+    static const bool strict_serialize_sw_draws =
+        std::getenv("BORKED3DS_V3DV_STRICT_SERIALIZE_SW_DRAWS") != nullptr;
+
     if (IsStrictCompatEnabled() && !accelerate) {
-        scheduler.Finish();
+        if (strict_serialize_sw_draws) {
+            scheduler.Finish();
+        } else {
+            scheduler.Flush();
+        }
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={}",
-                     vertex_batch.size());
+                     "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={} blocking={}",
+                     vertex_batch.size(), static_cast<u32>(strict_serialize_sw_draws));
         }
     }
 
