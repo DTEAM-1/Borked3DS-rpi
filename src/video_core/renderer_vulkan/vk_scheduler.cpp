@@ -2,11 +2,16 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
+#include <map>
 #include <mutex>
+#include <string>
 #include <utility>
+#include <vector>
 #include "common/logging/log.h"
 #include "common/profiling.h"
 #include "common/settings.h"
@@ -24,6 +29,29 @@ std::unique_ptr<MasterSemaphore> MakeMasterSemaphore(const Instance& instance) {
     } else {
         return std::make_unique<MasterSemaphoreFence>(instance);
     }
+}
+
+/// Un site d'appel de Finish() : cumul du nombre d'appels et du temps bloque.
+struct SyncSiteEntry {
+    u64 count = 0;
+    u64 total_ns = 0;
+};
+
+/// Cle : (fichier, ligne). Le pointeur de fichier vient de source_location et
+/// pointe une chaine litterale statique -- comparable et stable.
+using SyncSiteKey = std::pair<const char*, u32>;
+
+std::mutex sync_sites_mutex;
+std::map<SyncSiteKey, SyncSiteEntry> sync_sites;
+
+/// Ne garde que le nom de fichier, sans le chemin, pour que la ligne de log
+/// reste lisible.
+const char* BaseName(const char* path) {
+    if (path == nullptr) {
+        return "?";
+    }
+    const char* slash = std::strrchr(path, '/');
+    return slash != nullptr ? slash + 1 : path;
 }
 
 } // Anonymous namespace
@@ -47,6 +75,13 @@ bool SyncStats::Enabled() noexcept {
     // draw coute plus cher que ce qu'il mesure.
     static const bool enabled = (std::getenv("BORKED3DS_V3DV_TRACE_SYNC") != nullptr);
     return enabled;
+}
+
+void SyncStats::RecordFinish(const char* file, u32 line, u64 elapsed_ns) {
+    std::scoped_lock lock{sync_sites_mutex};
+    SyncSiteEntry& e = sync_sites[SyncSiteKey{file, line}];
+    e.count++;
+    e.total_ns += elapsed_ns;
 }
 
 void SyncStats::ReportIfDue() {
@@ -94,6 +129,35 @@ void SyncStats::ReportIfDue() {
              "site_surf_dtor={} site_surf_dl={} site_rt_finish={} window_ms={:.1f}",
              n_finish, finish_ms, finish_avg_us, n_flush, n_dispatch, n_ww, ww_ms, blocked_pct,
              s_dtor, s_dl, s_rt, window_ms);
+
+    // Seconde ligne : classement des sites d'appel par temps bloque decroissant.
+    std::vector<std::pair<SyncSiteKey, SyncSiteEntry>> ranked;
+    {
+        std::scoped_lock sl{sync_sites_mutex};
+        ranked.assign(sync_sites.begin(), sync_sites.end());
+        sync_sites.clear();
+    }
+
+    if (ranked.empty()) {
+        return;
+    }
+
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto& a, const auto& b) { return a.second.total_ns > b.second.total_ns; });
+
+    std::string sites;
+    const std::size_t shown = std::min<std::size_t>(ranked.size(), 8);
+    for (std::size_t i = 0; i < shown; i++) {
+        const auto& key = ranked[i].first;
+        const auto& entry = ranked[i].second;
+        if (!sites.empty()) {
+            sites += ' ';
+        }
+        sites += fmt::format("{}:{}/n={}/ms={:.1f}", BaseName(key.first), key.second, entry.count,
+                             entry.total_ns / 1.0e6);
+    }
+
+    LOG_INFO(Render_Vulkan, "TRACE_SYNC sites distinct={} {}", ranked.size(), sites);
 }
 
 void Scheduler::CommandChunk::ExecuteAll(vk::CommandBuffer cmdbuf) {
@@ -130,13 +194,14 @@ void Scheduler::Flush(vk::Semaphore signal, vk::Semaphore wait) {
     SubmitExecution(signal, wait);
 }
 
-void Scheduler::Finish(vk::Semaphore signal, vk::Semaphore wait) {
+void Scheduler::Finish(vk::Semaphore signal, vk::Semaphore wait, std::source_location loc) {
     // When finishing, we need to wait for the submission to have executed on the device.
     //
     // Note de mesure : SubmitExecution() n'emet PAS le vkQueueSubmit ; elle
     // l'enregistre dans le chunk courant et le confie a VulkanWorker. Le Wait()
     // qui suit bloque donc sur : reveil du worker + submit + execution GPU +
-    // reveil. C'est ce cumul que la sonde chiffre.
+    // reveil. C'est ce cumul que la sonde chiffre, et qu'elle attribue
+    // maintenant au site d'appel via loc.
     if (!SyncStats::Enabled()) {
         const u64 presubmit_tick = CurrentTick();
         SubmitExecution(signal, wait);
@@ -150,10 +215,12 @@ void Scheduler::Finish(vk::Semaphore signal, vk::Semaphore wait) {
     Wait(presubmit_tick);
     const auto t1 = std::chrono::steady_clock::now();
 
+    const u64 elapsed_ns =
+        u64(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+
     SyncStats::finish_calls.fetch_add(1, std::memory_order_relaxed);
-    SyncStats::finish_ns.fetch_add(
-        u64(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()),
-        std::memory_order_relaxed);
+    SyncStats::finish_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+    SyncStats::RecordFinish(loc.file_name(), u32(loc.line()), elapsed_ns);
     SyncStats::ReportIfDue();
 }
 
@@ -165,7 +232,8 @@ void Scheduler::WaitWorker() {
     BORKED3DS_PROFILE("Vulkan", "Vulkan WaitWorker");
 
     const bool trace = SyncStats::Enabled();
-    const auto t0 = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const auto t0 =
+        trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
     DispatchWork();
 

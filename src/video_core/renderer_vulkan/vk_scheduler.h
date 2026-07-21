@@ -8,6 +8,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <source_location>
 #include <utility>
 #include "common/alignment.h"
 #include "common/common_funcs.h"
@@ -29,23 +30,26 @@ class Instance;
 /// ---------------------------------------------------------------------------
 /// Sonde de synchronisation CPU/GPU -- BORKED3DS_V3DV_TRACE_SYNC
 ///
-/// But : chiffrer le cout reel des points de synchronisation, plutot que de
-/// l'estimer. Chaque Finish() force l'EmuThread a attendre un aller-retour
-/// complet EmuThread -> VulkanWorker -> GPU -> EmuThread. La sonde compte les
-/// appels, mesure le temps bloque, et attribue les Finish() a leur site
-/// d'origine dans vk_texture_runtime.cpp.
+/// Mesure v149 (Metroid, zone 3D) : ~30 Finish() par trame, ~900 us chacun,
+/// blocked_pct 60-69 %. Aucun des trois sites de vk_texture_runtime.cpp n'y
+/// contribue en regime etabli. Cette version attribue donc CHAQUE Finish() a
+/// son site d'appel reel via std::source_location, sans toucher aux appelants :
+/// l'argument par defaut est evalue chez l'APPELANT, pas ici.
 ///
 /// Entierement inerte tant que la variable d'environnement est absente : le
 /// getenv n'est lu qu'UNE fois (static local), jamais par draw.
 ///
-/// Un releve par seconde, en LOG_INFO, prefixe "TRACE_SYNC".
+/// Deux lignes par seconde en LOG_INFO, toutes deux prefixees "TRACE_SYNC".
 /// ---------------------------------------------------------------------------
 struct SyncStats {
     /// Vrai si BORKED3DS_V3DV_TRACE_SYNC est presente dans l'environnement.
     /// Le getenv n'est evalue qu'au premier appel.
     [[nodiscard]] static bool Enabled() noexcept;
 
-    /// Emet une ligne de releve si une seconde s'est ecoulee depuis la derniere.
+    /// Enregistre un Finish() attribue a son site d'appel.
+    static void RecordFinish(const char* file, u32 line, u64 elapsed_ns);
+
+    /// Emet les lignes de releve si une seconde s'est ecoulee depuis la derniere.
     /// Remet tous les compteurs a zero apres emission.
     static void ReportIfDue();
 
@@ -57,7 +61,8 @@ struct SyncStats {
     static std::atomic<u64> waitworker_calls;
     static std::atomic<u64> waitworker_ns;
 
-    // Attribution par site d'appel (incrementes depuis vk_texture_runtime.cpp)
+    // Attribution manuelle conservee (incrementee depuis vk_texture_runtime.cpp).
+    // Utile pour distinguer les rafales de chargement du regime etabli.
     static std::atomic<u64> site_surface_dtor;
     static std::atomic<u64> site_surface_download;
     static std::atomic<u64> site_runtime_finish;
@@ -74,7 +79,11 @@ public:
     void Flush(vk::Semaphore signal = nullptr, vk::Semaphore wait = nullptr);
 
     /// Sends the current execution context to the GPU and waits for it to complete.
-    void Finish(vk::Semaphore signal = nullptr, vk::Semaphore wait = nullptr);
+    ///
+    /// Le dernier parametre n'est jamais a fournir : il capture automatiquement
+    /// le fichier et la ligne de l'APPELANT pour la sonde TRACE_SYNC.
+    void Finish(vk::Semaphore signal = nullptr, vk::Semaphore wait = nullptr,
+                std::source_location loc = std::source_location::current());
 
     /// Waits for the worker thread to finish executing everything. After this function returns it's
     /// safe to touch worker resources.
