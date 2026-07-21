@@ -7690,37 +7690,61 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         LOG_INFO(Render_Vulkan, "TRACE_DRAW descriptors_flushed accelerate={}",
                  static_cast<u32>(accelerate));
     }
-    // vSYNC v149 -- POINT CHAUD MESURE, CORRIGE.
+    // vSYNC v149c -- POINT CHAUD MESURE. TROIS MODES.
     //
-    // Cet emplacement portait un scheduler.Finish() inconditionnel sur le chemin
-    // software sous STRICT_COMPAT. La sonde TRACE_SYNC l'a designe comme UNIQUE
-    // source de blocage du projet : distinct=1, ~700 appels/s, ~690 ms bloques
-    // par seconde, soit blocked_pct 60-69 % sur Metroid en zone 3D. Avec
-    // DIRA_SW_FALLBACK la plupart des draws passent ici : ~27 aller-retours GPU
-    // complets par trame, un par draw. Aucun parallelisme CPU/GPU possible.
+    // Historique de mesure :
+    //   v149a  scheduler.Finish() inconditionnel. Sonde TRACE_SYNC : distinct=1,
+    //          ~700 appels/s, blocked_pct 60-70 %. Metroid 37-40 %.
+    //   v149b  scheduler.Flush(). Metroid 60 % (+20 points), blocked_pct 0,3 %.
+    //          MAIS : ~1244 soumissions/s, "Run out of pools, creating new one!"
+    //          en boucle, et Sonic Lost World perd la 3D puis gele ~10 s. Cause :
+    //          plus rien ne borne le nombre de soumissions en vol, le CPU part
+    //          tres loin devant le GPU, et quand StreamBuffer::Map() reboucle,
+    //          WaitPendingOperations() attend un tick que le GPU met des
+    //          secondes a rattraper.
     //
-    // Pourquoi Flush() suffit : l'invariant documente plus bas ("hors render
-    // pass") ne vient PAS de l'attente, il vient du callback enregistre par
-    // RegisterOnSubmit(EndRendering). Ce callback est declenche par
-    // SubmitExecution(), donc par Flush() exactement comme par Finish().
-    // Flush() preserve donc l'invariant et supprime le seul blocage.
+    // v149c : la vraie question est a quoi sert cette soumission. L'invariant
+    // "hors render pass" documente plus bas n'est requis que par le chemin
+    // d'occlusion, garde par BORKED3DS_V3DV_DIRA_OCCLUSION_QUERY. Sur le chemin
+    // normal, renderpass_cache.BeginRendering() gere lui-meme les transitions de
+    // passe : ne rien soumettre du tout est le comportement de Citra/Azahar
+    // mainline, et supprime a la fois l'attente ET la pression sur les pools.
     //
-    // Echappatoire : definir BORKED3DS_V3DV_STRICT_SERIALIZE_SW_DRAWS restaure
-    // l'ancien comportement bloquant. Convention de PRESENCE -- pour desactiver,
-    // RETIRER la variable de la ligne, ne jamais la mettre a 0.
+    // Trois modes, par PRESENCE de variable (pour desactiver, RETIRER la
+    // variable de la ligne -- ne jamais la mettre a 0) :
+    //   aucune variable            -> ne rien faire        (defaut v149c)
+    //   ..._STRICT_FLUSH_SW_DRAWS  -> scheduler.Flush()    (comportement v149b)
+    //   ..._STRICT_SERIALIZE_SW_DRAWS -> scheduler.Finish() (comportement v149a)
+    // Si les deux sont presentes, SERIALIZE l'emporte.
+    //
+    // Exception de securite : si le chemin d'occlusion est actif, il exige
+    // reellement d'etre hors render pass ici. On force alors au minimum un
+    // Flush(), qui declenche RegisterOnSubmit(EndRendering) sans bloquer.
     static const bool strict_serialize_sw_draws =
         std::getenv("BORKED3DS_V3DV_STRICT_SERIALIZE_SW_DRAWS") != nullptr;
+    static const bool strict_flush_sw_draws =
+        std::getenv("BORKED3DS_V3DV_STRICT_FLUSH_SW_DRAWS") != nullptr;
+    static const bool strict_occlusion_needs_pass_break =
+        std::getenv("BORKED3DS_V3DV_DIRA_OCCLUSION_QUERY") != nullptr;
 
     if (IsStrictCompatEnabled() && !accelerate) {
+        u32 sw_sync_mode = 0; // 0 = rien, 1 = flush, 2 = finish
         if (strict_serialize_sw_draws) {
+            sw_sync_mode = 2;
+        } else if (strict_flush_sw_draws || strict_occlusion_needs_pass_break) {
+            sw_sync_mode = 1;
+        }
+
+        if (sw_sync_mode == 2) {
             scheduler.Finish();
-        } else {
+        } else if (sw_sync_mode == 1) {
             scheduler.Flush();
         }
+
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
-                     "TRACE_DRAW strict_compat serialized_before_software_draw vertex_batch_size={} blocking={}",
-                     vertex_batch.size(), static_cast<u32>(strict_serialize_sw_draws));
+                     "TRACE_DRAW strict_compat sw_draw_sync mode={} vertex_batch_size={}",
+                     sw_sync_mode, vertex_batch.size());
         }
     }
 
