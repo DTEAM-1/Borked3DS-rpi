@@ -5,6 +5,7 @@
 
 #include <QColorDialog>
 #include "borked3ds_qt/configuration/configuration_shared.h"
+#include "common/logging/log.h"
 #include "borked3ds_qt/configuration/configure_enhancements.h"
 #include "common/settings.h"
 #include "ui_configure_enhancements.h"
@@ -27,6 +28,20 @@ ConfigureEnhancements::ConfigureEnhancements(QWidget* parent)
             [this](int currentIndex) {
                 updateShaders(static_cast<Settings::StereoRenderOption>(currentIndex));
             });
+
+    // v148 : "Disable right eye render" reste disponible, mais il est desormais documente.
+    // Sur certains titres (Metroid) le jeu alimente l'ecran du bas depuis la cible de rendu de
+    // l'oeil gauche ; l'heuristique qui identifie les draws de l'oeil droit classe alors une
+    // partie des draws de l'ecran du bas comme appartenant a l'oeil droit et les supprime, ce
+    // qui produit un decalage franc d'environ 50 % de l'ecran du bas, present seulement dans
+    // certaines zones. Aucun gain de performance mesure sur Pi 5 : l'option est conservee par
+    // choix, avec avertissement. Texte volontairement en anglais (langue source du projet).
+    ui->disable_right_eye_render->setToolTip(
+        tr("Skips rendering the right eye image.\n\n"
+           "Warning: in some games (e.g. Metroid) this shifts the bottom screen by about 50% "
+           "in certain areas, because the game feeds the bottom screen from the left-eye render "
+           "target. Turn this off if you see a displaced or corrupted bottom screen.\n\n"
+           "Performance gain is negligible on most titles."));
 
     ui->toggle_preload_textures->setEnabled(ui->toggle_custom_textures->isChecked());
     ui->toggle_async_custom_loading->setEnabled(ui->toggle_custom_textures->isChecked());
@@ -132,6 +147,14 @@ void ConfigureEnhancements::ApplyConfiguration() {
             ui->shader_combobox->itemText(ui->shader_combobox->currentIndex()).toStdString();
     }
     Settings::values.disable_right_eye_render = ui->disable_right_eye_render->isChecked();
+    if (ui->disable_right_eye_render->isChecked()) {
+        // v148 : trace unique a l'application du reglage. Si un bug d'affichage est rapporte
+        // plus tard, le log dit tout de suite que cette option etait active.
+        LOG_WARNING(Frontend,
+                    "disable_right_eye_render is ENABLED: some games (e.g. Metroid) may show the "
+                    "bottom screen shifted by ~50% in certain areas. Disable this setting if you "
+                    "see a displaced bottom screen.");
+    }
 
     ConfigurationShared::ApplyPerGameSetting(&Settings::values.filter_mode,
                                              ui->toggle_linear_filter, linear_filter);
