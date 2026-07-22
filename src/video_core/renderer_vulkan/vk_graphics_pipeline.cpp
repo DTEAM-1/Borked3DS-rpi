@@ -3,9 +3,12 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
 #include <boost/container/static_vector.hpp>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 
 #include "common/hash.h"
 #include "common/profiling.h"
@@ -51,6 +54,102 @@ namespace {
         std::getenv("BORKED3DS_V3DV_A7Z61_GRAPHICS_PIPELINE_ULTRA_QUIET_TRYBUILD");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
+
+// ---------------------------------------------------------------------------
+// Sonde de compilation de pipeline -- BORKED3DS_V3DV_TRACE_PIPELINE_BUILD
+//
+// Cause confirmee du figement (pile gdb + test du disk shader cache) : la
+// compilation d'un pipeline V3DV neuf est synchrone et lente sur Pi 5, et
+// bloque la presentation a la premiere rencontre. Cette sonde chiffre, par
+// seconde :
+//   compile        : nombre de vraies compilations (createGraphicsPipeline succes)
+//   compile_ms     : temps de compilation cumule (= duree du gel attendue)
+//   compile_max_ms : pire compilation unique
+//   cache_hit      : succes via fail_on_compile_required (deja en cache driver)
+//   shaderwait_ms  : temps passe a attendre la compilation des shaders (SPIR-V)
+// Elle distingue donc "pipeline lent a compiler" de "shader lent a compiler",
+// et donne la TAILLE de la rafale par gel -- deux inconnues qui decident la
+// forme du correctif (pipeline de secours). Purement numerique (compatible
+// daltonisme), inerte hors variable, getenv lu une seule fois.
+// ---------------------------------------------------------------------------
+struct PipelineBuildStats {
+    [[nodiscard]] static bool Enabled() noexcept {
+        static const bool enabled =
+            std::getenv("BORKED3DS_V3DV_TRACE_PIPELINE_BUILD") != nullptr;
+        return enabled;
+    }
+
+    static inline std::atomic<u64> compile_calls{0};
+    static inline std::atomic<u64> compile_ns{0};
+    static inline std::atomic<u64> compile_max_ns{0};
+    static inline std::atomic<u64> cache_hit_calls{0};
+    static inline std::atomic<u64> shaderwait_calls{0};
+    static inline std::atomic<u64> shaderwait_ns{0};
+    static inline std::atomic<u64> shaderwait_max_ns{0};
+
+    static void RecordCompile(u64 ns) noexcept {
+        compile_calls.fetch_add(1, std::memory_order_relaxed);
+        compile_ns.fetch_add(ns, std::memory_order_relaxed);
+        UpdateMax(compile_max_ns, ns);
+    }
+    static void RecordCacheHit() noexcept {
+        cache_hit_calls.fetch_add(1, std::memory_order_relaxed);
+    }
+    static void RecordShaderWait(u64 ns) noexcept {
+        shaderwait_calls.fetch_add(1, std::memory_order_relaxed);
+        shaderwait_ns.fetch_add(ns, std::memory_order_relaxed);
+        UpdateMax(shaderwait_max_ns, ns);
+    }
+
+    static void ReportIfDue() {
+        using clock = std::chrono::steady_clock;
+        static std::mutex report_mutex;
+        static clock::time_point last = clock::now();
+
+        const clock::time_point now = clock::now();
+        if (now - last < std::chrono::seconds(1)) {
+            return;
+        }
+        std::unique_lock lock{report_mutex, std::try_to_lock};
+        if (!lock.owns_lock()) {
+            return;
+        }
+        if (now - last < std::chrono::seconds(1)) {
+            return;
+        }
+        const double window_ms =
+            std::chrono::duration_cast<std::chrono::microseconds>(now - last).count() / 1000.0;
+        last = now;
+
+        const u64 n_c = compile_calls.exchange(0, std::memory_order_relaxed);
+        const u64 t_c = compile_ns.exchange(0, std::memory_order_relaxed);
+        const u64 t_cmax = compile_max_ns.exchange(0, std::memory_order_relaxed);
+        const u64 n_hit = cache_hit_calls.exchange(0, std::memory_order_relaxed);
+        const u64 n_sw = shaderwait_calls.exchange(0, std::memory_order_relaxed);
+        const u64 t_sw = shaderwait_ns.exchange(0, std::memory_order_relaxed);
+        const u64 t_swmax = shaderwait_max_ns.exchange(0, std::memory_order_relaxed);
+
+        // Ne rien emettre sur une fenetre sans activite de compilation.
+        if (n_c == 0 && n_hit == 0 && n_sw == 0) {
+            return;
+        }
+
+        LOG_INFO(Render_Vulkan,
+                 "TRACE_PIPELINE_BUILD compile={} compile_ms={:.1f} compile_max_ms={:.1f} "
+                 "cache_hit={} shaderwait={} shaderwait_ms={:.1f} shaderwait_max_ms={:.1f} "
+                 "window_ms={:.1f}",
+                 n_c, t_c / 1.0e6, t_cmax / 1.0e6, n_hit, n_sw, t_sw / 1.0e6, t_swmax / 1.0e6,
+                 window_ms);
+    }
+
+private:
+    static void UpdateMax(std::atomic<u64>& target, u64 value) noexcept {
+        u64 prev = target.load(std::memory_order_relaxed);
+        while (value > prev &&
+               !target.compare_exchange_weak(prev, value, std::memory_order_relaxed)) {
+        }
+    }
+};
 
 void LogV115DA7Z57GraphicsPipeline(const char* message) {
     LOG_WARNING(Render_Vulkan, "TRACE_DRAW {}", message);
@@ -563,7 +662,15 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         if (a7z57_trace) {
             LogV115DA7Z57GraphicsPipeline("v115d_a7z57 build_before_shader_wait_done");
         }
-        shader->WaitDone();
+        if (PipelineBuildStats::Enabled()) {
+            const auto sw_t0 = std::chrono::steady_clock::now();
+            shader->WaitDone();
+            const auto sw_t1 = std::chrono::steady_clock::now();
+            PipelineBuildStats::RecordShaderWait(
+                u64(std::chrono::duration_cast<std::chrono::nanoseconds>(sw_t1 - sw_t0).count()));
+        } else {
+            shader->WaitDone();
+        }
         if (a7z57_trace) {
             LogV115DA7Z57GraphicsPipeline("v115d_a7z57 build_after_shader_wait_done");
         }
@@ -639,7 +746,26 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     if (a7z57_trace) {
         LogV115DA7Z57GraphicsPipeline("v115d_a7z57 build_before_create_graphics_pipeline");
     }
+    const bool trace_build = PipelineBuildStats::Enabled();
+    const auto build_t0 = trace_build ? std::chrono::steady_clock::now()
+                                      : std::chrono::steady_clock::time_point{};
     auto result = device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+    if (trace_build) {
+        const auto build_t1 = std::chrono::steady_clock::now();
+        const u64 build_elapsed_ns = u64(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(build_t1 - build_t0).count());
+        if (result.result == vk::Result::eSuccess) {
+            if (fail_on_compile_required) {
+                // Succes AVEC le flag = pipeline deja en cache driver, aucune
+                // compilation reelle : c'est le cas rapide (pas de gel).
+                PipelineBuildStats::RecordCacheHit();
+            } else {
+                // Vraie compilation V3DV -- c'est CE temps qui fige la presentation.
+                PipelineBuildStats::RecordCompile(build_elapsed_ns);
+            }
+        }
+        PipelineBuildStats::ReportIfDue();
+    }
     if (a7z57_trace) {
         LogV115DA7Z57GraphicsPipeline("v115d_a7z57 build_after_create_graphics_pipeline");
     }
