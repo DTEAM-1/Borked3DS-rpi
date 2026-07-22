@@ -69,6 +69,12 @@ std::atomic<u64> SyncStats::waitworker_ns{0};
 std::atomic<u64> SyncStats::site_surface_dtor{0};
 std::atomic<u64> SyncStats::site_surface_download{0};
 std::atomic<u64> SyncStats::site_runtime_finish{0};
+std::atomic<u64> SyncStats::streambuf_wait_calls{0};
+std::atomic<u64> SyncStats::streambuf_wait_ns{0};
+std::atomic<u64> SyncStats::streambuf_wait_max_ns{0};
+std::atomic<u64> SyncStats::streambuf_wait_ticks{0};
+std::atomic<u64> SyncStats::streambuf_gap_max{0};
+std::atomic<u64> SyncStats::streambuf_wait_by_type[3] = {};
 
 bool SyncStats::Enabled() noexcept {
     // getenv evalue UNE seule fois. Antipattern connu du projet : un getenv par
@@ -82,6 +88,30 @@ void SyncStats::RecordFinish(const char* file, u32 line, u64 elapsed_ns) {
     SyncSiteEntry& e = sync_sites[SyncSiteKey{file, line}];
     e.count++;
     e.total_ns += elapsed_ns;
+}
+
+void SyncStats::RecordStreamWait(u32 type_index, u64 elapsed_ns, u64 ticks_waited,
+                                 u64 tick_gap) noexcept {
+    streambuf_wait_calls.fetch_add(1, std::memory_order_relaxed);
+    streambuf_wait_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+    streambuf_wait_ticks.fetch_add(ticks_waited, std::memory_order_relaxed);
+    if (type_index < 3) {
+        streambuf_wait_by_type[type_index].fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Max monotone du blocage unique, sans verrou (CAS).
+    u64 prev_max = streambuf_wait_max_ns.load(std::memory_order_relaxed);
+    while (elapsed_ns > prev_max &&
+           !streambuf_wait_max_ns.compare_exchange_weak(prev_max, elapsed_ns,
+                                                        std::memory_order_relaxed)) {
+    }
+
+    // Max monotone de l'avance CPU.
+    u64 prev_gap = streambuf_gap_max.load(std::memory_order_relaxed);
+    while (tick_gap > prev_gap &&
+           !streambuf_gap_max.compare_exchange_weak(prev_gap, tick_gap,
+                                                    std::memory_order_relaxed)) {
+    }
 }
 
 void SyncStats::ReportIfDue() {
@@ -117,17 +147,35 @@ void SyncStats::ReportIfDue() {
     const u64 s_dtor = site_surface_dtor.exchange(0, std::memory_order_relaxed);
     const u64 s_dl = site_surface_download.exchange(0, std::memory_order_relaxed);
     const u64 s_rt = site_runtime_finish.exchange(0, std::memory_order_relaxed);
+    const u64 n_sbw = streambuf_wait_calls.exchange(0, std::memory_order_relaxed);
+    const u64 t_sbw = streambuf_wait_ns.exchange(0, std::memory_order_relaxed);
+    const u64 t_sbw_max = streambuf_wait_max_ns.exchange(0, std::memory_order_relaxed);
+    const u64 n_sbticks = streambuf_wait_ticks.exchange(0, std::memory_order_relaxed);
+    const u64 gap_max = streambuf_gap_max.exchange(0, std::memory_order_relaxed);
+    const u64 sb_up = streambuf_wait_by_type[0].exchange(0, std::memory_order_relaxed);
+    const u64 sb_dl = streambuf_wait_by_type[1].exchange(0, std::memory_order_relaxed);
+    const u64 sb_st = streambuf_wait_by_type[2].exchange(0, std::memory_order_relaxed);
 
     const double finish_ms = t_finish / 1.0e6;
     const double ww_ms = t_ww / 1.0e6;
-    const double blocked_pct = window_ms > 0.0 ? (finish_ms + ww_ms) * 100.0 / window_ms : 0.0;
+    const double sbw_ms = t_sbw / 1.0e6;
+    const double sbw_max_ms = t_sbw_max / 1.0e6;
+    // blocked_pct inclut desormais le rebouclage du stream buffer : c'est LUI le
+    // suspect du figement, il doit peser dans la fraction de temps bloque.
+    const double blocked_pct =
+        window_ms > 0.0 ? (finish_ms + ww_ms + sbw_ms) * 100.0 / window_ms : 0.0;
     const double finish_avg_us = n_finish > 0 ? (t_finish / 1000.0) / double(n_finish) : 0.0;
 
     LOG_INFO(Render_Vulkan,
              "TRACE_SYNC finish={} finish_ms={:.2f} finish_avg_us={:.1f} flush={} dispatch={} "
-             "waitworker={} waitworker_ms={:.2f} blocked_pct={:.1f} "
+             "waitworker={} waitworker_ms={:.2f} "
+             "streambuf_wait={} streambuf_wait_ms={:.1f} streambuf_wait_max_ms={:.1f} "
+             "streambuf_ticks={} gap_max={} sb_up={} sb_dl={} sb_st={} "
+             "blocked_pct={:.1f} "
              "site_surf_dtor={} site_surf_dl={} site_rt_finish={} window_ms={:.1f}",
-             n_finish, finish_ms, finish_avg_us, n_flush, n_dispatch, n_ww, ww_ms, blocked_pct,
+             n_finish, finish_ms, finish_avg_us, n_flush, n_dispatch, n_ww, ww_ms,
+             n_sbw, sbw_ms, sbw_max_ms, n_sbticks, gap_max, sb_up, sb_dl, sb_st,
+             blocked_pct,
              s_dtor, s_dl, s_rt, window_ms);
 
     // Seconde ligne : classement des sites d'appel par temps bloque decroissant.

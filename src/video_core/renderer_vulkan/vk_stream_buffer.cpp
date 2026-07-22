@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -237,11 +238,48 @@ void StreamBuffer::WaitPendingOperations(u64 requested_upper_bound) {
     if (!invalidation_mark) {
         return;
     }
+
+    // Chemin normal (sonde absente) -- STRICTEMENT inchange, aucun surcout.
+    if (!SyncStats::Enabled()) {
+        while (requested_upper_bound > wait_bound && wait_cursor < *invalidation_mark) {
+            auto& watch = previous_watches[wait_cursor];
+            wait_bound = watch.upper_bound;
+            scheduler.Wait(watch.tick);
+            ++wait_cursor;
+        }
+        return;
+    }
+
+    // Chemin instrumente (BORKED3DS_V3DV_TRACE_SYNC) : chiffre le blocage au
+    // rebouclage. C'est ici, et pas dans Finish()/WaitWorker(), que l'EmuThread
+    // reste fige pendant que le GPU rattrape le lot accumule en mode C.
+    const auto t0 = std::chrono::steady_clock::now();
+    u64 ticks_waited = 0;
+    u64 first_tick = 0;
+    bool any = false;
     while (requested_upper_bound > wait_bound && wait_cursor < *invalidation_mark) {
         auto& watch = previous_watches[wait_cursor];
         wait_bound = watch.upper_bound;
+        if (!any) {
+            first_tick = watch.tick;
+            any = true;
+        }
         scheduler.Wait(watch.tick);
         ++wait_cursor;
+        ++ticks_waited;
+    }
+
+    if (any) {
+        const auto t1 = std::chrono::steady_clock::now();
+        const u64 elapsed_ns =
+            u64(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        const u64 cur = scheduler.CurrentTick();
+        const u64 gap = cur > first_tick ? cur - first_tick : 0;
+        SyncStats::RecordStreamWait(static_cast<u32>(type), elapsed_ns, ticks_waited, gap);
+        // Emet le releve juste apres le blocage : garantit qu'un figement de
+        // plusieurs secondes produit sa propre ligne TRACE_SYNC des sa fin,
+        // meme si aucun Finish() n'a lieu en mode C.
+        SyncStats::ReportIfDue();
     }
 }
 

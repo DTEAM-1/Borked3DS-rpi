@@ -49,6 +49,17 @@ struct SyncStats {
     /// Enregistre un Finish() attribue a son site d'appel.
     static void RecordFinish(const char* file, u32 line, u64 elapsed_ns);
 
+    /// Enregistre un blocage au rebouclage du stream buffer (site reel du
+    /// figement periodique ~5 s a 0 %). Appele depuis
+    /// StreamBuffer::WaitPendingOperations, sur l'EmuThread.
+    ///   type_index : 0=Upload 1=Download 2=Stream
+    ///   elapsed_ns : temps mur pendant lequel l'EmuThread est reste bloque.
+    ///   ticks_waited : nombre de watches attendues dans ce rebouclage.
+    ///   tick_gap : CurrentTick - tick de la plus vieille watche attendue
+    ///              (mesure de l'avance prise par le CPU en unites de soumission).
+    static void RecordStreamWait(u32 type_index, u64 elapsed_ns, u64 ticks_waited,
+                                 u64 tick_gap) noexcept;
+
     /// Emet les lignes de releve si une seconde s'est ecoulee depuis la derniere.
     /// Remet tous les compteurs a zero apres emission.
     static void ReportIfDue();
@@ -66,6 +77,23 @@ struct SyncStats {
     static std::atomic<u64> site_surface_dtor;
     static std::atomic<u64> site_surface_download;
     static std::atomic<u64> site_runtime_finish;
+
+    // -----------------------------------------------------------------------
+    // Figement periodique -- rebouclage du stream buffer (v150c).
+    //
+    // La cause probable du figement ~5 s a 0 % n'est ni Finish() ni WaitWorker()
+    // mais StreamBuffer::WaitPendingOperations : en mode C, plus rien n'est
+    // soumis par draw, le CPU accumule un lot enorme, et au rebouclage la
+    // premiere scheduler.Wait() force la soumission puis bloque l'EmuThread le
+    // temps que le GPU draine TOUT le lot. Ces compteurs chiffrent ce blocage
+    // la ou il se produit reellement.
+    static std::atomic<u64> streambuf_wait_calls; // rebouclages ayant bloque
+    static std::atomic<u64> streambuf_wait_ns;    // temps bloque cumule
+    static std::atomic<u64> streambuf_wait_max_ns; // pire blocage unique (max)
+    static std::atomic<u64> streambuf_wait_ticks; // watches attendues cumulees
+    static std::atomic<u64> streambuf_gap_max;    // pire avance CPU (max)
+    // Rebouclages bloquants par type : [0]=Upload [1]=Download [2]=Stream.
+    static std::atomic<u64> streambuf_wait_by_type[3];
 };
 
 /// The scheduler abstracts command buffer and fence management with an interface that's able to do
