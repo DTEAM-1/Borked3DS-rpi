@@ -244,11 +244,14 @@ std::string ClipZFixupLine(const char* indent) {
     // reapparaitre le plancher (et disparaitre le texte), prouvant que ce fixup
     // en est la cause.
     //
-    // Correctif : n'agir que dans une BANDE etroite autour de zero. Ce qui est
-    // franchement positif (le plancher) ou franchement negatif (3D lointaine)
-    // passe intact ; seul z dans [-zlim, +zlim] est force a +zlim, ce qui rend
-    // gl_Position.z = -vtx_pos.z strictement negatif pour le texte plat, donc
-    // strictement a l'interieur du volume Vulkan.
+    // Correctif v150b : n'agir que dans une BANDE etroite autour de zero, ET
+    // pousser vers le NEGATIF. Mesure du recap : le texte de Sonic s'affiche a
+    // z = -0.001 et -0.5, mais PAS a z = 0 ni a z = +0.5. La cible est donc de
+    // rendre vtx_pos.z NEGATIF (apres negation PICA, gl_Position.z devient
+    // positif, a l'interieur du volume Vulkan [0, w]). La v150 initiale poussait
+    // a +zband -> gl_Position.z negatif -> texte rejete : signe inverse, corrige
+    // ici. Ce qui est franchement positif (plancher, ~+200) ou franchement
+    // negatif (3D lointaine, ~-497) reste hors bande et intact.
     //
     // BORKED3DS_V3DV_LEGACY_NEG_ZERO_FIX=1 restaure le fixup unilateral v146
     // (bornage d'un seul cote) pour comparaison sans recompilation.
@@ -259,7 +262,7 @@ std::string ClipZFixupLine(const char* indent) {
                            indent);
     }
     return fmt::format("{0}float v3dv_zband = 1e-3 * abs(vtx_pos.w);\n"
-                       "{0}if (abs(vtx_pos.z) <= v3dv_zband) vtx_pos.z = v3dv_zband;\n",
+                       "{0}if (abs(vtx_pos.z) <= v3dv_zband) vtx_pos.z = -v3dv_zband;\n",
                        indent);
 }
 

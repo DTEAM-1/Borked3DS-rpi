@@ -295,15 +295,22 @@ std::vector<u32> GenerateTrivialVertexShader(bool use_clip_planes) {
                 pos_sanitized = spv.OpCompositeInsert(ids.vec.Get(4), z_fixed, pos_raw, 2);
             } else {
                 // Bande symetrique [-zband, +zband]. |z| est calcule par select
-                // (evite GLSL.std.450), puis compare a zband. Dans la bande on
-                // force +zband ; hors bande on garde pos_z inchange.
+                // (evite GLSL.std.450), puis compare a zband. Hors bande, pos_z
+                // est garde inchange.
+                // v150b : pousser vers le NEGATIF. Mesure du recap -- le texte de
+                // Sonic s'affiche a z = -0.001 et -0.5, mais pas a z = 0 ni +0.5.
+                // La cible est un vtx_pos.z negatif : apres negation PICA,
+                // gl_Position.z devient positif, a l'interieur du volume Vulkan
+                // [0, w], ce qui affiche le texte plat. La v150 initiale poussait
+                // a +z_band (signe inverse) et rejetait le texte.
                 const Id z_band = spv.OpFMul(ids.f32, spv.Constant(ids.f32, 1.0e-3f), abs_w);
+                const Id neg_z_band = spv.OpFNegate(ids.f32, z_band);
                 const Id z_is_negative =
                     spv.OpFOrdLessThan(ids.bool_, pos_z, spv.Constant(ids.f32, 0.0f));
                 const Id abs_z =
                     spv.OpSelect(ids.f32, z_is_negative, spv.OpFNegate(ids.f32, pos_z), pos_z);
                 const Id in_band = spv.OpFOrdLessThanEqual(ids.bool_, abs_z, z_band);
-                const Id z_fixed = spv.OpSelect(ids.f32, in_band, z_band, pos_z);
+                const Id z_fixed = spv.OpSelect(ids.f32, in_band, neg_z_band, pos_z);
                 pos_sanitized = spv.OpCompositeInsert(ids.vec.Get(4), z_fixed, pos_raw, 2);
             }
         }
