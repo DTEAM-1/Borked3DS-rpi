@@ -246,6 +246,14 @@ bool IsNegZeroFixEnabled() {
     static const bool disabled = std::getenv("BORKED3DS_V3DV_NO_NEG_ZERO_FIX") != nullptr;
     return !disabled;
 }
+
+// v150 : restaure le fixup unilateral v146 (bornage d'un seul cote) pour
+// comparaison directe sans recompilation. Voir GenerateTrivialVertexShader.
+bool IsLegacyNegZeroFixEnabled() {
+    static const bool legacy =
+        std::getenv("BORKED3DS_V3DV_LEGACY_NEG_ZERO_FIX") != nullptr;
+    return legacy;
+}
 } // Anonymous namespace
 
 std::vector<u32> GenerateTrivialVertexShader(bool use_clip_planes) {
@@ -261,6 +269,16 @@ std::vector<u32> GenerateTrivialVertexShader(bool use_clip_planes) {
         // a select rather than OpFAbs to avoid pulling in the GLSL.std.450 extended instruction
         // set, and OpSelect avoids introducing a function-scope variable (SPIR-V requires those in
         // the entry block).
+        // vDIRA v150 (BANDE SYMETRIQUE -- corrige la regression du plancher).
+        // Le fixup v146 forcait a -zlim tout vtx_pos.z superieur a -zlim. En
+        // convention PICA (gl_Position.z = -vtx_pos.z), la geometrie 3D devant le
+        // plan de clip a vtx_pos.z positif, donc TOUTE cette geometrie -- dont le
+        // plancher de Sonic (~+200) -- etait ecrasee a -zlim et aplatie sur la
+        // borne near, la rendant transparente. On n'agit desormais que dans une
+        // bande [-zband, +zband] autour de zero : le texte plat (z==0) est pousse
+        // a +zband (donc strictement a l'interieur apres negation), tandis que le
+        // plancher et la 3D lointaine, hors bande, passent intacts.
+        // BORKED3DS_V3DV_LEGACY_NEG_ZERO_FIX=1 restaure le comportement v146.
         Id pos_sanitized = pos_raw;
         if (IsNegZeroFixEnabled()) {
             const Id pos_z = spv.OpCompositeExtract(ids.f32, pos_raw, 2);
@@ -269,10 +287,25 @@ std::vector<u32> GenerateTrivialVertexShader(bool use_clip_planes) {
                 spv.OpFOrdLessThan(ids.bool_, pos_w, spv.Constant(ids.f32, 0.0f));
             const Id abs_w =
                 spv.OpSelect(ids.f32, w_is_negative, spv.OpFNegate(ids.f32, pos_w), pos_w);
-            const Id z_limit = spv.OpFMul(ids.f32, spv.Constant(ids.f32, -1.0e-3f), abs_w);
-            const Id z_too_high = spv.OpFOrdGreaterThan(ids.bool_, pos_z, z_limit);
-            const Id z_fixed = spv.OpSelect(ids.f32, z_too_high, z_limit, pos_z);
-            pos_sanitized = spv.OpCompositeInsert(ids.vec.Get(4), z_fixed, pos_raw, 2);
+            if (IsLegacyNegZeroFixEnabled()) {
+                // Comportement v146 : bornage unilateral (regression plancher).
+                const Id z_limit = spv.OpFMul(ids.f32, spv.Constant(ids.f32, -1.0e-3f), abs_w);
+                const Id z_too_high = spv.OpFOrdGreaterThan(ids.bool_, pos_z, z_limit);
+                const Id z_fixed = spv.OpSelect(ids.f32, z_too_high, z_limit, pos_z);
+                pos_sanitized = spv.OpCompositeInsert(ids.vec.Get(4), z_fixed, pos_raw, 2);
+            } else {
+                // Bande symetrique [-zband, +zband]. |z| est calcule par select
+                // (evite GLSL.std.450), puis compare a zband. Dans la bande on
+                // force +zband ; hors bande on garde pos_z inchange.
+                const Id z_band = spv.OpFMul(ids.f32, spv.Constant(ids.f32, 1.0e-3f), abs_w);
+                const Id z_is_negative =
+                    spv.OpFOrdLessThan(ids.bool_, pos_z, spv.Constant(ids.f32, 0.0f));
+                const Id abs_z =
+                    spv.OpSelect(ids.f32, z_is_negative, spv.OpFNegate(ids.f32, pos_z), pos_z);
+                const Id in_band = spv.OpFOrdLessThanEqual(ids.bool_, abs_z, z_band);
+                const Id z_fixed = spv.OpSelect(ids.f32, in_band, z_band, pos_z);
+                pos_sanitized = spv.OpCompositeInsert(ids.vec.Get(4), z_fixed, pos_raw, 2);
+            }
         }
 
         // Negate Z

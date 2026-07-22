@@ -230,8 +230,36 @@ std::string ClipZFixupLine(const char* indent) {
     if (disabled) {
         return std::string{};
     }
-    return fmt::format("{0}float v3dv_zlim = -1e-3 * abs(vtx_pos.w);\n"
-                       "{0}if (vtx_pos.z > v3dv_zlim) vtx_pos.z = v3dv_zlim;\n",
+
+    // vDIRA v150 (BANDE SYMETRIQUE -- corrige la regression du plancher).
+    //
+    // Le fixup v146 poussait z juste a l'interieur du volume de clip Vulkan pour
+    // que le texte 2D plat (vtx_pos.z == 0) ne soit plus rejete sur la borne
+    // near apres negation. Sa condition etait "si vtx_pos.z > -zlim alors
+    // vtx_pos.z = -zlim". Mais en convention PICA, gl_Position.z = -vtx_pos.z :
+    // la geometrie 3D DEVANT le plan de clip a vtx_pos.z POSITIF. Or -zlim est
+    // negatif, donc "vtx_pos.z > -zlim" est vrai pour TOUT z positif : le
+    // plancher de Sonic (vtx_pos.z ~ +200) etait ecrase a -zlim et s'aplatissait
+    // sur la borne near -> transparent. Mesure directe : NO_NEG_ZERO_FIX=1 fait
+    // reapparaitre le plancher (et disparaitre le texte), prouvant que ce fixup
+    // en est la cause.
+    //
+    // Correctif : n'agir que dans une BANDE etroite autour de zero. Ce qui est
+    // franchement positif (le plancher) ou franchement negatif (3D lointaine)
+    // passe intact ; seul z dans [-zlim, +zlim] est force a +zlim, ce qui rend
+    // gl_Position.z = -vtx_pos.z strictement negatif pour le texte plat, donc
+    // strictement a l'interieur du volume Vulkan.
+    //
+    // BORKED3DS_V3DV_LEGACY_NEG_ZERO_FIX=1 restaure le fixup unilateral v146
+    // (bornage d'un seul cote) pour comparaison sans recompilation.
+    static const bool legacy = IsEnabledEnv("BORKED3DS_V3DV_LEGACY_NEG_ZERO_FIX");
+    if (legacy) {
+        return fmt::format("{0}float v3dv_zlim = -1e-3 * abs(vtx_pos.w);\n"
+                           "{0}if (vtx_pos.z > v3dv_zlim) vtx_pos.z = v3dv_zlim;\n",
+                           indent);
+    }
+    return fmt::format("{0}float v3dv_zband = 1e-3 * abs(vtx_pos.w);\n"
+                       "{0}if (abs(vtx_pos.z) <= v3dv_zband) vtx_pos.z = v3dv_zband;\n",
                        indent);
 }
 
