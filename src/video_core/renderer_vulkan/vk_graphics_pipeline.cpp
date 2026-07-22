@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <mutex>
+#include <unordered_set>
 
 #include "common/hash.h"
 #include "common/profiling.h"
@@ -150,6 +151,79 @@ private:
         }
     }
 };
+
+// Seuil au-dela duquel une compilation de pipeline est consideree "poison" :
+// V3DV passe alors de ~0,2 ms a plusieurs secondes sur certaines combinaisons.
+constexpr u64 POISON_THRESHOLD_NS = 2'000'000'000ull; // 2 s
+
+// Dumpe la signature complete d'un pipeline dont la compilation a explose, pour
+// identifier CE qui empoisonne le compilateur V3DV (shader ? etat baked ?).
+// Ne dumpe qu'UNE fois par hash. Ecrit aussi le SPIR-V de chaque stage present
+// dans /tmp pour desassemblage hors ligne (spirv-dis). Purement diagnostique,
+// n'est appele que depuis le chemin trace, sur une compilation > 2 s (donc rare).
+void DumpPoisonPipeline(const Instance& instance, const PipelineInfo& info,
+                        const std::array<Shader*, 3>& stages, u64 elapsed_ns) {
+    const u64 hash = info.Hash(instance);
+
+    {
+        static std::mutex dumped_mutex;
+        static std::unordered_set<u64> dumped_hashes;
+        std::scoped_lock lock{dumped_mutex};
+        if (!dumped_hashes.insert(hash).second) {
+            return; // deja dumpe ce pipeline
+        }
+    }
+
+    // Tailles SPIR-V par stage (en mots u32) + dump binaire de chaque stage.
+    std::array<u32, 3> stage_words{0, 0, 0};
+    u32 present = 0;
+    std::string dumped_files;
+    for (u32 i = 0; i < 3; ++i) {
+        if (!stages[i]) {
+            continue;
+        }
+        present++;
+        const std::vector<u32>& prog = stages[i]->program;
+        stage_words[i] = static_cast<u32>(prog.size());
+        if (!prog.empty()) {
+            const std::string path =
+                fmt::format("/tmp/borked3ds_poison_{:016x}_s{}.spv", hash, i);
+            std::ofstream out{path, std::ios::binary | std::ios::trunc};
+            if (out) {
+                out.write(reinterpret_cast<const char*>(prog.data()),
+                          static_cast<std::streamsize>(prog.size() * sizeof(u32)));
+                if (!dumped_files.empty()) {
+                    dumped_files += ',';
+                }
+                dumped_files += path;
+            }
+        }
+    }
+    if (dumped_files.empty()) {
+        dumped_files = "-";
+    }
+
+    LOG_INFO(
+        Render_Vulkan,
+        "TRACE_PIPELINE_POISON hash={:#018x} compile_ms={:.1f} shaders={} "
+        "s0_words={} s1_words={} s2_words={} color={} depth={} "
+        "topology={} cull={} depth_test={} depth_write={} stencil_test={} "
+        "depth_cmp={} blend_enable={} color_write_mask={} logic_op={} blend_factors={:#x} "
+        "vtx_bind={} vtx_attr={} dumped={}",
+        hash, elapsed_ns / 1.0e6, present, stage_words[0], stage_words[1], stage_words[2],
+        static_cast<u32>(info.attachments.color), static_cast<u32>(info.attachments.depth),
+        static_cast<u32>(info.rasterization.topology.Value()),
+        static_cast<u32>(info.rasterization.cull_mode.Value()),
+        static_cast<u32>(info.depth_stencil.depth_test_enable.Value()),
+        static_cast<u32>(info.depth_stencil.depth_write_enable.Value()),
+        static_cast<u32>(info.depth_stencil.stencil_test_enable.Value()),
+        static_cast<u32>(info.depth_stencil.depth_compare_op.Value()),
+        static_cast<u32>(info.blending.blend_enable),
+        static_cast<u32>(info.blending.color_write_mask),
+        static_cast<u32>(info.blending.logic_op), static_cast<u32>(info.blending.value),
+        static_cast<u32>(info.vertex_layout.binding_count),
+        static_cast<u32>(info.vertex_layout.attribute_count), dumped_files);
+}
 
 void LogV115DA7Z57GraphicsPipeline(const char* message) {
     LOG_WARNING(Render_Vulkan, "TRACE_DRAW {}", message);
@@ -762,6 +836,11 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
             } else {
                 // Vraie compilation V3DV -- c'est CE temps qui fige la presentation.
                 PipelineBuildStats::RecordCompile(build_elapsed_ns);
+                if (build_elapsed_ns > POISON_THRESHOLD_NS) {
+                    // Compilation pathologique (> 2 s) : capturer sa signature
+                    // complete + son SPIR-V pour identifier ce qui empoisonne V3DV.
+                    DumpPoisonPipeline(instance, info, stages, build_elapsed_ns);
+                }
             }
         }
         PipelineBuildStats::ReportIfDue();
