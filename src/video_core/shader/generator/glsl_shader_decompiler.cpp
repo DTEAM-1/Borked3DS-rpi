@@ -394,7 +394,23 @@ bool VertexShaderNeedsSoftwareVSFallback(const ProgramCode& program_code, u32 ma
     // hardware) is unaffected, keeping the software cost limited to the miscompiled draws.
     const UniformReadScan scan = ScanVertexShaderUniformReads(program_code, main_offset);
     const bool is_hybrid = scan.analyzed && !scan.high.empty() && !scan.low.empty();
-    if (!is_hybrid) {
+
+    // vDIRA v151 (BORKED3DS_V3DV_DIRA_WIDE) : elargissement mesure sur Sonic.
+    //
+    // Constat : une fois le plafond DIRA_MAX_VERTICES neutralise, la couche pale
+    // manquante de Sonic revient -- mais la boule affiche un MELANGE de triangles
+    // pales et fonces. Cause : le critere "hybride" exige de lire la banque HAUTE
+    // *et* la banque BASSE. Les VS qui ne lisent QUE la banque haute retombent donc
+    // sur le chemin materiel, ou V3D 7.1 fige l'index dynamique -> rendu fonce.
+    // D'ou deux rendus differents dans un meme objet.
+    //
+    // Avec ce flag, TOUT VS lisant la banque haute par index dynamique part en
+    // software, hybride ou non. Plus couteux en CPU (a mesurer par jeu), mais
+    // homogene. Sans le flag, comportement historique strictement inchange.
+    static const bool dira_wide = std::getenv("BORKED3DS_V3DV_DIRA_WIDE") != nullptr;
+    const bool needs_software = dira_wide ? (scan.analyzed && !scan.high.empty()) : is_hybrid;
+
+    if (!needs_software) {
         return false;
     }
     // vDIRA v128: v127 proved samples=0 for every software-A8 draw -- the software Vulkan path is
