@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <exception>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <tuple>
@@ -395,18 +396,51 @@ bool VertexShaderNeedsSoftwareVSFallback(const ProgramCode& program_code, u32 ma
     const UniformReadScan scan = ScanVertexShaderUniformReads(program_code, main_offset);
     const bool is_hybrid = scan.analyzed && !scan.high.empty() && !scan.low.empty();
 
+    // ---------------------------------------------------------------------
+    // BORKED3DS_V3DV_TRACE_VSDECIDE -- sonde de DECISION de routage.
+    //
+    // But : repondre a la seule question restee ouverte sur la boule de Sonic,
+    // dont le rendu change a CHAQUE lancement alors que l'async, la memoire non
+    // initialisee et les budgets cumulatifs ont ete elimines.
+    //
+    // Emet UNE ligne par couple (main_offset, empreinte du programme VS) distinct :
+    //   prog_hash  : empreinte du code du VS. S'il DIFFERE entre deux lancements
+    //                pour un meme main_offset, l'alea est EN AMONT de nous (etat
+    //                emule / upload), pas dans le routage.
+    //   analyzed / n_high / n_low : les entrees exactes de la decision.
+    //   decision   : le routage retenu (1 = software, 0 = materiel).
+    //
+    // Methode : capturer deux lancements, rediriger vers deux fichiers, puis
+    // comparer avec diff. Toute ligne qui differe designe la cause.
+    // Purement numerique (compatible daltonisme), inerte hors variable.
+    static const bool trace_vsdecide = std::getenv("BORKED3DS_V3DV_TRACE_VSDECIDE") != nullptr;
+    if (trace_vsdecide) {
+        u64 prog_hash = 1469598103934665603ull; // FNV-1a 64
+        for (const u32 word : program_code) {
+            prog_hash ^= static_cast<u64>(word);
+            prog_hash *= 1099511628211ull;
+        }
+        static std::mutex seen_mutex;
+        static std::set<std::pair<u32, u64>> seen;
+        bool first = false;
+        {
+            std::scoped_lock lock{seen_mutex};
+            first = seen.insert({main_offset, prog_hash}).second;
+        }
+        if (first) {
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_VSDECIDE main_offset={} prog_hash={:#018x} analyzed={} "
+                     "n_high={} n_low={} hybrid={}",
+                     main_offset, prog_hash, static_cast<u32>(scan.analyzed),
+                     static_cast<u32>(scan.high.size()), static_cast<u32>(scan.low.size()),
+                     static_cast<u32>(is_hybrid));
+        }
+    }
+
     // vDIRA v152 (BORKED3DS_V3DV_DIRA_ALL) : sonde "marteau".
     //
-    // Constat mesure (Sonic, boule) : la composante PALE de l'eclairage n'est
-    // produite QUE par le chemin software. Le VS materiel rend fonce, parce que
-    // V3D 7.1 fige les lectures dynamiques de f[] en constante. Les facettes
-    // melangees pale/fonce viennent donc de draws de la boule qui echappent au
-    // routage software.
-    //
-    // Ce flag route TOUS les draws vers le VS software, sans aucune analyse.
-    // Lent par nature -- c'est une SONDE de diagnostic, pas un reglage : si la
-    // boule devient uniforme et pale, la cause est confirmee et il ne reste qu'a
-    // elargir le critere de routage aux VS reellement concernes.
+    // Route TOUS les draws vers le VS software, sans aucune analyse. Lent par
+    // nature -- sonde de diagnostic, pas un reglage.
     static const bool dira_all = std::getenv("BORKED3DS_V3DV_DIRA_ALL") != nullptr;
     if (dira_all) {
         return true;
