@@ -9252,7 +9252,16 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
     }
 
     if (sync_vs_pica) {
-        VSPicaUniformData vs_uniforms;
+        // v152-FIX : initialisation a zero OBLIGATOIRE.
+        //
+        // Cette structure est copiee INTEGRALEMENT vers le GPU (memcpy de
+        // sizeof(vs_uniforms) plus bas). Declaree sans initialiseur, tout ce que
+        // SetFromRegs n'ecrit pas -- emplacements f[] jamais charges par le jeu,
+        // octets de remplissage -- partait vers le shader sous forme de RESIDUS DE
+        // PILE, differents a chaque execution. Symptome mesure (Sonic, boule) :
+        // rendu different a CHAQUE lancement avec des reglages identiques, le
+        // chemin texel de HIGH_SWITCH y etant le plus expose.
+        VSPicaUniformData vs_uniforms{};
         vs_uniforms.uniforms.SetFromRegs(regs.vs, pica.vs_setup);
 
         // v117c-MIRROR (Plan A): mirror the upper float-uniform bank f[64..95] into the lower bank
