@@ -46,13 +46,13 @@ namespace {
     return IsEnvFlagEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
 }
 
-// BORKED3DS_V3DV_ENABLE_EDS -- voir la note detaillee dans vk_graphics_pipeline.cpp.
+// BORKED3DS_V3DV_DISABLE_EDS -- voir la note detaillee dans vk_graphics_pipeline.cpp.
 // Doit imperativement etre lu AUX DEUX sites : ici (emission des setXxxEXT) et
 // dans Build() (declaration des dynamic states). Les desynchroniser produirait un
 // pipeline declarant un etat dynamique jamais emis, ou l'inverse.
-[[nodiscard]] bool IsV3dvEnableEdsEnabled() {
-    static const bool enabled = std::getenv("BORKED3DS_V3DV_ENABLE_EDS") != nullptr;
-    return enabled;
+[[nodiscard]] bool IsV3dvEdsDisabled() {
+    static const bool disabled = std::getenv("BORKED3DS_V3DV_DISABLE_EDS") != nullptr;
+    return disabled;
 }
 
 [[nodiscard]] bool IsV115DA7Z41PipelineCacheTraceEnabled() {
@@ -717,7 +717,7 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
     const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
     const bool use_extended_dynamic_state =
         instance.IsExtendedDynamicStateSupported() &&
-        (!pi5_strict_compat || IsV3dvEnableEdsEnabled());
+        (!pi5_strict_compat || !IsV3dvEdsDisabled());
 
     const bool is_dirty = scheduler.IsStateDirty(StateFlags::Pipeline);
     const bool pipeline_dirty = (current_pipeline != pipeline) || is_dirty;

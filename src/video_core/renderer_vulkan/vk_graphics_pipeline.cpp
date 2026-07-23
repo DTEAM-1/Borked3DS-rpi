@@ -30,7 +30,7 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-// BORKED3DS_V3DV_ENABLE_EDS -- retablit l'extended dynamic state sous strict-compat.
+// BORKED3DS_V3DV_DISABLE_EDS -- echappatoire (EDS actif PAR DEFAUT sous strict-compat).
 //
 // Constat mesure : V3DV annonce bien VK_EXT_extended_dynamic_state (seul l'EDS 3
 // est bloque par strict-compat), donc IsExtendedDynamicStateSupported() vaut TRUE.
@@ -40,11 +40,12 @@ namespace {
 // cull ou le depth_compare partagent donc le meme pipeline, construit avec l'etat
 // du PREMIER : l'etat du second est silencieusement faux.
 //
-// Activer ce flag retablit la coherence (hash et construction s'accordent) ET
-// reduit le nombre de pipelines distincts, donc les compilations V3DV lourdes.
-[[nodiscard]] bool IsV3dvEnableEdsEnabled() {
-    static const bool enabled = std::getenv("BORKED3DS_V3DV_ENABLE_EDS") != nullptr;
-    return enabled;
+// L'EDS est donc actif par defaut : coherence retablie ET effondrement du cout de
+// compilation V3DV (Kid Icarus : pire compilation 12993 ms -> ~51 ms, 43 pipelines
+// "poison" -> 0). Poser BORKED3DS_V3DV_DISABLE_EDS revient a l'ancien comportement.
+[[nodiscard]] bool IsV3dvEdsDisabled() {
+    static const bool disabled = std::getenv("BORKED3DS_V3DV_DISABLE_EDS") != nullptr;
+    return disabled;
 }
 
 [[nodiscard]] bool IsDrawTraceEnabled() {
@@ -308,7 +309,7 @@ u64 PipelineInfo::Hash(const Instance& instance) const {
     // du premier. Bug de rendu silencieux, corrige ici.
     const bool use_extended_dynamic_state =
         instance.IsExtendedDynamicStateSupported() &&
-        (!IsPi5StrictCompatEnabled() || IsV3dvEnableEdsEnabled());
+        (!IsPi5StrictCompatEnabled() || !IsV3dvEdsDisabled());
 
     if (!use_extended_dynamic_state) {
         append_hash(rasterization);
@@ -570,7 +571,7 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
     const bool use_extended_dynamic_state =
         instance.IsExtendedDynamicStateSupported() &&
-        (!pi5_strict_compat || IsV3dvEnableEdsEnabled());
+        (!pi5_strict_compat || !IsV3dvEdsDisabled());
     if (a7z51_trace) {
         AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_pi5_strict_compat", pi5_strict_compat);
         AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_use_extended_dynamic_state", use_extended_dynamic_state);
