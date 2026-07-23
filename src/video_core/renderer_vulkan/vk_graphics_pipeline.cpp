@@ -29,6 +29,24 @@ namespace {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+// ---------------------------------------------------------------------------
+// BORKED3DS_V3DV_ENABLE_EDS -- retablit l'extended dynamic state sous strict-compat.
+//
+// Constat mesure : V3DV annonce bien VK_EXT_extended_dynamic_state (seul l'EDS 3
+// est bloque par strict-compat), donc IsExtendedDynamicStateSupported() vaut TRUE.
+// Or PipelineInfo::Hash() ne consulte QUE cette methode et retire donc deja
+// rasterization + depth_stencil de la cle, alors que la construction du pipeline
+// les FIGE a cause de "&& !pi5_strict_compat". Deux draws ne differant que par le
+// cull ou le depth_compare partagent donc le meme pipeline, construit avec l'etat
+// du PREMIER : l'etat du second est silencieusement faux.
+//
+// Activer ce flag retablit la coherence (hash et construction s'accordent) ET
+// reduit le nombre de pipelines distincts, donc les compilations V3DV lourdes.
+[[nodiscard]] bool IsV3dvEnableEdsEnabled() {
+    static const bool enabled = std::getenv("BORKED3DS_V3DV_ENABLE_EDS") != nullptr;
+    return enabled;
+}
+
 [[nodiscard]] bool IsDrawTraceEnabled() {
     const char* value = std::getenv("BORKED3DS_V3DV_TRACE_DRAW");
     return value != nullptr && value[0] != '\0' && value[0] != '0';
@@ -281,7 +299,18 @@ u64 PipelineInfo::Hash(const Instance& instance) const {
     append_hash(attachments);
     append_hash(blending);
 
-    if (!instance.IsExtendedDynamicStateSupported()) {
+    // COHERENCE OBLIGATOIRE avec Build() et vk_pipeline_cache.cpp : ces deux etats
+    // ne peuvent sortir de la cle QUE s'ils sont reellement rendus dynamiques. La
+    // version precedente ne testait que IsExtendedDynamicStateSupported(), alors que
+    // la construction ajoutait "&& !pi5_strict_compat" -- sous strict-compat sur V3DV
+    // (qui annonce bien VK_EXT_extended_dynamic_state), deux draws ne differant que
+    // par le cull ou le depth_compare partageaient donc un pipeline fige avec l'etat
+    // du premier. Bug de rendu silencieux, corrige ici.
+    const bool use_extended_dynamic_state =
+        instance.IsExtendedDynamicStateSupported() &&
+        (!IsPi5StrictCompatEnabled() || IsV3dvEnableEdsEnabled());
+
+    if (!use_extended_dynamic_state) {
         append_hash(rasterization);
         append_hash(depth_stencil);
     }
@@ -540,7 +569,8 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     const vk::Device device = instance.GetDevice();
     const bool pi5_strict_compat = IsPi5StrictCompatEnabled();
     const bool use_extended_dynamic_state =
-        instance.IsExtendedDynamicStateSupported() && !pi5_strict_compat;
+        instance.IsExtendedDynamicStateSupported() &&
+        (!pi5_strict_compat || IsV3dvEnableEdsEnabled());
     if (a7z51_trace) {
         AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_pi5_strict_compat", pi5_strict_compat);
         AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 build_use_extended_dynamic_state", use_extended_dynamic_state);
