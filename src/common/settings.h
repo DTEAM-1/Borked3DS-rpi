@@ -485,7 +485,7 @@ struct Values {
     // Core
     Setting<bool> use_cpu_jit{true, "use_cpu_jit"};
     SwitchableSetting<u8> frame_skip{0, "frame_skip"};
-    SwitchableSetting<s32, true> cpu_clock_percentage{100, 5, 400, "cpu_clock_percentage"};
+    SwitchableSetting<s32, true> cpu_clock_percentage{75, 5, 400, "cpu_clock_percentage"};
     SwitchableSetting<bool> is_new_3ds{true, "is_new_3ds"};
     SwitchableSetting<bool> lle_applets{false, "lle_applets"};
 
@@ -526,10 +526,10 @@ struct Values {
     SwitchableSetting<bool> geometry_shader{true, "geometry_shader"};
     SwitchableSetting<bool> use_sample_shading{false, "use_sample_shading"};
     SwitchableSetting<bool> relaxed_precision_decorators{false, "relaxed_precision_decorators"};
-    SwitchableSetting<bool> async_shader_compilation{false, "async_shader_compilation"};
+    SwitchableSetting<bool> async_shader_compilation{true, "async_shader_compilation"};
     SwitchableSetting<bool> async_presentation{true, "async_presentation"};
     SwitchableSetting<bool> use_hw_shader{true, "use_hw_shader"};
-    SwitchableSetting<bool> use_disk_shader_cache{true, "use_disk_shader_cache"};
+    SwitchableSetting<bool> use_disk_shader_cache{false, "use_disk_shader_cache"};
     Setting<u32> startup_shader_load_limit{1000, "startup_shader_load_limit"};  //gvx64
     SwitchableSetting<bool> shaders_accurate_mul{false, "shaders_accurate_mul"};
     SwitchableSetting<bool> use_vsync_new{true, "use_vsync_new"};
@@ -605,7 +605,7 @@ struct Values {
     SwitchableSetting<bool> custom_textures{false, "custom_textures"};
     SwitchableSetting<bool> preload_textures{false, "preload_textures"};
     SwitchableSetting<bool> async_custom_loading{true, "async_custom_loading"};
-    SwitchableSetting<bool> disable_right_eye_render{false, "disable_right_eye_render"};
+    SwitchableSetting<bool> disable_right_eye_render{true, "disable_right_eye_render"};
 
     // Audio
     bool audio_muted;
@@ -635,8 +635,8 @@ struct Values {
     SwitchableSetting<bool> enable_custom_cpu_ticks{false, "enable_custom_cpu_ticks"};
     SwitchableSetting<u32, true> custom_cpu_ticks{16000, 77, 65535, "custom_cpu_ticks"};
     SwitchableSetting<bool> skip_slow_draw{false, "skip_slow_draw"};
-    SwitchableSetting<bool> skip_texture_copy{false, "skip_texture_copy"};
-    SwitchableSetting<bool> skip_cpu_write{false, "skip_cpu_write"};
+    SwitchableSetting<bool> skip_texture_copy{true, "skip_texture_copy"};
+    SwitchableSetting<bool> skip_cpu_write{true, "skip_cpu_write"};
     SwitchableSetting<bool> core_downcount_hack{false, "core_downcount_hack"};
     SwitchableSetting<bool> priority_boost{false, "priority_boost"};
     SwitchableSetting<bool> upscaling_hack{false, "upscaling_hack"};
