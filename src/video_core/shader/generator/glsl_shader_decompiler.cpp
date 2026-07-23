@@ -395,20 +395,37 @@ bool VertexShaderNeedsSoftwareVSFallback(const ProgramCode& program_code, u32 ma
     const UniformReadScan scan = ScanVertexShaderUniformReads(program_code, main_offset);
     const bool is_hybrid = scan.analyzed && !scan.high.empty() && !scan.low.empty();
 
+    // vDIRA v152 (BORKED3DS_V3DV_DIRA_ALL) : sonde "marteau".
+    //
+    // Constat mesure (Sonic, boule) : la composante PALE de l'eclairage n'est
+    // produite QUE par le chemin software. Le VS materiel rend fonce, parce que
+    // V3D 7.1 fige les lectures dynamiques de f[] en constante. Les facettes
+    // melangees pale/fonce viennent donc de draws de la boule qui echappent au
+    // routage software.
+    //
+    // Ce flag route TOUS les draws vers le VS software, sans aucune analyse.
+    // Lent par nature -- c'est une SONDE de diagnostic, pas un reglage : si la
+    // boule devient uniforme et pale, la cause est confirmee et il ne reste qu'a
+    // elargir le critere de routage aux VS reellement concernes.
+    static const bool dira_all = std::getenv("BORKED3DS_V3DV_DIRA_ALL") != nullptr;
+    if (dira_all) {
+        return true;
+    }
+
     // vDIRA v151 (BORKED3DS_V3DV_DIRA_WIDE) : elargissement mesure sur Sonic.
     //
-    // Constat : une fois le plafond DIRA_MAX_VERTICES neutralise, la couche pale
-    // manquante de Sonic revient -- mais la boule affiche un MELANGE de triangles
-    // pales et fonces. Cause : le critere "hybride" exige de lire la banque HAUTE
-    // *et* la banque BASSE. Les VS qui ne lisent QUE la banque haute retombent donc
-    // sur le chemin materiel, ou V3D 7.1 fige l'index dynamique -> rendu fonce.
-    // D'ou deux rendus differents dans un meme objet.
+    // Le critere "hybride" exige de lire la banque HAUTE *et* la banque BASSE.
+    // Les VS qui ne lisent QUE la banque haute retombent donc sur le chemin
+    // materiel, ou V3D 7.1 fige l'index dynamique -> rendu fonce. D'ou deux
+    // rendus differents dans un meme objet.
     //
-    // Avec ce flag, TOUT VS lisant la banque haute par index dynamique part en
-    // software, hybride ou non. Plus couteux en CPU (a mesurer par jeu), mais
-    // homogene. Sans le flag, comportement historique strictement inchange.
+    // v152 : le flag couvre desormais AUSSI les VS dont l'analyse de flot de
+    // controle echoue (!scan.analyzed). Le comportement historique les laissait
+    // au materiel "par prudence", mais c'est precisement le cas ou l'on ne peut
+    // PAS prouver l'absence de lecture dynamique -- donc le cas a router.
     static const bool dira_wide = std::getenv("BORKED3DS_V3DV_DIRA_WIDE") != nullptr;
-    const bool needs_software = dira_wide ? (scan.analyzed && !scan.high.empty()) : is_hybrid;
+    const bool needs_software =
+        dira_wide ? (!scan.analyzed || !scan.high.empty()) : is_hybrid;
 
     if (!needs_software) {
         return false;
