@@ -9310,15 +9310,12 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
         // into the PICA block. All terms are 16-aligned so the division is exact.
         const u32 draw_base = offset + used_bytes;
         vs_uniforms.f_texel_base = (draw_base + 320u) / 16u;
-        // v152-FIX (2) : nettoyer TOUTE la tranche alignee avant d'ecrire.
-        //
-        // used_bytes avance de uniform_size_aligned_vs_pica, qui peut depasser
-        // sizeof(vs_uniforms) : l'ecart n'etait jamais ecrit. Le stream buffer est
-        // recycle en continu et jamais remis a zero, et la vue texel utilisee par
-        // HIGH_SWITCH couvre le tampon ENTIER -- un texelFetch qui deborde tombe
-        // donc sur des octets jamais ecrits, dont le contenu varie a chaque
-        // execution. C'est la seconde source du rendu non reproductible.
-        std::memset(uniforms + used_bytes, 0, uniform_size_aligned_vs_pica);
+        // v152-FIX (2) RETIRE : un memset de uniform_size_aligned_vs_pica a partir
+        // de (uniforms + used_bytes) peut DEPASSER la fin de la zone mappee sur le
+        // dernier element (la tranche alignee est plus grande que sizeof). Mesure :
+        // plantage de Kid Icarus au passage 3D et de Metroid a l'ouverture. Seule
+        // l'initialisation a zero de la structure (plus haut) est conservee : elle
+        // est sure par construction et suffit a supprimer les residus de pile.
         std::memcpy(uniforms + used_bytes, &vs_uniforms, sizeof(vs_uniforms));
 
         pipeline_cache.UpdateRange(0, offset + used_bytes);
