@@ -383,6 +383,40 @@ vec4 secondary_fragment_color = vec4(0.0);
                 }
             }
         }
+        // vBALL sonde de luminance (BORKED3DS_FS_SHOW_NORMQUAT_LEN=1) : discrimine l'origine de la
+        // boule "majoritairement sombre" (Sonic, chemin VS-software + rasterisation materielle).
+        // Luminance = length(normquat) AVANT normalisation. Si le flip de signe applique cote CPU
+        // dans AddTriangle atteint bien ce fragment, les quaternions des sommets voisins partagent
+        // le meme hemisphere et leur interpolation lineaire garde |normquat| ~= 1 -> champ
+        // uniformement CLAIR. S'il n'est PAS effectif sur le chemin software Vulkan, les triangles
+        // qui traversent la frontiere de signe interpolent vers ~0 en leur centre -> bandes SOMBRES
+        // exactement sur les mauvais triangles. Non chromatique (daltonien).
+        // Lecture : clair uniforme => normales coherentes, chercher ailleurs (LUT/texture).
+        // Taches sombres correlees aux triangles sombres de la boule => le flip n'arrive pas au GPU
+        // ici, le correctif est en amont (attribut sommet / HardwareVertex Vulkan), pas au FS.
+        // Garde sur !barycentric : c'est exactement le cas V3DV, ou 'normquat' est l'input.
+        if (config.lighting.enable && !use_fragment_shader_barycentric) {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_NORMQUAT_LEN");
+            if (p != nullptr && p[0] == '1') {
+                out += "{ float _l = clamp(length(normquat), 0.0, 1.0);\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+            }
+        }
+        // vBALL sonde de luminance (BORKED3DS_FS_SHOW_LIGHTING=1) : luminance = magnitude de la
+        // somme d'eclairage diffus (primary_fragment_color.rgb), texture et cascade TEV court-
+        // circuitees. Facteur 0.57735 = 1/sqrt(3) pour ramener un blanc plein a 1.0. Combinee a
+        // SHOW_NORMQUAT_LEN, elle separe "normales fausses" de "eclairage/LUT faux" : si les
+        // normales sont coherentes (SHOW_NORMQUAT_LEN clair) mais que ceci reste sombre, la perte
+        // est dans les LUT d'eclairage ou leur upload Vulkan, pas dans la geometrie des normales.
+        // Non chromatique (daltonien). clair = eclairage present ; sombre = eclairage effondre.
+        if (config.lighting.enable) {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_LIGHTING");
+            if (p != nullptr && p[0] == '1') {
+                out += "{ float _l = clamp(length(primary_fragment_color.rgb) * 0.57735, 0.0, "
+                       "1.0);\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+            }
+        }
     }
 
     WriteLogicOp();
