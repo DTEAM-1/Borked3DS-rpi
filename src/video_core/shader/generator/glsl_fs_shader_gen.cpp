@@ -417,6 +417,39 @@ vec4 secondary_fragment_color = vec4(0.0);
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
             }
         }
+        // vBALL intrants du combineur TEV. Normales (P1) et eclairage diffus (P2) sont saufs, donc
+        // la boule sombre vient d'un AUTRE intrant. Les trois sondes ci-dessous isolent chacun en
+        // luminance (1/sqrt(3) pour ramener un blanc plein a 1.0). Non chromatique (daltonien).
+        // Celle qui reste SOMBRE la ou la vraie boule est sombre designe l'intrant fautif.
+        // SHOW_PRIMARY_RGB : couleur de sommet (primary_color.rgb). Sombre => couleur de sommet
+        // perdue cote Vulkan (format/attribut) ; correctif en amont, pas au FS.
+        {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_PRIMARY_RGB");
+            if (p != nullptr && p[0] == '1') {
+                out += "{ float _l = clamp(length(primary_color.rgb) * 0.57735, 0.0, 1.0);\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+            }
+        }
+        // SHOW_SECONDARY_RGB : somme speculaire (secondary_fragment_color.rgb). Teste l'hypothese
+        // "glints speculaires isoles" : si ceci montre des taches claires dispersees la ou la boule
+        // a ses losanges clairs, le speculaire (LUT / vecteur de reflexion) est en cause.
+        {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_SECONDARY_RGB");
+            if (p != nullptr && p[0] == '1') {
+                out += "{ float _l = clamp(length(secondary_fragment_color.rgb) * 0.57735, 0.0, "
+                       "1.0);\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+            }
+        }
+        // SHOW_TEX0_RGB : echantillon texture unite 0 (sampleTexUnit0().rgb), isole du TEV. Sombre
+        // => la texture de base/reflexion arrive noire cote Vulkan (format/upload/vue), pas le FS.
+        {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_TEX0_RGB");
+            if (p != nullptr && p[0] == '1') {
+                out += "{ float _l = clamp(length(sampleTexUnit0().rgb) * 0.57735, 0.0, 1.0);\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+            }
+        }
     }
 
     WriteLogicOp();
