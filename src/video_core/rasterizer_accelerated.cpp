@@ -113,27 +113,50 @@ void RasterizerAccelerated::AddTriangle(const Pica::OutputVertex& v0, const Pica
                                         const Pica::OutputVertex& v2) {
     static const bool s_trace_quat = (std::getenv("BORKED3DS_TRACE_QUAT") != nullptr);
     if (s_trace_quat) {
-        static std::atomic<u64> s_total{0};
-        static std::atomic<u64> s_flat{0};
+        // Separe les draws ECLAIRES (lighting.disable == 0) des NON eclaires. La question decisive :
+        // les draws eclaires (la boule) recoivent-ils un quaternion NUL (0,0,0,0) ? Un quaternion
+        // nul sur un objet eclaire => normale degeneree => facettage. Sur un objet non eclaire il
+        // est inoffensif (jamais lu). q0len = norme L1 de q0 ; < 0.01 => quaternion nul.
+        const bool lit = (regs.lighting.disable == 0);
+        const auto q0 = v0.quat();
+        const float q0len = std::abs(q0.x.ToFloat32()) + std::abs(q0.y.ToFloat32()) +
+                            std::abs(q0.z.ToFloat32()) + std::abs(q0.w.ToFloat32());
+        const bool zero = (q0len < 0.01f);
         const float spread = std::max(QuatSpreadL1(v0, v1), QuatSpreadL1(v0, v2));
-        const u64 t = ++s_total;
-        if (spread < 0.01f) {
-            ++s_flat;
-        }
-        // Echantillon brut tous les 200 triangles + stats cumulatives tous les 2000.
-        if ((t % 200) == 0) {
-            const auto q0 = v0.quat();
-            LOG_INFO(Render,
-                     "TRACE_QUAT sample tri={} spread={:.4f} q0=({:.3f},{:.3f},{:.3f},{:.3f})", t,
-                     spread, q0.x.ToFloat32(), q0.y.ToFloat32(), q0.z.ToFloat32(),
-                     q0.w.ToFloat32());
-        }
-        if ((t % 2000) == 0) {
-            const u64 flat = s_flat.load();
-            LOG_INFO(Render,
-                     "TRACE_QUAT stats total={} flat_lt0.01={} frac_flat={:.3f} (frac_flat~1 => "
-                     "normales de face partout ; frac_flat~0 => normales distinctes)",
-                     t, flat, static_cast<double>(flat) / static_cast<double>(t));
+
+        static std::atomic<u64> lit_total{0}, lit_zero{0}, unlit_total{0}, unlit_zero{0};
+        if (lit) {
+            const u64 t = ++lit_total;
+            if (zero) {
+                ++lit_zero;
+            }
+            if ((t % 200) == 0) {
+                LOG_INFO(Render,
+                         "TRACE_QUAT LIT sample tri={} q0len={:.3f} spread={:.3f} "
+                         "q0=({:.3f},{:.3f},{:.3f},{:.3f})",
+                         t, q0len, spread, q0.x.ToFloat32(), q0.y.ToFloat32(), q0.z.ToFloat32(),
+                         q0.w.ToFloat32());
+            }
+            if ((t % 2000) == 0) {
+                LOG_INFO(Render,
+                         "TRACE_QUAT LIT stats total={} zero_quat={} frac_zero={:.3f} "
+                         "(frac_zero eleve => objets ECLAIRES avec quaternion NUL = la cause du "
+                         "facettage)",
+                         t, lit_zero.load(),
+                         static_cast<double>(lit_zero.load()) / static_cast<double>(t));
+            }
+        } else {
+            const u64 t = ++unlit_total;
+            if (zero) {
+                ++unlit_zero;
+            }
+            if ((t % 5000) == 0) {
+                LOG_INFO(Render,
+                         "TRACE_QUAT UNLIT stats total={} zero_quat={} frac_zero={:.3f} (non "
+                         "eclaire : un quaternion nul y est inoffensif)",
+                         t, unlit_zero.load(),
+                         static_cast<double>(unlit_zero.load()) / static_cast<double>(t));
+            }
         }
     }
     vertex_batch.emplace_back(v0, false);
