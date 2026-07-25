@@ -450,6 +450,40 @@ vec4 secondary_fragment_color = vec4(0.0);
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
             }
         }
+        // vBALL uniformes du combineur. Tous les intrants "vivants" (sommet/diffus/texture) sont
+        // sains et la boule est entierement couverte (aucun rejet alpha), donc la boule sombre vient
+        // d'un terme UNIFORME du combineur : const_color[] ou tev_combiner_buffer_color, qui
+        // pourraient arriver noirs cote Vulkan (upload d'uniforme / layout). Ces deux sondes les
+        // isolent en luminance. Non chromatique (daltonien). Sombre la ou la boule est sombre =>
+        // l'uniforme est en cause, correctif dans l'upload Vulkan, pas dans ce generateur.
+        // SHOW_CONST_RGB : const_color[idx].rgb ; idx choisi par BORKED3DS_FS_CONST_IDX (0..5,
+        // defaut 0) pour balayer les 6 etages sans rebuild (cache Vulkan purge a chaque relance).
+        {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_CONST_RGB");
+            if (p != nullptr && p[0] == '1') {
+                const char* idx_env = std::getenv("BORKED3DS_FS_CONST_IDX");
+                int idx = (idx_env != nullptr) ? std::atoi(idx_env) : 0;
+                if (idx < 0) {
+                    idx = 0;
+                }
+                if (idx > 5) {
+                    idx = 5;
+                }
+                out += fmt::format(
+                    "{{ float _l = clamp(length(const_color[{}].rgb) * 0.57735, 0.0, 1.0);\n"
+                    "  color = vec4(_l, _l, _l, 1.0); }}\n",
+                    idx);
+            }
+        }
+        // SHOW_BUFFER_COLOR : tev_combiner_buffer_color.rgb (valeur initiale du combiner buffer).
+        {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_BUFFER_COLOR");
+            if (p != nullptr && p[0] == '1') {
+                out += "{ float _l = clamp(length(tev_combiner_buffer_color.rgb) * 0.57735, 0.0, "
+                       "1.0);\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+            }
+        }
     }
 
     WriteLogicOp();
