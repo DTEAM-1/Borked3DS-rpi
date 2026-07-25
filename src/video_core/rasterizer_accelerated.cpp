@@ -3,7 +3,11 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
+#include <cmath>
+#include <cstdlib>
 #include "common/alignment.h"
+#include "common/logging/log.h"
 #include "core/memory.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/rasterizer_accelerated.h"
@@ -90,8 +94,48 @@ static bool AreQuaternionsOpposite(const Pica::OutputVertex& v1, const Pica::Out
     return (Common::Dot(a, b) < 0.f);
 }
 
+// vFACET trace (BORKED3DS_TRACE_QUAT=1) : mesure, pour un echantillon de triangles, l'ecart L1
+// entre les quaternions de normale des 3 sommets. Ecart ~0 => les 3 sommets partagent le meme
+// quaternion = normales de FACE (ombrage plat, cause du facettage). Ecart reel (>~0.01) => les
+// normales sont distinctes par sommet et le bandage vient d'ailleurs (LUT d'eclairage). Journalise
+// des stats cumulatives + quelques echantillons bruts pour lecture directe. Aucun cout si la
+// variable d'env est absente.
+static float QuatSpreadL1(const Pica::OutputVertex& a, const Pica::OutputVertex& b) {
+    const auto qa = a.quat();
+    const auto qb = b.quat();
+    return std::abs(qa.x.ToFloat32() - qb.x.ToFloat32()) +
+           std::abs(qa.y.ToFloat32() - qb.y.ToFloat32()) +
+           std::abs(qa.z.ToFloat32() - qb.z.ToFloat32()) +
+           std::abs(qa.w.ToFloat32() - qb.w.ToFloat32());
+}
+
 void RasterizerAccelerated::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
                                         const Pica::OutputVertex& v2) {
+    static const bool s_trace_quat = (std::getenv("BORKED3DS_TRACE_QUAT") != nullptr);
+    if (s_trace_quat) {
+        static std::atomic<u64> s_total{0};
+        static std::atomic<u64> s_flat{0};
+        const float spread = std::max(QuatSpreadL1(v0, v1), QuatSpreadL1(v0, v2));
+        const u64 t = ++s_total;
+        if (spread < 0.01f) {
+            ++s_flat;
+        }
+        // Echantillon brut tous les 200 triangles + stats cumulatives tous les 2000.
+        if ((t % 200) == 0) {
+            const auto q0 = v0.quat();
+            LOG_INFO(Render,
+                     "TRACE_QUAT sample tri={} spread={:.4f} q0=({:.3f},{:.3f},{:.3f},{:.3f})", t,
+                     spread, q0.x.ToFloat32(), q0.y.ToFloat32(), q0.z.ToFloat32(),
+                     q0.w.ToFloat32());
+        }
+        if ((t % 2000) == 0) {
+            const u64 flat = s_flat.load();
+            LOG_INFO(Render,
+                     "TRACE_QUAT stats total={} flat_lt0.01={} frac_flat={:.3f} (frac_flat~1 => "
+                     "normales de face partout ; frac_flat~0 => normales distinctes)",
+                     t, flat, static_cast<double>(flat) / static_cast<double>(t));
+        }
+    }
     vertex_batch.emplace_back(v0, false);
     vertex_batch.emplace_back(v1, AreQuaternionsOpposite(v0, v1));
     vertex_batch.emplace_back(v2, AreQuaternionsOpposite(v0, v2));
