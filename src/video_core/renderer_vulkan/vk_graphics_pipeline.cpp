@@ -175,6 +175,18 @@ private:
 // V3DV passe alors de ~0,2 ms a plusieurs secondes sur certaines combinaisons.
 constexpr u64 POISON_THRESHOLD_NS = 2'000'000'000ull; // 2 s
 
+// BORKED3DS_V3DV_A7Z8_DUMP_ALL_SPIRV -- ouvre le garde POISON pour dumper le SPIR-V
+// de CHAQUE pipeline construit (pas seulement > 2 s), afin d'inspecter hors ligne
+// (spirv-dis) les shaders d'une scene normale (ex : boule Sonic) et y chercher
+// RelaxedPrecision / OpTypeFloat 16 / OpFConvert. Reutilise DumpPoisonPipeline (dedup
+// par hash, un .spv par stage dans /tmp). Requiert aussi TRACE_PIPELINE_BUILD (arme le
+// chemin de mesure). Inerte hors variable, getenv lu une seule fois.
+[[nodiscard]] bool IsDumpAllSpirvEnabled() {
+    static const bool enabled =
+        std::getenv("BORKED3DS_V3DV_A7Z8_DUMP_ALL_SPIRV") != nullptr;
+    return enabled;
+}
+
 // Dumpe la signature complete d'un pipeline dont la compilation a explose, pour
 // identifier CE qui empoisonne le compilateur V3DV (shader ? etat baked ?).
 // Ne dumpe qu'UNE fois par hash. Ecrit aussi le SPIR-V de chaque stage present
@@ -867,9 +879,11 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
             } else {
                 // Vraie compilation V3DV -- c'est CE temps qui fige la presentation.
                 PipelineBuildStats::RecordCompile(build_elapsed_ns);
-                if (build_elapsed_ns > POISON_THRESHOLD_NS) {
+                if (build_elapsed_ns > POISON_THRESHOLD_NS || IsDumpAllSpirvEnabled()) {
                     // Compilation pathologique (> 2 s) : capturer sa signature
                     // complete + son SPIR-V pour identifier ce qui empoisonne V3DV.
+                    // Avec A7Z8_DUMP_ALL_SPIRV, on capture aussi les pipelines RAPIDES
+                    // (scene boule Sonic) pour trancher la piste precision fp16.
                     DumpPoisonPipeline(instance, info, stages, build_elapsed_ns);
                 }
             }
