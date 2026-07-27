@@ -20,9 +20,10 @@ using TextureType = TexturingRegs::TextureConfig::TextureType;
 
 FragmentModule::FragmentModule(const FSConfig& config_, const Profile& profile_)
     : Sirit::Module{SPIRV_VERSION_1_3}, config{config_}, profile{profile_},
-      // Raspberry Pi 5 / V3DV compatibility path:
-      // disable fragment-shader barycentrics even if the runtime advertises them.
-      use_fragment_shader_barycentric{false} {
+      // vFACET v155 : condition gvx64 restauree. Vrai seulement si l'instance a active l'extension
+      // (BORKED3DS_V3DV_ALLOW_FS_BARYCENTRIC sur V3DV) ET si l'eclairage est actif.
+      use_fragment_shader_barycentric{profile.has_fragment_shader_barycentric &&
+                                      config.lighting.enable} {
     DefineArithmeticTypes();
     DefineUniformStructs();
     DefineInterface();
