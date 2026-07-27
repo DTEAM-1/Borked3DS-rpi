@@ -475,6 +475,12 @@ bool Instance::CreateDevice() {
     const bool is_v3dv_driver = driver_id == vk::DriverId::eMesaV3Dv ||
                                 driver_id == vk::DriverId::eBroadcomProprietary;
     const bool v3dv_strict_compat = is_v3dv_driver && IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+    // vFACET v155 : reactiver VK_KHR_fragment_shader_barycentric sur V3DV via env. Sa desactivation
+    // en dur (blocklist + force-false ci-dessous + FS hardcode) est la regression qui facette toute
+    // la geometrie eclairee (le FS retombe sur le flip quaternion CPU per-triangle -> aretes
+    // discontinues). gvx64 (reference) l'active sur V3DV et rend lisse. Defaut : desactive (inchange).
+    const bool allow_fs_barycentric =
+        is_v3dv_driver && IsEnvEnabled("BORKED3DS_V3DV_ALLOW_FS_BARYCENTRIC");
 
     if (is_v3dv_driver) {
         LOG_WARNING(Render_Vulkan,
@@ -528,7 +534,7 @@ bool Instance::CreateDevice() {
         const bool block_on_v3dv =
             is_v3dv_driver &&
             (std::strcmp(ext.name, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME) == 0 ||
-             std::strcmp(ext.name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0 ||
+             (!allow_fs_barycentric && std::strcmp(ext.name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0) ||
              (v3dv_strict_compat && std::strcmp(ext.name, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME) == 0) ||
              (v3dv_strict_compat && std::strcmp(ext.name, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME) == 0));
 
@@ -556,7 +562,9 @@ bool Instance::CreateDevice() {
 
     if (is_v3dv_driver) {
         shader_stencil_export = false;
-        fragment_shader_barycentric = false;
+        if (!allow_fs_barycentric) {
+            fragment_shader_barycentric = false;
+        }
         if (v3dv_strict_compat) {
             fragment_shader_interlock = false;
             extended_dynamic_state3 = false;
