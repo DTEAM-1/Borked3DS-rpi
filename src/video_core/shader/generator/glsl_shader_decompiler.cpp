@@ -474,26 +474,6 @@ bool VertexShaderNeedsSoftwareVSFallback(const ProgramCode& program_code, u32 ma
     if (VertexShaderLowMirrorPlan(program_code, main_offset).ok) {
         return false;
     }
-    // vDIRA v154 (BORKED3DS_V3DV_HYBRID_TO_HW) : echappatoire HIGH_SWITCH.
-    //
-    // Le commentaire d'en-tete de cette fonction ("les hybrides sont irreparables sur le
-    // materiel") date d'AVANT HIGH_SWITCH. Or HIGH_SWITCH reroute justement les lectures
-    // dynamiques de banque haute f[64..95] sur le GPU (via texel buffer), au lieu de les
-    // laisser V3D 7.1 figer en constante. Quand HIGH_SWITCH est actif, un VS hybride dont
-    // la banque haute est ainsi couverte n'a PLUS besoin du fallback software -- lequel
-    // produit des normales plates par facette (passe de highlight de la boule Sonic non
-    // mixee). On prefere alors le chemin materiel decompile, qui produit des normales
-    // lisses ET conserve le texte.
-    //
-    // Double gate volontaire : inerte par defaut (les deux variables absentes => comportement
-    // historique bit-for-bit), reversible sans rebuild, et strictement lie a HIGH_SWITCH
-    // (router un hybride vers le materiel SANS HIGH_SWITCH le renverrait au miscompile V3DV).
-    // A promouvoir en condition propre (verification de version Vulkan / detection HIGH_SWITCH
-    // interne) une fois le gain confirme a l'ecran.
-    if (std::getenv("BORKED3DS_V3DV_HYBRID_TO_HW") != nullptr &&
-        std::getenv("BORKED3DS_V3DV_HIGH_SWITCH") != nullptr) {
-        return false;
-    }
     return true;
 }
 
@@ -886,15 +866,60 @@ private:
                 const CompareOp op_x = instr.common.compare_op.x.Value();
                 const CompareOp op_y = instr.common.compare_op.y.Value();
 
+                // v116-EQ (restaure v155) : sur Pi5/V3DV, l'ecriture texcoord des glyphes de
+                // dialogue (sub_67_86, reg_tmp5) est gardee par une egalite flottante EXACTE
+                // `reg_tmp8 == f[5].y`. reg_tmp8 derive de quelques ULP sur l'ALU V3D, donc le ==
+                // exact est faux la ou il est vrai sous GL desktop -> comparaison faussee ->
+                // rendu pale / banding. Emet une comparaison tolerante (|a-b| <= eps) pour
+                // Equal / NotEqual seulement ; les comparaisons ordonnees (<,<=,>,>=) intactes.
+                // Off -> comportement exact d'origine. Fix valide (recap v116 SS4), perdu au
+                // commit 542a238af (upload du 24 juin), restaure ici.
+                const bool tolerant_eq =
+                    std::getenv("BORKED3DS_V3DV_TOLERANT_EQ") != nullptr;
+                const bool force_eq_true =
+                    std::getenv("BORKED3DS_V3DV_FORCE_EQ_TRUE") != nullptr;
+                constexpr std::string_view kEqEps = "1e-2";
+
+                const auto emit_component = [&](const char* comp, CompareOp op) {
+                    if (force_eq_true && op == CompareOp::Equal) {
+                        shader.AddLine("conditional_code.{} = true;", comp);
+                        return true;
+                    }
+                    if (tolerant_eq && op == CompareOp::Equal) {
+                        shader.AddLine("conditional_code.{} = abs({}.{} - {}.{}) <= {};", comp, src1,
+                                       comp, src2, comp, kEqEps);
+                        return true;
+                    }
+                    if (tolerant_eq && op == CompareOp::NotEqual) {
+                        shader.AddLine("conditional_code.{} = abs({}.{} - {}.{}) > {};", comp, src1,
+                                       comp, src2, comp, kEqEps);
+                        return true;
+                    }
+                    return false;
+                };
+
                 if (cmp_ops.find(op_x) == cmp_ops.end()) {
                     LOG_ERROR(HW_GPU, "Unknown compare mode {:x}", op_x);
                 } else if (cmp_ops.find(op_y) == cmp_ops.end()) {
                     LOG_ERROR(HW_GPU, "Unknown compare mode {:x}", op_y);
+                } else if (force_eq_true && op_x == op_y && op_x == CompareOp::Equal) {
+                    shader.AddLine("conditional_code = bvec2(true);");
+                } else if (tolerant_eq && op_x == op_y &&
+                           (op_x == CompareOp::Equal || op_x == CompareOp::NotEqual)) {
+                    // Same tolerant op on both components: keep the vec2 form.
+                    const std::string_view fn = op_x == CompareOp::Equal ? "lessThanEqual"
+                                                                         : "greaterThan";
+                    shader.AddLine("conditional_code = {}(abs(vec2({}) - vec2({})), vec2({}));", fn,
+                                   src1, src2, kEqEps);
                 } else if (op_x != op_y) {
-                    shader.AddLine("conditional_code.x = {}.x {} {}.x;", src1,
-                                   cmp_ops.find(op_x)->second.first, src2);
-                    shader.AddLine("conditional_code.y = {}.y {} {}.y;", src1,
-                                   cmp_ops.find(op_y)->second.first, src2);
+                    if (!emit_component("x", op_x)) {
+                        shader.AddLine("conditional_code.x = {}.x {} {}.x;", src1,
+                                       cmp_ops.find(op_x)->second.first, src2);
+                    }
+                    if (!emit_component("y", op_y)) {
+                        shader.AddLine("conditional_code.y = {}.y {} {}.y;", src1,
+                                       cmp_ops.find(op_y)->second.first, src2);
+                    }
                 } else {
                     shader.AddLine("conditional_code = {}(vec2({}), vec2({}));",
                                    cmp_ops.find(op_x)->second.second, src1, src2);
