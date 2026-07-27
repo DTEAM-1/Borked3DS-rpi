@@ -474,6 +474,26 @@ bool VertexShaderNeedsSoftwareVSFallback(const ProgramCode& program_code, u32 ma
     if (VertexShaderLowMirrorPlan(program_code, main_offset).ok) {
         return false;
     }
+    // vDIRA v154 (BORKED3DS_V3DV_HYBRID_TO_HW) : echappatoire HIGH_SWITCH.
+    //
+    // Le commentaire d'en-tete de cette fonction ("les hybrides sont irreparables sur le
+    // materiel") date d'AVANT HIGH_SWITCH. Or HIGH_SWITCH reroute justement les lectures
+    // dynamiques de banque haute f[64..95] sur le GPU (via texel buffer), au lieu de les
+    // laisser V3D 7.1 figer en constante. Quand HIGH_SWITCH est actif, un VS hybride dont
+    // la banque haute est ainsi couverte n'a PLUS besoin du fallback software -- lequel
+    // produit des normales plates par facette (passe de highlight de la boule Sonic non
+    // mixee). On prefere alors le chemin materiel decompile, qui produit des normales
+    // lisses ET conserve le texte.
+    //
+    // Double gate volontaire : inerte par defaut (les deux variables absentes => comportement
+    // historique bit-for-bit), reversible sans rebuild, et strictement lie a HIGH_SWITCH
+    // (router un hybride vers le materiel SANS HIGH_SWITCH le renverrait au miscompile V3DV).
+    // A promouvoir en condition propre (verification de version Vulkan / detection HIGH_SWITCH
+    // interne) une fois le gain confirme a l'ecran.
+    if (std::getenv("BORKED3DS_V3DV_HYBRID_TO_HW") != nullptr &&
+        std::getenv("BORKED3DS_V3DV_HIGH_SWITCH") != nullptr) {
+        return false;
+    }
     return true;
 }
 
