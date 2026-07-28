@@ -1551,6 +1551,8 @@ std::atomic<u64> g_a7z12_frame_index{0};
 std::atomic<u32> g_a7z12_draws_entered{0};
 std::atomic<u32> g_a7z12_draws_completed{0};
 std::atomic<u32> g_a7z12_draws_succeeded{0};
+std::atomic<u32> g_a7z12_draws_accel{0};      // draws avec accelerate=true (VS materiel)
+std::atomic<u32> g_a7z12_draws_software{0};   // draws avec accelerate=false (VS software CPU)
 
 [[nodiscard]] bool IsA7Z12FrameCensusEnabled() {
     // static const : le predicat est evalue une seule fois (pas de mutex par draw).
@@ -2295,14 +2297,17 @@ void RasterizerVulkan::TickFrame() {
         const u32 entered = g_a7z12_draws_entered.exchange(0, std::memory_order_relaxed);
         const u32 completed = g_a7z12_draws_completed.exchange(0, std::memory_order_relaxed);
         const u32 succeeded = g_a7z12_draws_succeeded.exchange(0, std::memory_order_relaxed);
+        const u32 accel = g_a7z12_draws_accel.exchange(0, std::memory_order_relaxed);
+        const u32 software = g_a7z12_draws_software.exchange(0, std::memory_order_relaxed);
         const u32 absorbed = entered > completed ? entered - completed : 0;
         const bool starved = entered > 0 && succeeded == 0;
         if (frame <= 400 || starved) {
             LOG_INFO(Render_Vulkan,
                      "A7Z12_FRAME_CENSUS frame={} entered={} completed={} succeeded={} "
-                     "absorbed={} starved={}",
+                     "absorbed={} starved={} accel={} software={} sw_pct={}",
                      frame, entered, completed, succeeded, absorbed,
-                     static_cast<u32>(starved));
+                     static_cast<u32>(starved), accel, software,
+                     entered > 0 ? (software * 100 / entered) : 0);
         }
     }
     res_cache.TickFrame();
@@ -7093,6 +7098,13 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     BORKED3DS_PROFILE("Vulkan", "Drawing");
     if (IsA7Z12FrameCensusEnabled()) {
         g_a7z12_draws_entered.fetch_add(1, std::memory_order_relaxed);
+        // Repartition VS materiel / VS software : le chemin software execute le vertex
+        // shader PICA sur CPU, c'est le suspect n1 pour le plafond de vitesse.
+        if (accelerate) {
+            g_a7z12_draws_accel.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            g_a7z12_draws_software.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     const bool a7z40_draw_wrapper_trace =
         accelerate && IsV114ShaderMultiplexFileTraceEnabled() &&
