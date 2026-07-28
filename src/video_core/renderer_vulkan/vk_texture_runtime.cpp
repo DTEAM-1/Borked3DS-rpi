@@ -99,6 +99,7 @@ vk::Filter MakeFilter(VideoCore::PixelFormat pixel_format) {
 }
 
 std::atomic<u32> g_pi5_ui_handle_trace_budget{64};
+std::atomic<u64> g_color_alloc_index{0}; // BORKED3DS_V3DV_A7Z11_TRACE_COLOR_ALLOC
 std::atomic<u32> g_pi5_ui_upload_trace_budget{256};
 std::atomic<u32> g_pi5_ui_surface_trace_budget{128};
 
@@ -486,6 +487,24 @@ Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, T
                   vk::ImageAspectFlags aspect, bool need_format_list,
                   std::string_view debug_name = {}) {
     const u32 layers = type == TextureType::CubeMap ? 6 : 1;
+
+    // BORKED3DS_V3DV_A7Z11_TRACE_COLOR_ALLOC -- trace luminance-neutre de CHAQUE allocation
+    // de surface COULEUR (index monotone, nom, taille, format, usage), pour identifier la
+    // ressource du flash et trancher : une NOUVELLE surface s'alloue-t-elle au 2e saut ?
+    // Inerte hors variable, getenv lu une seule fois.
+    {
+        static const bool trace_color_alloc =
+            std::getenv("BORKED3DS_V3DV_A7Z11_TRACE_COLOR_ALLOC") != nullptr;
+        if (trace_color_alloc && (aspect & vk::ImageAspectFlagBits::eColor)) {
+            const u64 idx = g_color_alloc_index.fetch_add(1) + 1;
+            LOG_INFO(Render_Vulkan,
+                     "TRACE_COLOR_ALLOC idx={} name='{}' size={}x{} levels={} format={} "
+                     "usage=0x{:X}",
+                     idx, debug_name, width, height, levels, vk::to_string(format),
+                     static_cast<u32>(usage));
+        }
+    }
+
     const bool trace_pi5_ui = NeedsPi5UIUploadExpansion(pixel_format) &&
                               ConsumeTraceBudget(g_pi5_ui_handle_trace_budget);
     if (trace_pi5_ui) {
