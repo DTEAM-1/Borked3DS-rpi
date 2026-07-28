@@ -7,6 +7,11 @@
 #include <utility>
 #include <vector>
 #include <string_view>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <mutex>
+#include <unordered_set>
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Include/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
@@ -222,6 +227,38 @@ bool InitializeCompiler() {
     glslang_initialized = true;
     return true;
 }
+// BORKED3DS_V3DV_A7Z9_DUMP_COMPILESPV -- ecrit dans /tmp le SPIR-V FINAL de CHAQUE
+// module compile. CompileSPV est l'entonnoir UNIQUE (VS l.971, FS SPIR-V direct l.1044,
+// FS issu du GLSL via Compile l.385) : ce dump capture donc le FS meme quand
+// shader.program n'est PAS conserve -- contrairement au dump _s0 du pipeline qui le
+// ratait. Un .spv par hash (dedup), pour desassemblage hors ligne (spirv-dis) et
+// recherche RelaxedPrecision / OpTypeFloat 16 / OpFConvert. Inerte hors variable,
+// getenv lu une seule fois.
+void DumpCompileSpvIfEnabled(std::span<const u32> code) {
+    static const bool enabled =
+        std::getenv("BORKED3DS_V3DV_A7Z9_DUMP_COMPILESPV") != nullptr;
+    if (!enabled || code.empty()) {
+        return;
+    }
+    const u64 hash = HashSpirvWords(code);
+    {
+        static std::mutex dumped_mutex;
+        static std::unordered_set<u64> dumped_hashes;
+        std::scoped_lock lock{dumped_mutex};
+        if (!dumped_hashes.insert(hash).second) {
+            return; // deja dumpe ce module
+        }
+    }
+    char path[64];
+    std::snprintf(path, sizeof(path), "/tmp/borked3ds_compilespv_%016llx.spv",
+                  static_cast<unsigned long long>(hash));
+    std::ofstream out{path, std::ios::binary | std::ios::trunc};
+    if (out) {
+        out.write(reinterpret_cast<const char*>(code.data()),
+                  static_cast<std::streamsize>(code.size_bytes()));
+    }
+}
+
 } // Anonymous namespace
 
 /**
@@ -420,6 +457,7 @@ vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
     }
 
     LogSpirvTrace(code, "CompileSPV", vk::ShaderStageFlagBits::eFragment);
+    DumpCompileSpvIfEnabled(code);
 
     if (SpirvContainsExtensionString(code, "SPV_EXT_shader_stencil_export")) {
         LOG_ERROR(Render_Vulkan,
