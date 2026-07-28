@@ -1538,6 +1538,26 @@ std::atomic<u64> g_vk_strict_safe_untextured_real_draw_counter{0};
 std::atomic<u64> g_vk_strict_present_debug_clear_counter{0};
 std::atomic<u64> g_vk_strict_owned_present_clear_counter{0};
 
+// BORKED3DS_V3DV_A7Z12_FRAME_CENSUS -- recensement par frame.
+// Compte les draws qui ENTRENT dans Draw() et ceux qui en RESSORTENT par la sortie
+// complete (vertex_batch.clear(); return succeeded). La difference = draws absorbes en
+// no-op par l'un des chemins strict_compat precoces (tile clear throttle, quarantaine,
+// bypass/skip startup, null framebuffer...).
+// But : trancher l'hypothese "la frame perd TOUT son contenu et il ne reste que le fond"
+// pour le flash one-shot au demarrage 3D (blanc sous Sonic, jaune sous Metroid = teinte
+// de fond de chaque jeu). Une frame avec entered>0 et succeeded==0 est une frame vide.
+// Volume : une ligne par frame sur les 400 premieres, puis uniquement les frames vides.
+std::atomic<u64> g_a7z12_frame_index{0};
+std::atomic<u32> g_a7z12_draws_entered{0};
+std::atomic<u32> g_a7z12_draws_completed{0};
+std::atomic<u32> g_a7z12_draws_succeeded{0};
+
+[[nodiscard]] bool IsA7Z12FrameCensusEnabled() {
+    // static const : le predicat est evalue une seule fois (pas de mutex par draw).
+    static const bool enabled = IsEnvEnabled("BORKED3DS_V3DV_A7Z12_FRAME_CENSUS");
+    return enabled;
+}
+
 struct StrictPresentDisplayCache {
     bool valid = false;
     PAddr framebuffer_addr = 0;
@@ -2270,6 +2290,21 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 RasterizerVulkan::~RasterizerVulkan() = default;
 
 void RasterizerVulkan::TickFrame() {
+    if (IsA7Z12FrameCensusEnabled()) {
+        const u64 frame = g_a7z12_frame_index.fetch_add(1, std::memory_order_relaxed) + 1;
+        const u32 entered = g_a7z12_draws_entered.exchange(0, std::memory_order_relaxed);
+        const u32 completed = g_a7z12_draws_completed.exchange(0, std::memory_order_relaxed);
+        const u32 succeeded = g_a7z12_draws_succeeded.exchange(0, std::memory_order_relaxed);
+        const u32 absorbed = entered > completed ? entered - completed : 0;
+        const bool starved = entered > 0 && succeeded == 0;
+        if (frame <= 400 || starved) {
+            LOG_INFO(Render_Vulkan,
+                     "A7Z12_FRAME_CENSUS frame={} entered={} completed={} succeeded={} "
+                     "absorbed={} starved={}",
+                     frame, entered, completed, succeeded, absorbed,
+                     static_cast<u32>(starved));
+        }
+    }
     res_cache.TickFrame();
 }
 
@@ -7056,6 +7091,9 @@ void RasterizerVulkan::DrawTriangles() {
 
 bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     BORKED3DS_PROFILE("Vulkan", "Drawing");
+    if (IsA7Z12FrameCensusEnabled()) {
+        g_a7z12_draws_entered.fetch_add(1, std::memory_order_relaxed);
+    }
     const bool a7z40_draw_wrapper_trace =
         accelerate && IsV114ShaderMultiplexFileTraceEnabled() &&
         IsV115DA7Z40DrawWrapperTraceEnabled();
@@ -8312,6 +8350,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (IsDrawTraceEnabled()) {
         LOG_INFO(Render_Vulkan, "TRACE_DRAW end succeeded={} remaining_batch={}", succeeded,
                  vertex_batch.size());
+    }
+    if (IsA7Z12FrameCensusEnabled()) {
+        g_a7z12_draws_completed.fetch_add(1, std::memory_order_relaxed);
+        if (succeeded) {
+            g_a7z12_draws_succeeded.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     vertex_batch.clear();
     return succeeded;
