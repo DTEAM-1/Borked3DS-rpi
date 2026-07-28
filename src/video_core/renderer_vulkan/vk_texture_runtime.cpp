@@ -427,6 +427,59 @@ boost::container::small_vector<vk::ImageMemoryBarrier, 3> MakeInitBarriers(
     return barriers;
 }
 
+// BORKED3DS_V3DV_A7Z10_CLEAR_NEW_SURFACES -- V3DV laisse le contenu d'une image
+// fraichement allouee indefini (initialLayout eUndefined) ; MakeInitBarriers ne fait
+// qu'une transition de layout, PAS d'initialisation memoire. Une cible COULEUR
+// echantillonnee avant son premier rendu renvoie donc de la memoire non initialisee
+// -> flash blanc plein ecran au premier usage (ex : premier saut de la boule Sonic).
+// GL zero-initialise, d'ou GL propre / V3DV flashe. On clear a noir une seule fois,
+// juste apres la transition init, quand la surface est en eGeneral. Inerte hors variable.
+void MaybeClearNewColorSurfaces(vk::CommandBuffer cmdbuf, vk::ImageAspectFlags aspect,
+                                std::span<const vk::Image> images) {
+    static const bool enabled =
+        std::getenv("BORKED3DS_V3DV_A7Z10_CLEAR_NEW_SURFACES") != nullptr;
+    if (!enabled || !(aspect & vk::ImageAspectFlagBits::eColor)) {
+        return;
+    }
+    const vk::ImageSubresourceRange range = {
+        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .baseMipLevel = 0,
+        .levelCount = VK_REMAINING_MIP_LEVELS,
+        .baseArrayLayer = 0,
+        .layerCount = VK_REMAINING_ARRAY_LAYERS,
+    };
+    const vk::ClearColorValue black = MakeClearColorValue(Common::Vec4f{0.0f, 0.0f, 0.0f, 0.0f});
+    for (const vk::Image image : images) {
+        const vk::ImageMemoryBarrier to_dst = {
+            .srcAccessMask = vk::AccessFlagBits::eNone,
+            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eTransferDstOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange = range,
+        };
+        const vk::ImageMemoryBarrier to_general = {
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange = range,
+        };
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+                               vk::PipelineStageFlagBits::eTransfer,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, to_dst);
+        cmdbuf.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, black, range);
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eAllCommands,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, to_general);
+    }
+}
+
 Handle MakeHandle(const Instance* instance, u32 width, u32 height, u32 levels, TextureType type,
                   vk::Format format, VideoCore::PixelFormat pixel_format,
                   vk::ImageUsageFlags usage, vk::ImageCreateFlags flags,
@@ -1076,6 +1129,7 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceParams& param
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                vk::PipelineStageFlagBits::eTopOfPipe,
                                vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
+        MaybeClearNewColorSurfaces(cmdbuf, aspect, raw_images);
     });
 }
 
@@ -1120,6 +1174,7 @@ Surface::Surface(TextureRuntime& runtime_, const VideoCore::SurfaceBase& surface
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                vk::PipelineStageFlagBits::eTopOfPipe,
                                vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
+        MaybeClearNewColorSurfaces(cmdbuf, aspect, raw_images);
     });
 
     custom_format = mat->format;
@@ -1515,6 +1570,7 @@ void Surface::ScaleUp(u32 new_scale) {
             cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
                                    vk::PipelineStageFlagBits::eTopOfPipe,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, barriers);
+            MaybeClearNewColorSurfaces(cmdbuf, aspect, raw_images);
         });
 
     for (u32 level = 0; level < levels; level++) {
