@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -1553,6 +1554,29 @@ std::atomic<u32> g_a7z12_draws_completed{0};
 std::atomic<u32> g_a7z12_draws_succeeded{0};
 std::atomic<u32> g_a7z12_draws_accel{0};      // draws avec accelerate=true (VS materiel)
 std::atomic<u32> g_a7z12_draws_software{0};   // draws avec accelerate=false (VS software CPU)
+// Le NOMBRE de draws ne mesure pas le cout : un seul draw software de 3000 sommets coute
+// plus cher que 200 draws de 6 sommets (glyphes). On compte donc aussi les SOMMETS de
+// chaque cote, seule unite proportionnelle au travail du VS PICA execute sur CPU.
+std::atomic<u64> g_a7z12_verts_accel{0};
+std::atomic<u64> g_a7z12_verts_software{0};
+
+// Histogramme CUMULATIF de la taille des draws software, en sommets. Une moyenne cache
+// une distribution bimodale : 200 quads de glyphes a 6 sommets plus 3 maillages a 3000
+// donnent la meme moyenne que 200 draws homogenes a 50. Or c'est precisement la forme de
+// la distribution qui fixe la valeur utile de BORKED3DS_V3DV_DIRA_MAX_VERTICES : le seuil
+// doit tomber dans un creux, pas au milieu d'un mode. Cumulatif (jamais remis a zero) :
+// la derniere ligne du log suffit a lire la distribution de toute la session.
+// Bornes : <=8, <=32, <=128, <=512, <=2048, >2048.
+constexpr std::array<u32, 5> A7Z12_VERT_BUCKETS{8, 32, 128, 512, 2048};
+std::array<std::atomic<u64>, 6> g_a7z12_sw_vert_hist{};
+
+// Periode de recensement AU-DELA de la frame 400. Le plafond de 400 frames ne couvrait
+// que les ~25 premieres secondes, c'est-a-dire la phase de compilation de pipelines --
+// pas le regime etabli. 0 = pas de suivi au-dela de 400.
+[[nodiscard]] u32 GetA7Z12CensusPeriod() {
+    static const u32 period = GetEnvU32("BORKED3DS_V3DV_A7Z12_CENSUS_PERIOD", 60);
+    return period;
+}
 
 [[nodiscard]] bool IsA7Z12FrameCensusEnabled() {
     // static const : le predicat est evalue une seule fois (pas de mutex par draw).
@@ -2299,15 +2323,43 @@ void RasterizerVulkan::TickFrame() {
         const u32 succeeded = g_a7z12_draws_succeeded.exchange(0, std::memory_order_relaxed);
         const u32 accel = g_a7z12_draws_accel.exchange(0, std::memory_order_relaxed);
         const u32 software = g_a7z12_draws_software.exchange(0, std::memory_order_relaxed);
+        const u64 vaccel = g_a7z12_verts_accel.exchange(0, std::memory_order_relaxed);
+        const u64 vsoft = g_a7z12_verts_software.exchange(0, std::memory_order_relaxed);
+        const u64 vtotal = vaccel + vsoft;
         const u32 absorbed = entered > completed ? entered - completed : 0;
         const bool starved = entered > 0 && succeeded == 0;
-        if (frame <= 400 || starved) {
+        // Intervalle reel entre deux presentations. Evite d'avoir a le reconstituer a
+        // partir des horodatages du log, et donne la vitesse directement : la 3DS
+        // presente a 59,83 Hz, donc speed_pct = 1672 / frame_ms environ.
+        static std::chrono::steady_clock::time_point last_tick{};
+        const auto now = std::chrono::steady_clock::now();
+        u64 frame_us = 0;
+        if (last_tick.time_since_epoch().count() != 0) {
+            frame_us = static_cast<u64>(
+                std::chrono::duration_cast<std::chrono::microseconds>(now - last_tick).count());
+        }
+        last_tick = now;
+
+        const u32 period = GetA7Z12CensusPeriod();
+        const bool periodic = period != 0 && (frame % period) == 0;
+        if (frame <= 400 || starved || periodic) {
             LOG_INFO(Render_Vulkan,
-                     "A7Z12_FRAME_CENSUS frame={} entered={} completed={} succeeded={} "
-                     "absorbed={} starved={} accel={} software={} sw_pct={}",
-                     frame, entered, completed, succeeded, absorbed,
+                     "A7Z12_FRAME_CENSUS frame={} frame_us={} entered={} completed={} "
+                     "succeeded={} absorbed={} starved={} accel={} software={} sw_pct={} "
+                     "verts_accel={} verts_sw={} sw_vert_pct={} sw_verts_per_draw={} "
+                     "swhist_le8={} swhist_le32={} swhist_le128={} swhist_le512={} "
+                     "swhist_le2048={} swhist_gt2048={}",
+                     frame, frame_us, entered, completed, succeeded, absorbed,
                      static_cast<u32>(starved), accel, software,
-                     entered > 0 ? (software * 100 / entered) : 0);
+                     entered > 0 ? (software * 100 / entered) : 0,
+                     vaccel, vsoft, vtotal > 0 ? (vsoft * 100 / vtotal) : 0,
+                     software > 0 ? (vsoft / software) : 0,
+                     g_a7z12_sw_vert_hist[0].load(std::memory_order_relaxed),
+                     g_a7z12_sw_vert_hist[1].load(std::memory_order_relaxed),
+                     g_a7z12_sw_vert_hist[2].load(std::memory_order_relaxed),
+                     g_a7z12_sw_vert_hist[3].load(std::memory_order_relaxed),
+                     g_a7z12_sw_vert_hist[4].load(std::memory_order_relaxed),
+                     g_a7z12_sw_vert_hist[5].load(std::memory_order_relaxed));
         }
     }
     res_cache.TickFrame();
@@ -7100,10 +7152,21 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         g_a7z12_draws_entered.fetch_add(1, std::memory_order_relaxed);
         // Repartition VS materiel / VS software : le chemin software execute le vertex
         // shader PICA sur CPU, c'est le suspect n1 pour le plafond de vitesse.
+        const u64 nverts = static_cast<u64>(regs.pipeline.num_vertices);
         if (accelerate) {
             g_a7z12_draws_accel.fetch_add(1, std::memory_order_relaxed);
+            g_a7z12_verts_accel.fetch_add(nverts, std::memory_order_relaxed);
         } else {
             g_a7z12_draws_software.fetch_add(1, std::memory_order_relaxed);
+            g_a7z12_verts_software.fetch_add(nverts, std::memory_order_relaxed);
+            std::size_t bucket = A7Z12_VERT_BUCKETS.size();
+            for (std::size_t i = 0; i < A7Z12_VERT_BUCKETS.size(); ++i) {
+                if (nverts <= A7Z12_VERT_BUCKETS[i]) {
+                    bucket = i;
+                    break;
+                }
+            }
+            g_a7z12_sw_vert_hist[bucket].fetch_add(1, std::memory_order_relaxed);
         }
     }
     const bool a7z40_draw_wrapper_trace =
