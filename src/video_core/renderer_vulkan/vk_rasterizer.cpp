@@ -109,18 +109,21 @@ struct DrawParams {
 }
 
 [[nodiscard]] bool IsDrawTraceEnabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
+    return cached;
 }
 
 [[nodiscard]] bool IsForceQuietDisplayEnabled() {
     // v115-D-MUX rollback: present tracing is now quiet, but AccelerateDisplay still floods TRACE_DRAW.
     // This suppresses display-path TRACE_DRAW while keeping PICA/backend TRACE_DRAW and
     // TRACE_ACCEL_STAGE visible for the current GenerateVertexShader gate.
-    return IsEnvEnabled("BORKED3DS_V3DV_FORCE_QUIET_DISPLAY");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_FORCE_QUIET_DISPLAY");
+    return cached;
 }
 
 [[nodiscard]] bool IsStrictCompatEnabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+    return cached;
 }
 
 // v147 (Metroid, decalage horizontal de l'ecran du bas) : sonde d'OBSERVATION pure, numerique,
@@ -130,7 +133,8 @@ struct DrawParams {
 // separent definitivement "le quad est mal place" de "le contenu est mal echantillonne dans un
 // quad correct". Aucune ecriture, aucun forcage.
 [[nodiscard]] bool IsScreenRectTraceEnabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_TRACE_SCREEN_RECT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TRACE_SCREEN_RECT");
+    return cached;
 }
 
 [[nodiscard]] bool IsForceAccelStageTraceEnabled() {
@@ -138,14 +142,16 @@ struct DrawParams {
     // Keep forced stage tracing available. v100 still stopped after the PICA pre_call before
     // the raw-enter marker, so v114 adds an even earlier no-argument entry-only probe.
     // This does not execute any extra Vulkan work by itself.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_FORCE_ACCEL_STAGE_TRACE");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_FORCE_ACCEL_STAGE_TRACE");
+    return cached;
 }
 
 [[nodiscard]] bool IsAccelEntryOnlyProbeEnabled() {
     // v114 diagnostic:
     // Keep entry-only mode available for fallback diagnostics, but normal v114 testing must
     // leave it disabled so the silent call-boundary probe can isolate the crash.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_ENTRY_ONLY_PROBE");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_ENTRY_ONLY_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool IsAccelSilentEntryReturnEnabled() {
@@ -153,14 +159,16 @@ struct DrawParams {
     // v109 proved the silent pica_core -> RasterizerVulkan::AccelerateDrawBatch call boundary
     // survives until hotkey exit. Keep this as a rollback switch, but normal v114 tests must
     // disable it so the first backend marker can be re-enabled.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_SILENT_ENTRY_RETURN");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_SILENT_ENTRY_RETURN");
+    return cached;
 }
 
 [[nodiscard]] bool IsAccelRawEnterReturnEnabled() {
     // v114 diagnostic fallback:
     // v110 proved raw_enter_noargs is safe. Keep this as a rollback switch, but normal v114
     // testing disables it so raw_enter_simple can be reached next.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_RAW_ENTER_RETURN");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_RAW_ENTER_RETURN");
+    return cached;
 }
 
 [[nodiscard]] bool IsAccelRawEnterSimpleReturnEnabled() {
@@ -168,7 +176,8 @@ struct DrawParams {
     // Emit raw_enter_noargs and raw_enter_simple, then return true before stage=1.
     // This verifies the minimal backend metadata path (accel_id, indexed, env flags) without
     // entering stage logging, shader setup, SPIR-V, pipeline, descriptors, Draw(), or vkCmdDraw.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_RAW_ENTER_SIMPLE_RETURN");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_ACCEL_RAW_ENTER_SIMPLE_RETURN");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z73SuppressRawEnterSimpleLogEnabled() {
@@ -177,8 +186,9 @@ struct DrawParams {
     // while formatting the raw_enter_simple TRACE_ACCEL_STAGE line, after raw_enter_noargs and
     // after the A7Z53 outer_force marker. Keep the backend path identical, but suppress only this
     // fragile formatted console line so execution can continue toward shader setup / step95.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z73_SUPPRESS_RAW_ENTER_SIMPLE_LOG");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z74SilentOuterEntryToStageEnabled() {
@@ -187,8 +197,9 @@ struct DrawParams {
     // raw_enter_noargs. Keep the backend path identical, but make the outer AccelerateDrawBatch
     // entry fully silent: no raw_enter_noargs console log, no raw_enter_simple console log, and no
     // auxiliary sidecar breadcrumbs before the real stage/shader/pipeline path.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z74_SILENT_OUTER_ENTRY_TO_STAGE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z75SingleInternalBoundaryMarkerEnabled() {
@@ -198,8 +209,9 @@ struct DrawParams {
     // AccelerateDrawBatchInternal() call. Emit exactly one fixed, no-argument marker immediately
     // before that call. No PICA tracing, no shader state formatting, no Vulkan command recording,
     // and no changed rendering behavior.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z75_SINGLE_INTERNAL_BOUNDARY_MARKER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z89BackendUltraEarlyProbeEnabled() {
@@ -212,8 +224,9 @@ struct DrawParams {
     //   gate, between the PICA probe and the AccelerateDrawBatch() call.
     // - backend A7Z89 fires → AccelerateDrawBatch is reached; crash is inside the backend.
     // - Neither fires → crash before DrawArrays (ARM, HLE, or GPU thread issue).
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z89_BACKEND_ULTRA_EARLY_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV114ShaderMultiplexEntrySafeEnabled() {
@@ -223,8 +236,9 @@ struct DrawParams {
     // marker. Keep the shader probe selected, but suppress early backend entry logs and avoid
     // probe-helper evaluation before SetupVertexShader. This isolates whether C is really
     // blocked by GLSL::GenerateVertexShader() or by the entry logging path.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_SHADER_MULTIPLEX_ENTRY_SAFE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV114ShaderMultiplexSilentStagesEnabled() {
@@ -234,8 +248,9 @@ struct DrawParams {
     // generate-guarded shader probe selected, but silence the stage 1..6 TRACE_ACCEL_STAGE
     // logs. Those stages were already proven by v113/v114-A/v114-B; this retest isolates
     // SetupVertexShader + GLSL::GenerateVertexShader() without another noisy entry/stage log.
-    return IsV114ShaderMultiplexEntrySafeEnabled() &&
+    static const bool cached = IsV114ShaderMultiplexEntrySafeEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_SHADER_MULTIPLEX_SILENT_STAGES");
+    return cached;
 }
 
 [[nodiscard]] bool IsV114ShaderMultiplexFileTraceEnabled() {
@@ -243,8 +258,9 @@ struct DrawParams {
     // v114-C/C2 can cut the normal log when the backend shader probe should start.
     // Keep the generate-guarded shader path, but disable TRACE_ACCEL_STAGE logging in the
     // backend and write tiny breadcrumbs to a sidecar file instead.
-    return IsV114ShaderMultiplexSilentStagesEnabled() &&
+    static const bool cached = IsV114ShaderMultiplexSilentStagesEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_SHADER_MULTIPLEX_FILE_TRACE");
+    return cached;
 }
 
 void V114ShaderMultiplexFileTraceRaw(const char* message) {
@@ -332,8 +348,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
 }
 
 [[nodiscard]] bool IsAccelStageTraceEnabled() {
-    return IsDrawTraceEnabled() || IsEnvEnabled("BORKED3DS_V3DV_TRACE_ACCEL_STAGE") ||
+    static const bool cached = IsDrawTraceEnabled() || IsEnvEnabled("BORKED3DS_V3DV_TRACE_ACCEL_STAGE") ||
            IsForceAccelStageTraceEnabled();
+    return cached;
 }
 
 [[nodiscard]] bool IsTrivialVertexShaderProbeEnabled() {
@@ -342,7 +359,8 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // stage=7/post_call. v96 used a trivial vertex shader to prove the generic VS bind
     // path is stable. Keep this switch as an explicit fallback, but v114 should normally
     // leave it disabled.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_USE_TRIVIAL_VERTEX_SHADER_PROBE");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_USE_TRIVIAL_VERTEX_SHADER_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z36PipelineBindNoWaitEnabled() {
@@ -351,8 +369,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // immediately after the BindPipeline() corridor. Keep the exact same micro-pass but let
     // the pipeline cache bind without waiting for a synchronous build. This isolates
     // wait_built=true from the pipeline state itself without reaching vertex-buffer bind or draw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z36_PIPELINE_BIND_NOWAIT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z37PipelineReadyTraceEnabled() {
@@ -361,8 +380,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // step 94/substep 7. This optional sidecar trace records whether the pipeline cache
     // actually reports pipeline_ready on the same no-wait path before we advance to
     // scheduler.Record / vertex-buffer bind / vkCmdDraw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z37_PIPELINE_READY_TRACE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z39Step95SkipStage13Enabled() {
@@ -371,8 +391,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // the stage-13 consume result. This debug-only switch bypasses only that stage-limit
     // helper inside the step95 probe so we can read BindPipeline(..., wait_built=false)
     // pipeline_ready without touching scheduler.Record, vertex-buffer bind, or vkCmdDraw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z39_STEP95_SKIP_STAGE13");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z40DrawWrapperTraceEnabled() {
@@ -382,8 +403,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // Draw(accelerate=true) wrapper between the outer accel handoff and the internal
     // vkCmdDraw bisect path. It does not bind vertex buffers, does not record a draw, and
     // does not change GLES or texture/depth/blend behaviour.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z40_DRAW_WRAPPER_TRACE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z42InternalEntryTraceEnabled() {
@@ -392,8 +414,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // "before_accelerate_draw_batch_internal". This adds an absolute first breadcrumb
     // at the top of AccelerateDrawBatchInternal(), before the A7Z34/step95 branch work,
     // so we can prove whether the call enters the internal function at all.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z42_INTERNAL_ENTRY_TRACE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z43InternalRawOnlyTraceEnabled() {
@@ -403,8 +426,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // micro-pass but avoid V114ShaderMultiplexFileTraceNumber() at the fragile entry point.
     // This raw-only probe tells us whether the next failure is the numeric sidecar helper itself,
     // the environment reads, or the later step95 branch.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z43_INTERNAL_RAW_ONLY_TRACE");
+    return cached;
 }
 
 
@@ -416,8 +440,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // breadcrumb spam. It reads the same flags silently and resumes at the step95 branch
     // so we can reach PipelineCache::BindPipeline()/A7Z44 again without changing draw
     // count, textures, GLES, depth, blend, stencil, or issuing vkCmdDraw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z45_INTERNAL_MINIMAL_ENTRY_TRACE");
+    return cached;
 }
 
 
@@ -428,8 +453,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // stops before the first step95 breadcrumb. This mode keeps the already validated
     // step95/substep=0 path but makes the early step95 corridor completely silent until
     // PipelineCache::BindPipeline() so A7Z41/A7Z44 can prove whether the retry loop starts.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z46_STEP95_ULTRA_SILENT_TO_BIND");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z47DirectStep95BindOnlyEnabled() {
@@ -439,8 +465,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // jumps directly from the validated minimal entry into the validated step95/substep=0
     // BindPipeline corridor, bypassing the old A7Z23/A7Z26 flag cache and all early step95
     // breadcrumbs. It still returns before scheduler.Record, vertex buffer binding, and vkCmdDraw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z47_DIRECT_STEP95_BIND_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z49DirectBindSkipSetupIndexArrayEnabled() {
@@ -451,8 +478,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // validated indexed setup only for the direct bind-only probe so the test can reach
     // PipelineCache::BindPipeline()/GraphicsPipeline::TryBuild() and continue diagnosing
     // pipeline_ready without issuing scheduler.Record, vertex buffer binding, or vkCmdDraw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z49_DIRECT_BIND_SKIP_SETUP_INDEX_ARRAY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z50DirectBindNoBreadcrumbEnabled() {
@@ -462,8 +490,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // bind-only corridor: after the already validated A7Z45 entry it skips SetupIndexArray(),
     // skips all A7Z47/A7Z49 breadcrumbs, calls PipelineCache::BindPipeline() directly, and
     // returns false before scheduler.Record, vertex buffer binding, or vkCmdDraw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z50_DIRECT_BIND_NO_BREADCRUMB");
+    return cached;
 }
 
 [[nodiscard]] u32 GetEnvU32(const char* name, u32 fallback);
@@ -474,8 +503,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // BORKED3DS_V3DV_A7Z34_POST_STAGE12_SUBSTEP value can still remain at 0 at runtime.
     // This boolean switch forces only step 95 to substep 5 so the next probe can validate
     // scheduler.Record(empty lambda) without relying on the fragile numeric substep env.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z52_FORCE_STEP95_SUBSTEP5");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z53ForceStep95Substep5LateEnabled() {
@@ -484,8 +514,9 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // stopped at early_direct_before_accelerate_draw_batch. Keep A7Z52 available as a
     // rollback flag, but add this later force path so step 95 can be treated as substep 5
     // inside the step 95 corridor, with a main-log breadcrumb before the sidecar can fail.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z53_FORCE_STEP95_SUBSTEP5_LATE");
+    return cached;
 }
 
 [[nodiscard]] u32 GetV115DA7Z34PostStage12Substep(u32 step) {
@@ -500,48 +531,54 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // v114 diagnostic fallback:
     // Non-guarded GLSL generation is kept as an explicit rollback/compare switch. Normal v114
     // tests should prefer the guarded probe first.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderConfigProbeEnabled() {
     // v114-A:
     // Validate SetupVertexShader config/load_flags + trivial VS bind on the rebuilt direct
     // handoff route, with ACCEL_STAGE_STOP_AFTER=7. No GLSL/SPIR-V/module work.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_CONFIG_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderBeforeGenerateOnlyProbeEnabled() {
     // v114-B:
     // Enter SetupVertexShader, build PicaVSConfig/load_flags, log before_generate_call, then
     // return before calling GLSL::GenerateVertexShader().
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_BEFORE_GENERATE_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderGenerateGuardedProbeEnabled() {
     // v114-C:
     // Run GLSL::GenerateVertexShader() in a guarded probe, then bind the trivial VS and return
     // at stage=7. No SPIR-V, no VkShaderModule, no pipeline/descriptors/draw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderSpirvOnlyProbeEnabled() {
     // v114-D:
     // Generate GLSL, compile it to SPIR-V with CompileGLSLtoSPIRV(), then bind the trivial VS
     // and return at stage=7. No VkShaderModule, no pipeline/descriptors/draw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_SPIRV_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsProgrammableVertexShaderModuleOnlyProbeEnabled() {
     // v114-E:
     // Generate GLSL, compile GLSL->SPIR-V, create and immediately destroy a VkShaderModule,
     // then bind the trivial VS and return at stage=7. No pipeline/descriptors/draw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_SHADER_MODULE_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsPipelineBindProbeOnlyEnabled() {
@@ -549,7 +586,8 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // Reach BindPipeline(), then return before vertex/index buffer binding and before
     // vkCmdDraw/vkCmdDrawIndexed. Keep it available, but normal v115-D-MUX rollback testing should use
     // BORKED3DS_V3DV_PROBE_DESCRIPTOR_BIND_ONLY=1 instead.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_PROBE_PIPELINE_BIND_ONLY");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_PROBE_PIPELINE_BIND_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsDescriptorBindProbeOnlyEnabled() {
@@ -558,7 +596,8 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // after_vertex_buffer_bind_record, but did not reach the explicit stage9 return marker.
     // Keep it available, but normal v115-D-MUX testing should use
     // BORKED3DS_V3DV_PROBE_FIRST_VKCMD_DRAW_ONLY=1 instead.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_PROBE_DESCRIPTOR_BIND_ONLY");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_PROBE_DESCRIPTOR_BIND_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsFirstVkCmdDrawProbeOnlyEnabled() {
@@ -566,7 +605,8 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // First guarded micro draw. Reuse the validated path through SetupIndexArray(), BindPipeline()
     // and bindVertexBuffers(), then record exactly one tiny vkCmdDraw/vkCmdDrawIndexed before
     // returning true. This is still limited by SAFE_PICA_HW_DRAW_BUDGET/MAX_VERTICES in pica_core.
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_PROBE_FIRST_VKCMD_DRAW_ONLY");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_PROBE_FIRST_VKCMD_DRAW_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsFirstVkCmdDrawZeroCountProbeOnlyEnabled() {
@@ -575,59 +615,67 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // vertex/index count forced to zero. This isolates whether the crash is caused by
     // executing/fetching the first real indexed vertices, while keeping shader, pipeline,
     // descriptors, index setup, and vertex-buffer binding unchanged.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_FIRST_VKCMD_DRAW_ZEROCOUNT_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsFirstVkCmdDrawZeroCountMinimalProbeOnlyEnabled() {
     // v115-D-MUX rollback flag:
     // Keeps the already validated v115-C15 path available under its old env name.
     // Equivalent to v115-D-A: real bindVertexBuffers() + vkCmdDraw(0, 1, 0, 0).
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_FIRST_VKCMD_DRAW_ZEROCOUNT_REAL_VERTEX_BIND_ULTRA_QUIET_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DAMuxRealVertexBindDrawZeroEnabled() {
     // v115-D-A: real vertex bind + vkCmdDraw(0).
     // Validates real vertex-buffer offsets without consuming vertices.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DBMuxRealVertexBindDraw3Enabled() {
     // v115-D-B: real vertex bind + vkCmdDraw(3).
     // First true non-indexed vertex fetch using the same guarded micro-batch path.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_B_REAL_VERTEX_BIND_DRAWCMD_3");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DCMuxRealVertexBindDraw6Enabled() {
     // v115-D-C: real vertex bind + vkCmdDraw(6).
     // Full non-indexed execution of the first 6-vertex micro-batch.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_C_REAL_VERTEX_BIND_DRAWCMD_6");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DDMuxRealVertexBindDrawIndexedZeroEnabled() {
     // v115-D-D: indexed setup + vkCmdDrawIndexed(0).
     // Validates the indexed command path without consuming indices.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_D_INDEXED_SETUP_DRAWINDEXED_ZEROCOUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DEMuxRealVertexBindDrawIndexed3Enabled() {
     // v115-D-E: indexed setup + vkCmdDrawIndexed(3).
     // First true indexed index/vertex fetch, still limited to one safe micro-batch.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_E_INDEXED_SETUP_DRAWINDEXED_3");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DMuxAnyDrawCommandProbeEnabled() {
-    return IsV115DAMuxRealVertexBindDrawZeroEnabled() ||
+    static const bool cached = IsV115DAMuxRealVertexBindDrawZeroEnabled() ||
            IsV115DBMuxRealVertexBindDraw3Enabled() ||
            IsV115DCMuxRealVertexBindDraw6Enabled() ||
            IsV115DDMuxRealVertexBindDrawIndexedZeroEnabled() ||
            IsV115DEMuxRealVertexBindDrawIndexed3Enabled();
+    return cached;
 }
 
 [[nodiscard]] AttribLoadFlags MakeAccelAttribLoadFlag(Pica::PipelineRegs::VertexAttributeFormat format) {
@@ -651,17 +699,20 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // vkCmdDraw, or vkCmdDrawIndexed.
     // inside GLSL::GenerateVertexShader(). Still no SPIR-V, shader module, geometry shader
     // setup, pipeline bind, descriptors, Draw(), or vkCmdDraw.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            !IsEnvEnabled("BORKED3DS_V3DV_EXECUTE_ACCEL_INTERNAL_CMDS") &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_ACCEL_INTERNAL_DRY_RUN");
+    return cached;
 }
 
 [[nodiscard]] bool IsSoftwareSkipAllowed() {
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_SKIP");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_SKIP");
+    return cached;
 }
 
 [[nodiscard]] bool IsSoftwareTexturesAllowed() {
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES");
+    return cached;
 }
 
 [[nodiscard]] bool IsSoftwareClearProbeEnabled() {
@@ -671,23 +722,27 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // Use BORKED3DS_V3DV_ENABLE_SOFTWARE_CLEAR_PROBE=1 only when intentionally testing
     // the fake tile-clear probe, and keep BORKED3DS_V3DV_DISABLE_SOFTWARE_CLEAR_PROBE=1
     // in normal gameplay tests.
-    return IsEnvEnabled("BORKED3DS_V3DV_ENABLE_SOFTWARE_CLEAR_PROBE") &&
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ENABLE_SOFTWARE_CLEAR_PROBE") &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SOFTWARE_CLEAR_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool IsFullSoftwareClearProbeEnabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_FULL_SOFTWARE_CLEAR_PROBE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_FULL_SOFTWARE_CLEAR_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool IsStrictSoftwareNoopGuardDisabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SOFTWARE_NOOP_GUARD");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SOFTWARE_NOOP_GUARD");
+    return cached;
 }
 
 [[nodiscard]] bool IsStrictSoftwareRealDrawAllowed() {
     // v85: broad emergency opt-in. It allows every strict software vkCmdDraw() and should
     // stay off for normal Pi5/V3DV tests. The safer v85 path below opens only untextured,
     // no-depth software draws first.
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_REAL_SOFTWARE_DRAWS");
+    return cached;
 }
 
 [[nodiscard]] bool IsStrictSafeUntexturedSoftwareDrawAllowed() {
@@ -697,9 +752,10 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     //
     // This keeps the normal v86 test focused on controlled PICA/HW acceleration while still
     // preserving a manual escape hatch for comparing against v84.
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_UNTEXTURED_SOFTWARE_DRAWS") &&
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_UNTEXTURED_SOFTWARE_DRAWS") &&
            IsEnvEnabled("BORKED3DS_V3DV_ALLOW_V114_REAL_SOFTWARE_DRAWS") &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_UNTEXTURED_SOFTWARE_DRAWS");
+    return cached;
 }
 
 [[nodiscard]] u32 GetEnvU32(const char* name, u32 fallback) {
@@ -727,10 +783,11 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
 }
 
 [[nodiscard]] bool IsV115DA7XTraceExpected() {
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY") &&
            GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) == 7;
+    return cached;
 }
 
 void V115DA7XShaderTraceRaw(const char* message) {
@@ -750,7 +807,8 @@ void V115DA7XShaderTraceNumber(const char* label, u64 value) {
 [[nodiscard]] bool IsV115DA7YTraceExpected() {
     // v115-D-A7Y: same activation boundary as A7X, but with extra breadcrumbs
     // strictly around PicaVSConfig construction and GLSL::GenerateVertexShader().
-    return IsV115DA7XTraceExpected();
+    static const bool cached = IsV115DA7XTraceExpected();
+    return cached;
 }
 
 void V115DA7YShaderTraceRaw(const char* message) {
@@ -772,10 +830,11 @@ void V115DA7YShaderTraceNumber(const char* label, u64 value) {
     // v115-D-A7Z: direct sidecar trace for the exact A7 stage-7 boundary.
     // Unlike A7X/A7Y, this does not depend on the shared v115d_mux sidecar helper,
     // so it can still leave breadcrumbs if the normal log or mux sidecar is cut off.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY") &&
            GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) == 7;
+    return cached;
 }
 
 void V115DA7ZShaderTraceRaw(const char* message) {
@@ -820,10 +879,11 @@ void V115DA7ZShaderTraceNumber(const char* label, u64 value) {
     // This trace intentionally does not depend on TRACE_DRAW or on the shared mux sidecar.
     // It is active only for the narrow failing configuration so normal Vulkan execution is not
     // affected outside this diagnostic path.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY") &&
            GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) == 7;
+    return cached;
 }
 
 void V115DA7Z2ShaderTraceRaw(const char* message) {
@@ -869,18 +929,20 @@ void V115DA7Z2ShaderTraceNumber(const char* label, u64 value) {
     // generate call boundary are reached. A7Z3 dumps the exact config/vertex-layout state that
     // is handed to the GLSL generator, then leaves a final flushed marker immediately before
     // the crashing call. The next source file to patch is the generator itself.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY") &&
            GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) == 7;
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z3SkipGenerateWithTrivialVSEnabled() {
     // Optional safety switch, off by default. It proves the crash is caused by entering
     // GLSL::GenerateVertexShader() by dumping the same A7Z3 state and returning with the
     // already-safe trivial VS bind instead of calling the generator.
-    return IsV115DA7Z3TraceExpected() &&
+    static const bool cached = IsV115DA7Z3TraceExpected() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z3_SKIP_GENERATE_WITH_TRIVIAL_VS");
+    return cached;
 }
 
 void V115DA7Z3ShaderTraceRaw(const char* message) {
@@ -930,14 +992,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // while entering the vertex-buffer bind recording zone. This opt-in returns immediately
     // after descriptor pipeline + DrawParams, before bindVertexBuffers(), so we can separate
     // descriptor/pipeline validity from vertex/index binding command recording.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z5_DESCRIPTOR_RETURN_BEFORE_VERTEX_BIND");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z5_DESCRIPTOR_RETURN_BEFORE_VERTEX_BIND");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z5DescriptorVerboseRecordTraceEnabled() {
     // Extra breadcrumbs around the narrow vertex-bind scheduler.Record section. Keep this
     // separate from TRACE_DRAW so it can run in quiet sidecar-only tests.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z5_DESCRIPTOR_VERTEX_BIND_TRACE") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z5_DESCRIPTOR_VERTEX_BIND_TRACE") ||
            IsV115DA7Z5DescriptorReturnBeforeVertexBindEnabled();
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z6DescriptorReturnAfterVertexBindRecordEnabled() {
@@ -947,7 +1011,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // the vertex-bind record has been queued, before the older stage9 descriptor return
     // trace/log cluster. It isolates whether the remaining cut is in the post-record trace/log
     // tail rather than in the vertex/index bind record itself.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z6_DESCRIPTOR_RETURN_AFTER_VERTEX_BIND_RECORD");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z6_DESCRIPTOR_RETURN_AFTER_VERTEX_BIND_RECORD");
+    return cached;
 }
 
 
@@ -957,7 +1022,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // opt-in skips the noisy pre-record parameter breadcrumbs and queues only the
     // minimal bindVertexBuffers record, then returns true immediately. It separates
     // a logging/trace-tail problem from a real Vulkan vertex-buffer bind problem.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z7_DESCRIPTOR_MINIMAL_VERTEX_BIND_RECORD");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z7_DESCRIPTOR_MINIMAL_VERTEX_BIND_RECORD");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z8DescriptorReturnAfterDrawParamsEnabled() {
@@ -966,7 +1032,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // returns immediately after DrawParams are built, before all parameter-count traces
     // and before scheduler.Record. It verifies whether the crash is caused by the
     // post-DrawParams trace cluster rather than by DrawParams itself.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z8_DESCRIPTOR_RETURN_AFTER_DRAWPARAMS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z8_DESCRIPTOR_RETURN_AFTER_DRAWPARAMS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z8DescriptorMinimalVertexBindEarlyEnabled() {
@@ -974,7 +1041,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // minimal bindVertexBuffers record before the noisy params_* trace cluster. It keeps
     // the test multiplexed so the next step can be tried from emulators.cfg without
     // another rebuild.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z8_DESCRIPTOR_MINIMAL_VERTEX_BIND_EARLY");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z8_DESCRIPTOR_MINIMAL_VERTEX_BIND_EARLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z9DescriptorReturnAfterPipelineBindRawEnabled() {
@@ -983,7 +1051,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // after BindPipeline() and the raw breadcrumb, before the numeric ready trace and
     // before DrawParams. This isolates whether the next crash is caused by the
     // pipeline-ready numeric trace/tail rather than BindPipeline itself.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z9_DESCRIPTOR_RETURN_AFTER_PIPELINE_BIND_RAW");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z9_DESCRIPTOR_RETURN_AFTER_PIPELINE_BIND_RAW");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z9DescriptorSkipPipelineReadyNumberEnabled() {
@@ -991,7 +1060,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // descriptor_pipeline_bind_ready trace that appears to be the next cut point.
     // This allows the already-present A7Z8 return-after-DrawParams test to be retried
     // without another rebuild.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z9_DESCRIPTOR_SKIP_PIPELINE_READY_NUMBER");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z9_DESCRIPTOR_SKIP_PIPELINE_READY_NUMBER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z10DescriptorReturnAfterDrawParamsRawEnabled() {
@@ -999,7 +1069,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // v115d_mux after_draw_params_build but does not reach the older A7Z8 return
     // branch. Return immediately after the raw after_draw_params_build breadcrumb,
     // before any older A7Z8 logic, params_* traces, vertex/index bind, or draw.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z10_DESCRIPTOR_RETURN_AFTER_DRAWPARAMS_RAW");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z10_DESCRIPTOR_RETURN_AFTER_DRAWPARAMS_RAW");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z10DescriptorMinimalVertexBindEarlyRawEnabled() {
@@ -1007,33 +1078,38 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // record a minimal vkCmdBindVertexBuffers immediately after DrawParams, before
     // params_* traces and before the older A7Z8/A7Z5 trace clusters. This keeps the
     // next step multiplexed from emulators.cfg without requiring another rebuild.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z10_DESCRIPTOR_MINIMAL_VERTEX_BIND_EARLY_RAW");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z10_DESCRIPTOR_MINIMAL_VERTEX_BIND_EARLY_RAW");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z11DAReturnBeforeOffsetsEnabled() {
     // v115-D-A7Z11: D-A draw0 reached the real-vertex-bind mux path and wrote
     // real_vertex_bind_mux_binding_count=3, then cut before after_record. Return
     // immediately after that breadcrumb, before offset conversion and scheduler.Record.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_RETURN_BEFORE_OFFSETS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_RETURN_BEFORE_OFFSETS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z11DAReturnAfterOffsetsEnabled() {
     // v115-D-A7Z11 second mux step: if returning before offsets is safe, build the
     // vk::DeviceSize offsets array and return before queuing scheduler.Record.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_RETURN_AFTER_OFFSETS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_RETURN_AFTER_OFFSETS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z11DABindOnlyRecordEnabled() {
     // v115-D-A7Z11 third mux step: queue only vkCmdBindVertexBuffers in the D-A path,
     // then return before any vkCmdDraw. This compares D-A's real path with the descriptor
     // A7Z10 minimal bind that already passed.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_BIND_ONLY_RECORD");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_BIND_ONLY_RECORD");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z11DADraw0RecordRawEnabled() {
     // v115-D-A7Z11 fourth mux step: queue a raw D-A bind + vkCmdDraw(0) with a reduced
     // post-record trace tail. This is only meant for D-A after the earlier A7Z11 gates pass.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_DRAW0_RECORD_RAW");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z11_DA_DRAW0_RECORD_RAW");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z12MuxReturnAfterPipelineBindEnabled() {
@@ -1042,35 +1118,40 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // real_vertex_bind_mux_before_record breadcrumb. Return immediately after the
     // pipeline bind to isolate the indexed mux tail without touching offsets or
     // scheduler.Record.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_RETURN_AFTER_PIPELINE_BIND");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_RETURN_AFTER_PIPELINE_BIND");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z12MuxReturnBeforeOffsetsEnabled() {
     // Secondary A7Z12 step: after the post-pipeline return is safe, allow the
     // lightweight before_record/binding_count breadcrumbs, then return before
     // converting binding_offsets to vk::DeviceSize.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_RETURN_BEFORE_OFFSETS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_RETURN_BEFORE_OFFSETS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z12MuxReturnAfterOffsetsEnabled() {
     // Secondary A7Z12 step: build real_offsets and return before any additional
     // command buffer record. This checks whether the indexed path survives offset
     // conversion separately from bind/draw recording.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_RETURN_AFTER_OFFSETS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_RETURN_AFTER_OFFSETS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z12MuxBindOnlyRecordEnabled() {
     // Secondary A7Z12 step: queue only vkCmdBindVertexBuffers through the real mux
     // path. SetupIndexArray() is still executed earlier for indexed source draws, but
     // this step avoids vkCmdDraw/vkCmdDrawIndexed.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_BIND_ONLY_RECORD");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_BIND_ONLY_RECORD");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z12MuxDrawRawEnabled() {
     // Final A7Z12 raw draw step: unlike the older A7Z11_DA_DRAW0 switch, this uses
     // final_indexed and final_count. With D-D it records vkCmdDrawIndexed(0); with
     // D-E it records vkCmdDrawIndexed(3); with D-B/D-C it records draw(3/6).
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_DRAW_RAW");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z12_MUX_DRAW_RAW");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z13MuxTraceAfterBindingCountEnabled() {
@@ -1078,7 +1159,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // the normal after-offsets breadcrumb. This snapshot records the active A7Z12
     // mux flags immediately after binding_count so a bad emulators.cfg line can be
     // separated from a crash inside offset conversion.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_TRACE_AFTER_BINDING_COUNT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_TRACE_AFTER_BINDING_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z13MuxReturnAfterBindingCountEnabled() {
@@ -1086,20 +1168,23 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // before checking A7Z11/A7Z12 return-before-offsets flags and before converting
     // binding_offsets. Use this with A7Z12_MUX_DRAW_RAW=1 to prove whether the raw
     // draw flag itself is safe before offsets are touched.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_RETURN_AFTER_BINDING_COUNT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_RETURN_AFTER_BINDING_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z13MuxManualOffsetsEnabled() {
     // Second A7Z13 gate: replace the compact std::transform offset conversion with
     // a very explicit bounded loop. This makes the D-D indexed0 raw path easier to
     // bisect on V3DV and gives a clean breadcrumb before and after the conversion.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_MANUAL_OFFSETS_BUILD");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_MANUAL_OFFSETS_BUILD");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z13MuxReturnAfterManualOffsetsEnabled() {
     // Third A7Z13 gate: after the manual offsets loop succeeds, return before any
     // scheduler.Record/bind/draw. This confirms manual offset conversion alone is safe.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_RETURN_AFTER_MANUAL_OFFSETS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z13_MUX_RETURN_AFTER_MANUAL_OFFSETS");
+    return cached;
 }
 
 
@@ -1108,7 +1193,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // real_vertex_bind_mux_binding_count=3. Return immediately after the
     // real_vertex_bind_mux_before_record breadcrumb, before reading/logging
     // binding_count, before offset conversion, and before scheduler.Record.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z14_MUX_RETURN_BEFORE_BINDING_COUNT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z14_MUX_RETURN_BEFORE_BINDING_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z15MuxUltraCleanReturnBeforeBindingCountEnabled() {
@@ -1117,7 +1203,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // This gate is intentionally shorter than A7Z14: emit only begin/true,
     // then return before binding_count, offsets, scheduler.Record, and
     // vkCmdDrawIndexed(3).
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z15_MUX_ULTRA_CLEAN_RETURN_BEFORE_BINDING_COUNT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z15_MUX_ULTRA_CLEAN_RETURN_BEFORE_BINDING_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z16MuxUltraCleanReturnAfterBindingCountEnabled() {
@@ -1125,7 +1212,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // A7Z15 ultra-clean return before binding_count. This gate is the matching
     // ultra-clean checkpoint immediately after real_vertex_bind_mux_binding_count,
     // before any A7Z13 flag dump, offsets, scheduler.Record, or vkCmdDrawIndexed(3).
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z16_MUX_ULTRA_CLEAN_RETURN_AFTER_BINDING_COUNT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z16_MUX_ULTRA_CLEAN_RETURN_AFTER_BINDING_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z17MuxUltraCleanReturnBeforePipelineBindEnabled() {
@@ -1133,7 +1221,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // between final_vertex_offset and BindPipeline(). Return immediately before
     // pipeline_cache.BindPipeline(), after the mux selection breadcrumbs, to prove
     // the D-E mux selection itself returns cleanly before touching pipeline bind.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z17_MUX_ULTRA_CLEAN_RETURN_BEFORE_PIPELINE_BIND");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z17_MUX_ULTRA_CLEAN_RETURN_BEFORE_PIPELINE_BIND");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z18MuxUltraCleanReturnFalseBeforePipelineBindEnabled() {
@@ -1142,7 +1231,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // return. This variant returns false at the exact same checkpoint. If PICA logs
     // the after-AccelerateDrawBatch result=0, the issue is the successful-accel true
     // handoff path. If it still cuts, the issue is around the call/return boundary.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z18_MUX_ULTRA_CLEAN_RETURN_FALSE_BEFORE_PIPELINE_BIND");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z18_MUX_ULTRA_CLEAN_RETURN_FALSE_BEFORE_PIPELINE_BIND");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z23MuxReturnFalseAfterPipelineBindEnabled() {
@@ -1153,7 +1243,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // returns false instead of true, to isolate whether the caller-side failure is
     // caused by the successful AccelerateDrawBatch=true handoff or by pipeline bind
     // itself.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z23_MUX_RETURN_FALSE_AFTER_PIPELINE_BIND");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z23_MUX_RETURN_FALSE_AFTER_PIPELINE_BIND");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z23BReturnFalseBeforePipelineBindEnabled() {
@@ -1161,7 +1252,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // switch to return false immediately before BindPipeline(), after final_vertex_offset
     // has already been logged. This lets us verify the A7Z23 source/config alignment
     // without touching pipeline_cache.BindPipeline().
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z23B_RETURN_FALSE_BEFORE_BIND_PIPELINE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z23B_RETURN_FALSE_BEFORE_BIND_PIPELINE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z24MuxReturnFalseAfterBindingCountEnabled() {
@@ -1170,7 +1262,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // real_vertex_bind_mux_binding_count, then return false before A7Z13 flag dumps,
     // offset conversion, scheduler.Record, or vkCmdDrawIndexed(3). This isolates
     // whether binding_count itself is safe separately from the successful true handoff.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z24_MUX_RETURN_FALSE_AFTER_BINDING_COUNT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z24_MUX_RETURN_FALSE_AFTER_BINDING_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z25MuxReturnFalseBeforeBindingCountEnabled() {
@@ -1180,7 +1273,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // after pipeline bind, then returns false immediately before the before_record /
     // binding_count section. No binding_count read, offset conversion, scheduler.Record,
     // or vkCmdDrawIndexed(3) is reached.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z25_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z25_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z26MuxReturnFalseAfterBeforeRecordEnabled() {
@@ -1197,14 +1291,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     //   selected_step -> final_indexed -> A7Z26E return false before final_count
     //
     // without rebuilding again for a different branch.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26_MUX_RETURN_FALSE_AFTER_BEFORE_RECORD") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z26_MUX_RETURN_FALSE_AFTER_BEFORE_RECORD") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26_FORCE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z26FReturnFalseAfterSelectedStepEnabled() {
     // v115-D-A7Z26F: early realignment checkpoint immediately after selected_step.
     // This intentionally has its own switch so it does not mask later A7Z26/E checkpoints.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26F_RETURN_FALSE_AFTER_SELECTED_STEP");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z26F_RETURN_FALSE_AFTER_SELECTED_STEP");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z26GReturnFalseAfterFinalCountEnabled() {
@@ -1213,8 +1309,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // final_count to be emitted, then return false before final_vertex_offset,
     // BindPipeline, before_record, binding_count, offsets, scheduler.Record,
     // vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26G_RETURN_FALSE_AFTER_FINAL_COUNT") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z26G_RETURN_FALSE_AFTER_FINAL_COUNT") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26G_RETURN_FALSE_BEFORE_FINAL_VERTEX_OFFSET");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z26HReturnFalseAfterFinalVertexOffsetEnabled() {
@@ -1222,8 +1319,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // final_vertex_offset. Advance one micro-step: allow final_vertex_offset to be
     // emitted, then return false before BindPipeline, before_record, binding_count,
     // offsets, scheduler.Record, vkCmdBindVertexBuffers, and vkCmdDrawIndexed.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26H_RETURN_FALSE_AFTER_FINAL_VERTEX_OFFSET") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z26H_RETURN_FALSE_AFTER_FINAL_VERTEX_OFFSET") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26H_RETURN_FALSE_BEFORE_BIND_PIPELINE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z26IReturnFalseAfterInternalBindingCountEnabled() {
@@ -1234,8 +1332,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // binding, and vkCmdDrawIndexed. It returns false immediately after the already
     // observed internal binding_count value to verify that the backend can unwind
     // cleanly from this earlier boundary.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26I_RETURN_FALSE_AFTER_INTERNAL_BINDING_COUNT") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z26I_RETURN_FALSE_AFTER_INTERNAL_BINDING_COUNT") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26I_RETURN_FALSE_BEFORE_INTERNAL_VERTEX_BUFFER_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z26JReturnFalseAfterInternalFlagCacheEnabled() {
@@ -1245,8 +1344,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // exact boundary, before the stage-10 limiter lambda, before any internal binding_count
     // computation, before selected_step, BindPipeline, before_record, offsets,
     // scheduler.Record, vkCmdBindVertexBuffers, or vkCmdDrawIndexed.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26J_RETURN_FALSE_AFTER_INTERNAL_FLAGS") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z26J_RETURN_FALSE_AFTER_INTERNAL_FLAGS") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26J_RETURN_FALSE_BEFORE_INTERNAL_STAGE10");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z26KReturnFalseAfterInternalStage10Enabled() {
@@ -1256,8 +1356,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // vertex-count check, internal_binding_count, selected_step, BindPipeline,
     // before_record, offsets, scheduler.Record, vkCmdBindVertexBuffers, or
     // vkCmdDrawIndexed.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26K_RETURN_FALSE_AFTER_INTERNAL_STAGE10") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z26K_RETURN_FALSE_AFTER_INTERNAL_STAGE10") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26K_RETURN_FALSE_BEFORE_INTERNAL_VERTEX_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z26LReturnFalseAfterInternalStage10SingleMarkerEnabled() {
@@ -1266,8 +1367,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // immediately after stage10, then returns false before the vertex-count check. It
     // avoids the two-breadcrumb tail and isolates whether the failure is caused by the
     // extra trace/log tail rather than the stage10 boundary itself.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z26L_RETURN_FALSE_AFTER_INTERNAL_STAGE10_SINGLE_MARKER") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z26L_RETURN_FALSE_AFTER_INTERNAL_STAGE10_SINGLE_MARKER") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z26L_RETURN_FALSE_BEFORE_INTERNAL_VERTEX_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z27MuxReturnFalseBeforeBindingCountNumberEnabled() {
@@ -1280,9 +1382,10 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     //
     // Keep short aliases because the full env name is long and easy to mistype in
     // emulators.cfg during the v115-D bisect.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z27_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT_NUMBER") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z27_MUX_RETURN_FALSE_BEFORE_BINDING_COUNT_NUMBER") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z27_SAFE_RETURN_FALSE") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z27_RETURN_FALSE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z28MuxSkipBindingCountNumberReturnFalseEnabled() {
@@ -1293,7 +1396,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // breadcrumbs, then returns false before A7Z16/A7Z24/A7Z13 gates, offset conversion,
     // scheduler.Record, or vkCmdDrawIndexed(3). It isolates the numeric trace as the
     // suspect while keeping the Vulkan path state unchanged.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z28_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z28_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z29MuxSkipBindingCountNumberReturnFalseBeforeOffsetsEnabled() {
@@ -1302,8 +1406,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // breadcrumb, continue through the safe post-binding-count gates, and return false
     // immediately before offset conversion. This confirms the path can advance from
     // before_record to the pre-offset boundary without the numeric trace.
-    return IsEnvEnabled(
+    static const bool cached = IsEnvEnabled(
         "BORKED3DS_V3DV_A7Z29_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE_BEFORE_OFFSETS");
+    return cached;
 }
 
 
@@ -1314,8 +1419,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // variant keeps the A7Z28 numeric skip, uses raw breadcrumbs only, avoids logging
     // binding_count in console warnings, and returns false immediately before offset
     // conversion. It is the safe retry of the intended A7Z29 pre-offset boundary.
-    return IsEnvEnabled(
+    static const bool cached = IsEnvEnabled(
         "BORKED3DS_V3DV_A7Z29B_MUX_SKIP_BINDING_COUNT_NUMBER_RETURN_FALSE_BEFORE_OFFSETS_SAFE");
+    return cached;
 }
 
 
@@ -1325,8 +1431,9 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // env alias, check it immediately after the validated before_record breadcrumb, skip
     // the dangerous binding_count numeric trace, emit raw-only breadcrumbs, and return
     // false before any offset conversion, scheduler.Record, or vkCmdDrawIndexed(3).
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z29C_SAFE_RETURN_FALSE") ||
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z29C_SAFE_RETURN_FALSE") ||
            IsEnvEnabled("BORKED3DS_V3DV_A7Z29C_MUX_RETURN_FALSE_BEFORE_OFFSETS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z30MuxManualOffsetsReturnFalseAfterOffsetsEnabled() {
@@ -1335,7 +1442,8 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // advance directly into a bounded manual offset conversion, emit raw-only sidecar
     // breadcrumbs, and return false immediately after offsets. This validates offset
     // construction before scheduler.Record, bindVertexBuffers, or vkCmdDrawIndexed(3).
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z30_MANUAL_OFFSETS_RETURN_FALSE_AFTER_OFFSETS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z30_MANUAL_OFFSETS_RETURN_FALSE_AFTER_OFFSETS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z31B2EmptyRecordReturnFalseEnabled() {
@@ -1343,13 +1451,15 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // a direct branch immediately after before_record. It keeps the binding_count
     // numeric trace skipped, rebuilds offsets manually, records an empty scheduler
     // lambda only, then returns false before bindVertexBuffers or vkCmdDrawIndexed.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z31B2_EMPTY_RECORD");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z31B2_EMPTY_RECORD");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z31C2BindVertexBuffersOnlyReturnFalseEnabled() {
     // v115-D-E-A7Z31C2: restart strictly from the A7Z31B2 stable empty-record block,
     // then add only vkCmdBindVertexBuffers. No vkCmdDraw/vkCmdDrawIndexed yet.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z31C2_BIND_VERTEX_BUFFERS_ONLY");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z31C2_BIND_VERTEX_BUFFERS_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z31C3BindVertexBuffer0OnlyReturnFalseEnabled() {
@@ -1357,14 +1467,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // with a single captured VkBuffer handle and one captured offset. This avoids capturing
     // the rasterizer object or passing the full V3DV binding_count=3 path while still
     // proving whether vkCmdBindVertexBuffers itself can be recorded after the empty record.
-    return IsEnvEnabled("BORKED3DS_V3DV_A7Z31C3_BIND_VERTEX_BUFFER0_ONLY");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_A7Z31C3_BIND_VERTEX_BUFFER0_ONLY");
+    return cached;
 }
 
 [[nodiscard]] u32 GetAccelStageStopAfter() {
     // 0 means no stage-limit stop. Use this only to bisect a crash inside
     // AccelerateDrawBatch, for example:
     //   BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER=6
-    return GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0);
+    static const u32 cached = GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0);
+    return cached;
 }
 
 [[nodiscard]] bool ShouldStopAfterAccelStage(u32 stage) {
@@ -1379,26 +1491,30 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // This emits raw_enter_noargs + raw_enter_simple and performs no stage=1, no shader
     // generation, no PICA SPIR-V, no VkShaderModule creation, no pipeline state,
     // no descriptors, no Draw(), no vkCmdDraw, and no vkCmdDrawIndexed.
-    return IsStrictCompatEnabled() && GetAccelStageStopAfter() != 0;
+    static const bool cached = IsStrictCompatEnabled() && GetAccelStageStopAfter() != 0;
+    return cached;
 }
 
 [[nodiscard]] u32 GetStrictSafeUntexturedSoftwareDrawBudget() {
     // Keep this bounded so a bad untextured path cannot flood V3DV with commands.
     // 256 is enough to prove whether the loading screen can receive real color writes.
-    return GetEnvU32("BORKED3DS_V3DV_SAFE_UNTEXTURED_DRAW_BUDGET", 256);
+    static const u32 cached = GetEnvU32("BORKED3DS_V3DV_SAFE_UNTEXTURED_DRAW_BUDGET", 256);
+    return cached;
 }
 
 [[nodiscard]] u32 GetSoftwareClearTileBudget() {
     // v82: the visible tile clear is opt-in only. Keep the diagnostic small when enabled.
     // 0 disables the tile clear completely; increase only for diagnosis.
-    return GetEnvU32("BORKED3DS_V3DV_SOFTWARE_CLEAR_TILE_BUDGET", 16);
+    static const u32 cached = GetEnvU32("BORKED3DS_V3DV_SOFTWARE_CLEAR_TILE_BUDGET", 16);
+    return cached;
 }
 
 [[nodiscard]] u32 GetSoftwareClearTilePeriod() {
     // v82: submit one tile-clear every N software draws. This prevents the stable bridge
     // from turning into a command-stream stress test on V3DV while preserving visible
     // movement on screen.
-    return std::max<u32>(1, GetEnvU32("BORKED3DS_V3DV_SOFTWARE_CLEAR_TILE_PERIOD", 4));
+    static const u32 cached = std::max<u32>(1, GetEnvU32("BORKED3DS_V3DV_SOFTWARE_CLEAR_TILE_PERIOD", 4));
+    return cached;
 }
 
 [[nodiscard]] bool IsNullSoftwareDrawProbeEnabled() {
@@ -1406,14 +1522,16 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
     // make Sonic close almost immediately on Pi5/V3DV. Keep the descriptorless
     // tile-clear bridge as the default stable path. Re-enter the real software
     // shader/pipeline/vkCmdDraw path only with an explicit opt-in.
-    return IsEnvEnabled("BORKED3DS_V3DV_ENABLE_NULL_SOFTWARE_DRAW_PROBE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ENABLE_NULL_SOFTWARE_DRAW_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool IsTexturedNullSoftwareDrawProbeAllowed() {
     // v82: v78 proved that the first controlled *textured* null-descriptor software draw
     // is still crash-prone on Pi5/V3DV. Keep textured real draws blocked by default and
     // only allow them via explicit opt-in once the untextured path is proven safe.
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_TEXTURED_NULL_SOFTWARE_DRAW_PROBE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_TEXTURED_NULL_SOFTWARE_DRAW_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool ShouldAttemptNullSoftwareDrawProbe(u64 clear_index, u32 vertex_count,
@@ -1457,39 +1575,48 @@ void V115DA7Z3ShaderTraceBool(const char* label, bool value) {
 }
 
 [[nodiscard]] bool IsStartupSoftwareQuarantineDisabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SOFTWARE_QUARANTINE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SOFTWARE_QUARANTINE");
+    return cached;
 }
 
 [[nodiscard]] bool IsStartupSoftwareQuarantineForcedOff() {
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_STARTUP_SOFTWARE_DRAWS");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_STARTUP_SOFTWARE_DRAWS");
+    return cached;
 }
 
 [[nodiscard]] bool IsPresentDebugClearDisabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_DISABLE_PRESENT_DEBUG_CLEAR");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_PRESENT_DEBUG_CLEAR");
+    return cached;
 }
 
 [[nodiscard]] bool IsAcceleratedDisplayAllowed() {
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_ACCELERATED_DISPLAY");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_ACCELERATED_DISPLAY");
+    return cached;
 }
 
 [[nodiscard]] bool IsForcedNonAcceleratedDisplay() {
-    return IsEnvEnabled("BORKED3DS_V3DV_FORCE_NON_ACCELERATED_DISPLAY");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_FORCE_NON_ACCELERATED_DISPLAY");
+    return cached;
 }
 
 [[nodiscard]] bool IsPresentImageClearAllowed() {
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_PRESENT_IMAGE_CLEAR");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_PRESENT_IMAGE_CLEAR");
+    return cached;
 }
 
 [[nodiscard]] bool IsOwnedPresentTextureDebugDisabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_DISABLE_OWNED_PRESENT_TEXTURE_CLEAR");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_OWNED_PRESENT_TEXTURE_CLEAR");
+    return cached;
 }
 
 [[nodiscard]] bool IsOwnedPresentTextureDebugEnabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_ENABLE_OWNED_PRESENT_TEXTURE_CLEAR");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ENABLE_OWNED_PRESENT_TEXTURE_CLEAR");
+    return cached;
 }
 
 [[nodiscard]] bool IsDuplicatePresentReuseDisabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_DISABLE_DUPLICATE_PRESENT_REUSE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_DUPLICATE_PRESENT_REUSE");
+    return cached;
 }
 
 [[nodiscard]] bool IsStrictCompatFragileTextureFormat(u32 format) {
@@ -1888,7 +2015,8 @@ void RecordStrictPresentDebugClear(Scheduler& scheduler, RenderManager& renderpa
 // framebuffer black by throwing away the software draws exposed by pica_core.cpp. Keep the helpers
 // available behind an explicit opt-in variable, but default to drawing.
 [[nodiscard]] bool CanUseSoftwareSkipWorkaround() {
-    return IsStrictCompatEnabled() && IsSoftwareSkipAllowed();
+    static const bool cached = IsStrictCompatEnabled() && IsSoftwareSkipAllowed();
+    return cached;
 }
 
 [[nodiscard]] bool ShouldBypassFragileSoftwareDraw(const Pica::RegsInternal& regs,
