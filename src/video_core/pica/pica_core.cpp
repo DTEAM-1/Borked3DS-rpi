@@ -63,23 +63,28 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
 }
 
 [[nodiscard]] bool IsPicaHotpathTraceEnabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_TRACE_PICA_STATE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TRACE_PICA_STATE");
+    return cached;
 }
 
 [[nodiscard]] bool IsPicaDrawTraceEnabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TRACE_DRAW");
+    return cached;
 }
 
 [[nodiscard]] bool IsStrictCompatEnabled() {
-    return IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+    return cached;
 }
 
 [[nodiscard]] bool IsPicaAccelAllowed() {
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_PICA_ACCEL");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_PICA_ACCEL");
+    return cached;
 }
 
 [[nodiscard]] bool IsPicaAccelForcedOff() {
-    return IsEnvEnabled("BORKED3DS_V3DV_FORCE_PICA_SOFTWARE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_FORCE_PICA_SOFTWARE");
+    return cached;
 }
 
 [[nodiscard]] u32 GetEnvU32(const char* name, u32 fallback) {
@@ -108,7 +113,8 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
 
 
 [[nodiscard]] bool IsV114C6PicaGateFileTraceEnabled() {
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_SHADER_MULTIPLEX_FILE_TRACE");
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_SHADER_MULTIPLEX_FILE_TRACE");
+    return cached;
 }
 
 void V114C6PicaGateFileTraceRaw(const char* message) {
@@ -154,10 +160,11 @@ void V114C6PicaGateFileTraceReset() {
 }
 
 [[nodiscard]] bool IsV115DA7XTraceExpected() {
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY") &&
            GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) == 7;
+    return cached;
 }
 
 void V115DA7XPicaTraceRaw(const char* message) {
@@ -185,15 +192,17 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // v115-D-E-A7Z19: caller-side boundary probe. The backend A7Z18 can return false before
     // pipeline bind, but previous logs did not show the PICA caller regaining control. This
     // flag keeps the probe in pica_core.cpp and writes only sidecar markers around the call.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z19_PICA_CALL_BOUNDARY_RETURN_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z19PicaSkipBackendCallEnabled() {
     // Optional emergency sanity check: prove the PICA caller-side return path without entering
     // the Vulkan backend. Keep disabled for the normal A7Z19 test.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z19_PICA_SKIP_BACKEND_CALL_RETURN_FALSE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z20PicaAfterBackendControlledReturnEnabled() {
@@ -201,8 +210,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // skip the backend and return cleanly; this probe calls the backend, records the
     // result immediately after the call, then returns from DrawArrays without executing
     // the normal post-call path.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z20_PICA_AFTER_BACKEND_CONTROLLED_RETURN");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z21PicaAfterBackendUltraCleanReturnEnabled() {
@@ -210,8 +220,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // a real backend call, but cuts before writing the result value. Return immediately
     // after the after-call breadcrumb, without formatting/logging the bool result and
     // without writing an additional final return breadcrumb.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z21_PICA_AFTER_BACKEND_ULTRA_CLEAN_RETURN");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z22TriggerDrawArraysCallBoundaryProbeEnabled() {
@@ -219,38 +230,43 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // real backend call, but the outer trigger_draw_after_drawarrays marker is still absent.
     // This caller-side probe wraps DrawArrays() itself from the register-trigger path and
     // returns immediately after the call if control reaches this boundary.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z22_TRIGGER_DRAWARRAYS_CALL_BOUNDARY_PROBE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z62PicaPredrawLivenessEnabled() {
     // v115-D-E-A7Z62: lightweight PICA command-stream liveness. Keep this independent
     // from Vulkan so it can be used as a recovery breadcrumb when the draw corridor is
     // intermittent.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z62_PICA_PREDRAW_LIVENESS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z64PicaDrawArraysUltraQuietBoundaryEnabled() {
     // v115-D-E-A7Z64: replace the fragile dynamic DrawArrays console log with short
     // boundary breadcrumbs around trigger -> DrawArrays -> early direct decision.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z64_PICA_DRAWARRAYS_ULTRA_QUIET_BOUNDARY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z65PicaEarlyDirectNoPrebackendLogEnabled() {
     // v115-D-E-A7Z65: after the safe early-direct candidate is true and budget is accepted,
     // enter the Vulkan backend without a final PICA pre-backend log.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z65_PICA_EARLY_DIRECT_NO_PREBACKEND_LOG");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z69PicaProcessCmdListUltraEarlyEnabled() {
     // v115-D-E-A7Z69: ultra-early ProcessCmdList boundary trace. A7Z68 proved that
     // GPU::SubmitCmdList calls and returns from ProcessCmdList, but the A7Z62 marker may
     // not appear. Emit the first breadcrumb before memory lookup/reset/dynamic command logs.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z69_PICA_PROCESS_CMDLIST_ULTRA_EARLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z70PicaTriggerDirectDrawArraysEnabled() {
@@ -260,8 +276,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // between trigger_case_enter and DrawArrays(), then return immediately after the
     // DrawArrays() call so the next visible marker must come from DrawArrays/A7Z65 or
     // the Vulkan backend.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z70_PICA_TRIGGER_DIRECT_DRAWARRAYS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z71PicaTriggerSilentDrawArraysEnabled() {
@@ -269,8 +286,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // the last visible output (the log cuts at TRACE_DRAW_). For this micro-pass, do
     // not emit any trigger-case breadcrumb at all. Once WriteInternalReg has updated
     // the trigger register, jump directly to DrawArrays() and return.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z71_PICA_TRIGGER_SILENT_DRAWARRAYS");
+    return cached;
 }
 
 
@@ -280,8 +298,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // This mode performs the same strict safe-candidate gate, but with zero console/file
     // breadcrumbs inside DrawArrays before the backend call. The next visible proof must
     // therefore come from vk_rasterizer::AccelerateDrawBatch().
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z72_PICA_DRAWARRAYS_SILENT_EARLY_BACKEND");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z76PicaSingleBackendCallMarkerEnabled() {
@@ -290,8 +309,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // from the PICA side immediately before calling rasterizer->AccelerateDrawBatch().
     // This distinguishes a missed/false safe-candidate gate from a crash/stop inside
     // the backend call transition itself, without re-enabling the heavy GSP/PICA logs.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z76_PICA_SINGLE_BACKEND_CALL_MARKER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z77PicaDrawArraysSingleEntryMarkerEnabled() {
@@ -299,8 +319,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // it does not appear. Add exactly one fixed DrawArrays entry breadcrumb, before
     // the A7Z72 safe-candidate filters, to determine whether the silent trigger path
     // reaches DrawArrays at all without re-enabling broad GSP/GPU/PICA logging.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z77_PICA_DRAWARRAYS_SINGLE_ENTRY_MARKER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z78PicaTriggerSinglePreDrawArraysMarkerEnabled() {
@@ -309,8 +330,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // the A7Z71 silent DrawArrays() call. This determines whether the silent trigger
     // branch reaches the DrawArrays call site without re-enabling broad GSP/GPU/PICA
     // logging.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z78_PICA_TRIGGER_SINGLE_PRE_DRAWARRAYS_MARKER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z79PicaProcessSingleDrawTriggerMarkerEnabled() {
@@ -320,8 +342,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // command is handed to WriteInternalReg. This distinguishes "no draw trigger in
     // this quiet pass" from "trigger reaches WriteInternalReg but the silent branch is
     // not reached", without restoring broad A7Z66/A7Z69 logging.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z79_PICA_PROCESS_SINGLE_DRAW_TRIGGER_MARKER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z80PicaProcessSingleEntryMarkerEnabled() {
@@ -331,8 +354,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // distinguishes "PICA command-list entry is not reached" from "PICA is entered,
     // but the submitted list does not contain the useful draw trigger" without
     // re-enabling broad GSP/GPU/PICA logging.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z80_PICA_PROCESS_SINGLE_ENTRY_MARKER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z81PicaProcessSingleLeaveMarkerEnabled() {
@@ -341,8 +365,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // ProcessCmdList returns, including the ignore-list return path, to distinguish
     // "first quiet command list completed without draw" from "parser stalls/cuts
     // inside the first command list before reaching a draw trigger".
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z81_PICA_PROCESS_SINGLE_LEAVE_MARKER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z82PicaProcessEntryLeaveWindowEnabled() {
@@ -350,8 +375,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // leaves, but A7Z79 does not see a draw trigger. Emit a tiny fixed window for the
     // next few ProcessCmdList calls so we can determine whether later command lists
     // are reached before the crash, without restoring the broad A7Z66/A7Z69 logging.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z82_PICA_PROCESS_ENTRY_LEAVE_WINDOW");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z83PicaProcessSingleCommandBufferTriggerMarkerEnabled() {
@@ -360,8 +386,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // PICA command-buffer trigger register is parsed. This checks whether the quiet
     // lists are scheduling/arming later GPU command buffers rather than issuing
     // trigger_draw/trigger_draw_indexed directly, without returning to broad logs.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z83_PICA_PROCESS_SINGLE_CMDBUF_TRIGGER_MARKER");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z84PicaProcessExtendedWindowEnabled() {
@@ -372,8 +399,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // the exact list number of the first draw trigger without bounding the window.
     // Disabled in emulators.cfg for run3: A7Z84 spam is no longer useful now that we know
     // the loading phase is all config. Only A7Z79 and A7Z83 matter going forward.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z84_PICA_PROCESS_EXTENDED_WINDOW");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z85PicaDrawArraysBackendOnceEnabled() {
@@ -387,8 +415,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     //     the backend call — budget=0 or vertex count mismatch.
     // (c) Neither A7Z79 nor A7Z83 appear before crash: Sonic crashes before any draw, the
     //     problem is upstream of PICA drawing (APT/FS/init crash, not a Vulkan draw issue).
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z85_PICA_DRAWARRAYS_BACKEND_ONCE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z86PicaDrawArraysAfterBackendOnceEnabled() {
@@ -398,8 +427,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // Combined with A7Z85: if A7Z85 fires but A7Z86 does not, the crash is inside
     // AccelerateDrawBatch() itself (Vulkan pipeline / vk_rasterizer). If both fire,
     // the crash is after the draw call returns — in the post-draw path or next frame.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z86_PICA_DRAWARRAYS_AFTER_BACKEND_ONCE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z87PicaDrawTriggerCounterEnabled() {
@@ -408,12 +438,14 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // commands regardless of vertex count or hw_shader state. Used to measure how many
     // draws Sonic emits before the crash, to distinguish "first draw crashes" from
     // "later draw crashes". Controlled by BORKED3DS_V3DV_A7Z87_DRAW_TRIGGER_EVERY_N.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z87_PICA_DRAW_TRIGGER_COUNTER");
+    return cached;
 }
 
 [[nodiscard]] u32 GetV115DA7Z87DrawTriggerEveryN() {
-    return GetEnvU32("BORKED3DS_V3DV_A7Z87_DRAW_TRIGGER_EVERY_N", 1);
+    static const u32 cached = GetEnvU32("BORKED3DS_V3DV_A7Z87_DRAW_TRIGGER_EVERY_N", 1);
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z88PicaProcessCmdListCountEnabled() {
@@ -421,8 +453,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // spam). Format: "cmd_list_count_N" where N is a multiple of 64. Replaces A7Z84 for
     // long-running sessions where we only need to know how far we've gone, not the exact
     // list number. Lets us detect if Sonic reaches 128, 256, or 512 lists before the crash.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z88_PICA_PROCESS_CMDLIST_COUNT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z89PicaDrawArraysUltraEarlyProbeEnabled() {
@@ -440,8 +473,9 @@ void V115DA7XPicaTraceU64(const char* key, u64 value) {
     // If A7Z89 appears → DrawArrays is reached, crash is inside DrawArrays or AccelerateDrawBatch.
     // Combined with A7Z85: if A7Z89 fires but A7Z85 does not → crash in the safe-candidate
     // gate path between the two probes.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_A7Z89_PICA_DRAWARRAYS_ULTRA_EARLY_PROBE");
+    return cached;
 }
 
 void V115DA7Z80EmitProcessEntryOnce() {
@@ -672,13 +706,15 @@ void V115DA7Z89EmitDrawArraysUltraEarly(u64 draw_index, bool is_indexed,
     // Therefore v114 keeps pica_core pre/post handoff logs suppressed, disables raw-enter-only
     // return, emits raw_enter_noargs + raw_enter_simple in vk_rasterizer, and returns before
     // stage=1/shader work.
-    return IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_PICA_HW_DRAWS") &&
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_ALLOW_SAFE_PICA_HW_DRAWS") &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_PICA_HW_DRAWS");
+    return cached;
 }
 
 [[nodiscard]] bool IsStagedPicaHwPreflightRequested() {
-    return IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_FORCE_ACCEL_STAGE_TRACE") &&
+    static const bool cached = IsStrictCompatEnabled() && IsEnvEnabled("BORKED3DS_V3DV_FORCE_ACCEL_STAGE_TRACE") &&
            GetEnvU32("BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER", 0) > 0;
+    return cached;
 }
 
 [[nodiscard]] bool IsDirectSafePicaHwHandoffEnabled() {
@@ -687,22 +723,25 @@ void V115DA7Z89EmitDrawArraysUltraEarly(u64 draw_index, bool is_indexed,
     // "HW.GPU <" line but never completed pre_call_direct_noargs and no TRACE_ACCEL_STAGE line
     // appeared. Keep direct handoff enabled, but let the normal v114 test suppress the pica_core
     // pre-call log and make the backend return silently before any raw_enter logging.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            (IsEnvEnabled("BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF") ||
             (IsStagedPicaHwPreflightRequested() &&
              IsEnvEnabled("BORKED3DS_V3DV_PROBE_PROGRAMMABLE_VS_GENERATE_GUARDED_ONLY")));
+    return cached;
 }
 
 [[nodiscard]] bool IsDirectSafePicaHwHandoffNoPrelogEnabled() {
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF_NO_PRELOG");
+    return cached;
 }
 
 [[nodiscard]] bool IsDirectSafePicaHwHandoffPostlogEnabled() {
     // Disabled by default for v114. Enable only if the silent call-boundary probe already proved
     // stable and we want a pica_core post-call marker.
-    return IsStrictCompatEnabled() &&
+    static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF_POSTLOG");
+    return cached;
 }
 
 [[nodiscard]] bool IsSafePicaHwEnterAllowed() {
@@ -714,33 +753,39 @@ void V115DA7Z89EmitDrawArraysUltraEarly(u64 draw_index, bool is_indexed,
     //   - the caller must already have strict_safe_pica_hw_draw=true;
     //   - the per-run budget and max-vertex filters still apply;
     //   - the backend must still stop at BORKED3DS_V3DV_ACCEL_STAGE_STOP_AFTER before stage=7.
-    const bool explicit_enter = IsEnvEnabled("BORKED3DS_V3DV_ENTER_SAFE_PICA_HW_DRAWS") ||
-                                IsEnvEnabled("BORKED3DS_V3DV_EXECUTE_SAFE_PICA_HW_DRAWS");
+    static const bool explicit_enter =
+        IsEnvEnabled("BORKED3DS_V3DV_ENTER_SAFE_PICA_HW_DRAWS") ||
+        IsEnvEnabled("BORKED3DS_V3DV_EXECUTE_SAFE_PICA_HW_DRAWS");
 
-    return (explicit_enter || IsStagedPicaHwPreflightRequested()) &&
-           !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_PICA_HW_ENTER");
+    static const bool cached = (explicit_enter || IsStagedPicaHwPreflightRequested()) &&
+                               !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_PICA_HW_ENTER");
+    return cached;
 }
 
 [[nodiscard]] bool IsSafePicaHwDryRunEnabled() {
-    return !IsSafePicaHwEnterAllowed() &&
+    static const bool cached = !IsSafePicaHwEnterAllowed() &&
            !IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SAFE_PICA_HW_DRY_RUN");
+    return cached;
 }
 
 [[nodiscard]] bool IsVerbosePicaMicroTextureTraceEnabled() {
     // v87 appeared to terminate during the verbose texture-state block around the first
     // micro candidate. Keep the candidate log minimal by default; this opt-in exists only
     // for diagnosis once the handoff is stable.
-    return IsEnvEnabled("BORKED3DS_V3DV_VERBOSE_PICA_MICRO_TEXTURE_TRACE");
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_VERBOSE_PICA_MICRO_TEXTURE_TRACE");
+    return cached;
 }
 
 [[nodiscard]] u32 GetSafePicaHwDrawBudget() {
     // Keep this tiny. If this path is correct, one or a few hardware draws should already
     // change the render target from pure black. Higher budgets belong in later passes.
-    return GetEnvU32("BORKED3DS_V3DV_SAFE_PICA_HW_DRAW_BUDGET", 1);
+    static const u32 cached = GetEnvU32("BORKED3DS_V3DV_SAFE_PICA_HW_DRAW_BUDGET", 1);
+    return cached;
 }
 
 [[nodiscard]] u32 GetSafePicaHwMaxVertices() {
-    return GetEnvU32("BORKED3DS_V3DV_SAFE_PICA_HW_MAX_VERTICES", 6);
+    static const u32 cached = GetEnvU32("BORKED3DS_V3DV_SAFE_PICA_HW_MAX_VERTICES", 6);
+    return cached;
 }
 
 [[nodiscard]] bool ArePrimaryTexturesDisabled(const RegsInternal& regs) {
