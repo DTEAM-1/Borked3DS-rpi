@@ -12,11 +12,14 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
+#include <functional>
 #include <exception>
 #include <mutex>
 #include <set>
 #include <span>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -2464,6 +2467,33 @@ void RasterizerVulkan::TickFrame() {
         const u32 rp_area = g_tb14_rp_switch_area_only.exchange(0, std::memory_order_relaxed);
         const u32 rp_end = g_tb14_rp_end.exchange(0, std::memory_order_relaxed);
         const u32 rp_flush = g_tb14_rp_flush.exchange(0, std::memory_order_relaxed);
+
+        // ------------------------------------------------------------------
+        // TB16 -- occupation CPU du thread qui pilote le rendu.
+        //
+        // Question tranchee : les ~200 us par draw sont-ils du travail CPU, ou de
+        // l'attente ? CLOCK_THREAD_CPUTIME_ID ne compte que le temps ou CE thread
+        // occupe reellement un coeur ; un thread bloque sur un futex, une fence GPU
+        // ou une condition variable n'accumule rien.
+        //
+        //   cpu_pct proche de 100 -> CPU-bound, le temps part en calcul par draw
+        //   cpu_pct faible         -> on attend (GPU ou synchronisation)
+        //
+        // Mesure sur la PERIODE ENTRE DEUX CENSUS, pas sur une frame isolee : c'est
+        // le meme piege que frame_us, qui echantillonne une frame sur soixante.
+        // tid permet de verifier que TickFrame est bien toujours appele du meme
+        // thread -- sinon les deltas n'auraient aucun sens.
+        // ------------------------------------------------------------------
+        u64 cpu_now_us = 0;
+        {
+            struct timespec ts {};
+            if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) {
+                cpu_now_us =
+                    static_cast<u64>(ts.tv_sec) * 1000000ull + static_cast<u64>(ts.tv_nsec) / 1000ull;
+            }
+        }
+        const u32 tid = static_cast<u32>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xFFFFull);
         // Intervalle reel entre deux presentations. Evite d'avoir a le reconstituer a
         // partir des horodatages du log, et donne la vitesse directement : la 3DS
         // presente a 59,83 Hz, donc speed_pct = 1672 / frame_ms environ.
@@ -2479,13 +2509,34 @@ void RasterizerVulkan::TickFrame() {
         const u32 period = GetA7Z12CensusPeriod();
         const bool periodic = period != 0 && (frame % period) == 0;
         if (frame <= 400 || starved || periodic) {
+            // TB16 : deltas depuis le census precedent (et non depuis la frame
+            // precedente), pour que cpu_pct porte sur toute la periode observee.
+            static std::chrono::steady_clock::time_point last_census_wall{};
+            static u64 last_census_cpu_us = 0;
+            static u64 last_census_frame = 0;
+            u64 wall_us = 0;
+            u64 cpu_us = 0;
+            u64 cpu_pct = 0;
+            u64 pframes = 0;
+            if (last_census_wall.time_since_epoch().count() != 0) {
+                wall_us = static_cast<u64>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(now - last_census_wall)
+                        .count());
+                cpu_us = cpu_now_us >= last_census_cpu_us ? cpu_now_us - last_census_cpu_us : 0;
+                pframes = frame > last_census_frame ? frame - last_census_frame : 0;
+                cpu_pct = wall_us > 0 ? (cpu_us * 100 / wall_us) : 0;
+            }
+            last_census_wall = now;
+            last_census_cpu_us = cpu_now_us;
+            last_census_frame = frame;
             LOG_INFO(Render_Vulkan,
                      "A7Z12_FRAME_CENSUS frame={} frame_us={} entered={} completed={} "
                      "succeeded={} absorbed={} starved={} accel={} software={} sw_pct={} "
                      "verts_accel={} verts_sw={} sw_vert_pct={} sw_verts_per_draw={} "
                      "swhist_le8={} swhist_le32={} swhist_le128={} swhist_le512={} "
                      "swhist_le2048={} swhist_gt2048={} "
-                     "rp_begin={} rp_switch={} rp_area={} rp_end={} rp_flush={}",
+                     "rp_begin={} rp_switch={} rp_area={} rp_end={} rp_flush={} "
+                     "cpu_us={} wall_us={} cpu_pct={} pframes={} tid={}",
                      frame, frame_us, entered, completed, succeeded, absorbed,
                      static_cast<u32>(starved), accel, software,
                      entered > 0 ? (software * 100 / entered) : 0,
@@ -2497,7 +2548,8 @@ void RasterizerVulkan::TickFrame() {
                      g_a7z12_sw_vert_hist[3].load(std::memory_order_relaxed),
                      g_a7z12_sw_vert_hist[4].load(std::memory_order_relaxed),
                      g_a7z12_sw_vert_hist[5].load(std::memory_order_relaxed), rp_begin,
-                     rp_switch, rp_area, rp_end, rp_flush);
+                     rp_switch, rp_area, rp_end, rp_flush, cpu_us, wall_us, cpu_pct, pframes,
+                     tid);
         }
     }
     res_cache.TickFrame();

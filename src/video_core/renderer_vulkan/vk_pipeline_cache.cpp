@@ -43,7 +43,8 @@ namespace {
 }
 
 [[nodiscard]] bool IsPi5StrictCompatEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
+    return cached;
 }
 
 // BORKED3DS_V3DV_DISABLE_EDS -- voir la note detaillee dans vk_graphics_pipeline.cpp.
@@ -56,39 +57,48 @@ namespace {
 }
 
 [[nodiscard]] bool IsV115DA7Z41PipelineCacheTraceEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z41_PIPELINE_CACHE_TRACE");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z41_PIPELINE_CACHE_TRACE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z41PipelineForceNoWaitOnWaitEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z41_PIPELINE_FORCE_NOWAIT_ON_WAIT");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z41_PIPELINE_FORCE_NOWAIT_ON_WAIT");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z44PipelineNoWaitRetryEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z44_PIPELINE_NOWAIT_RETRY");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z44_PIPELINE_NOWAIT_RETRY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z54PipelineCacheMinimalSafeEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z54_PIPELINE_CACHE_MINIMAL_SAFE");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z54_PIPELINE_CACHE_MINIMAL_SAFE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z55PipelineCacheMainLogOnlyEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z55_PIPELINE_CACHE_MAINLOG_ONLY");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z55_PIPELINE_CACHE_MAINLOG_ONLY");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z56PipelineCachePlainMarkersEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z56_PIPELINE_CACHE_PLAIN_MARKERS");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z56_PIPELINE_CACHE_PLAIN_MARKERS");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z58PipelineCacheSplitTryEmplaceEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z58_PIPELINE_CACHE_SPLIT_TRY_EMPLACE");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z58_PIPELINE_CACHE_SPLIT_TRY_EMPLACE");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z59PipelineCachePostTryFastReturnEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z59_PIPELINE_CACHE_POST_TRY_FAST_RETURN");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z59_PIPELINE_CACHE_POST_TRY_FAST_RETURN");
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z60PipelineCacheUltraQuietFastReturnEnabled() {
-    return IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z60_PIPELINE_CACHE_ULTRA_QUIET_FAST_RETURN");
+    static const bool cached = IsEnvFlagEnabled("BORKED3DS_V3DV_A7Z60_PIPELINE_CACHE_ULTRA_QUIET_FAST_RETURN");
+    return cached;
 }
 
 [[nodiscard]] u32 GetEnvU32Limited(const char* name, u32 default_value, u32 max_value) {
@@ -363,9 +373,11 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
         !a7z59_post_try_fast_return && !a7z60_ultra_quiet_fast_return;
     const bool a7z41_force_nowait_on_wait = IsV115DA7Z41PipelineForceNoWaitOnWaitEnabled();
     const bool a7z44_nowait_retry = IsV115DA7Z44PipelineNoWaitRetryEnabled();
-    const u32 a7z44_retry_count =
+    // A1 (etendu) : ces deux lectures etaient faites par draw. Les valeurs viennent de
+    // l'environnement, fixe au lancement -- une lecture unique suffit.
+    static const u32 a7z44_retry_count =
         GetEnvU32Limited("BORKED3DS_V3DV_A7Z44_PIPELINE_NOWAIT_RETRY_COUNT", 4, 16);
-    const u32 a7z44_retry_sleep_ms =
+    static const u32 a7z44_retry_sleep_ms =
         GetEnvU32Limited("BORKED3DS_V3DV_A7Z44_PIPELINE_NOWAIT_RETRY_SLEEP_MS", 1, 10);
     const bool effective_wait_built = wait_built && !a7z41_force_nowait_on_wait;
 
