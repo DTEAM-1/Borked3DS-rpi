@@ -31,6 +31,7 @@
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_render_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/shader/generator/glsl_shader_decompiler.h"
@@ -2456,6 +2457,13 @@ void RasterizerVulkan::TickFrame() {
         const u64 vtotal = vaccel + vsoft;
         const u32 absorbed = entered > completed ? entered - completed : 0;
         const bool starved = entered > 0 && succeeded == 0;
+        // TB14 : compteurs de render pass, remis a zero a chaque tick pour que les
+        // valeurs publiees soient bien celles de la periode ecoulee.
+        const u32 rp_begin = g_tb14_rp_begin.exchange(0, std::memory_order_relaxed);
+        const u32 rp_switch = g_tb14_rp_switch.exchange(0, std::memory_order_relaxed);
+        const u32 rp_area = g_tb14_rp_switch_area_only.exchange(0, std::memory_order_relaxed);
+        const u32 rp_end = g_tb14_rp_end.exchange(0, std::memory_order_relaxed);
+        const u32 rp_flush = g_tb14_rp_flush.exchange(0, std::memory_order_relaxed);
         // Intervalle reel entre deux presentations. Evite d'avoir a le reconstituer a
         // partir des horodatages du log, et donne la vitesse directement : la 3DS
         // presente a 59,83 Hz, donc speed_pct = 1672 / frame_ms environ.
@@ -2476,7 +2484,8 @@ void RasterizerVulkan::TickFrame() {
                      "succeeded={} absorbed={} starved={} accel={} software={} sw_pct={} "
                      "verts_accel={} verts_sw={} sw_vert_pct={} sw_verts_per_draw={} "
                      "swhist_le8={} swhist_le32={} swhist_le128={} swhist_le512={} "
-                     "swhist_le2048={} swhist_gt2048={}",
+                     "swhist_le2048={} swhist_gt2048={} "
+                     "rp_begin={} rp_switch={} rp_area={} rp_end={} rp_flush={}",
                      frame, frame_us, entered, completed, succeeded, absorbed,
                      static_cast<u32>(starved), accel, software,
                      entered > 0 ? (software * 100 / entered) : 0,
@@ -2487,7 +2496,8 @@ void RasterizerVulkan::TickFrame() {
                      g_a7z12_sw_vert_hist[2].load(std::memory_order_relaxed),
                      g_a7z12_sw_vert_hist[3].load(std::memory_order_relaxed),
                      g_a7z12_sw_vert_hist[4].load(std::memory_order_relaxed),
-                     g_a7z12_sw_vert_hist[5].load(std::memory_order_relaxed));
+                     g_a7z12_sw_vert_hist[5].load(std::memory_order_relaxed), rp_begin,
+                     rp_switch, rp_area, rp_end, rp_flush);
         }
     }
     res_cache.TickFrame();

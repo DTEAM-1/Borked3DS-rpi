@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
 
 #include "common/math_util.h"
@@ -19,6 +20,30 @@ namespace Vulkan {
 class Instance;
 class Scheduler;
 class Framebuffer;
+
+// ---------------------------------------------------------------------------
+// TB14 -- instrumentation des render pass (axe B).
+//
+// Sur un GPU tile-based comme le V3D du Pi5, fermer un render pass force un store
+// du tile buffer et un reload au suivant. RenderManager::BeginRendering ne
+// court-circuite que si le pass est STRICTEMENT identique, et render_area (donc le
+// draw_rect) fait partie de la comparaison : tout changement de rectangle ferme le
+// pass, pose deux barrieres d'image, et peut declencher un scheduler.Flush().
+//
+// Ces compteurs sont lus et remis a zero par le census A7Z12 (vk_rasterizer.cpp).
+// Cout : un fetch_add relaxed par draw, negligeable devant le reste du chemin.
+//
+//   g_tb14_rp_begin            appels a BeginRendering (~= draws)
+//   g_tb14_rp_switch           bascules reelles (pass != new_pass)
+//   g_tb14_rp_switch_area_only bascules ou SEUL le rectangle change (meme cible)
+//   g_tb14_rp_end              EndRendering effectifs
+//   g_tb14_rp_flush            scheduler.Flush() declenches par le seuil
+// ---------------------------------------------------------------------------
+extern std::atomic<u32> g_tb14_rp_begin;
+extern std::atomic<u32> g_tb14_rp_switch;
+extern std::atomic<u32> g_tb14_rp_switch_area_only;
+extern std::atomic<u32> g_tb14_rp_end;
+extern std::atomic<u32> g_tb14_rp_flush;
 
 struct RenderPass {
     vk::Framebuffer framebuffer;
