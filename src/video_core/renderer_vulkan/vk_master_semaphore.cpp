@@ -1,12 +1,35 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <chrono>
 #include <limits>
 #include <mutex>
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 
 namespace Vulkan {
+
+// --- TB24 : compteurs de soumission (declares dans vk_master_semaphore.h) ---
+std::atomic<u64> g_tb24_submits{0};
+std::atomic<u64> g_tb24_submit_ns{0};
+std::atomic<u64> g_tb24_submit_max_ns{0};
+std::atomic<u64> g_tb24_gpu_lag{0};
+
+namespace {
+/// Enregistre une soumission : duree de l'appel submit() et retard du GPU.
+void Tb24RecordSubmit(u64 elapsed_ns, u64 lag) noexcept {
+    g_tb24_submits.fetch_add(1, std::memory_order_relaxed);
+    g_tb24_submit_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+    g_tb24_gpu_lag.fetch_add(lag, std::memory_order_relaxed);
+    u64 prev = g_tb24_submit_max_ns.load(std::memory_order_relaxed);
+    while (elapsed_ns > prev &&
+           !g_tb24_submit_max_ns.compare_exchange_weak(prev, elapsed_ns,
+                                                       std::memory_order_relaxed)) {
+    }
+}
+} // Anonymous namespace
+
 
 constexpr u64 WAIT_TIMEOUT = std::numeric_limits<u64>::max();
 
@@ -95,11 +118,22 @@ void MasterSemaphoreTimeline::SubmitWork(vk::CommandBuffer cmdbuf, vk::Semaphore
         .pSignalSemaphores = signal_semaphores.data(),
     };
 
+    // TB24 : on mesure l'appel submit() lui-meme. C'est la que le noyau valide la
+    // liste des BOs referencees (objects_lookup, drm_gem_lock_reservations,
+    // dma_resv_reserve_fences), donc la que se paie le cout d'emission.
+    const u64 tb24_lag = CurrentTick() > KnownGpuTick() ? CurrentTick() - KnownGpuTick() : 0;
+    const auto tb24_t0 = std::chrono::steady_clock::now();
+
     try {
         instance.GetGraphicsQueue().submit(submit_info);
     } catch (vk::DeviceLostError& err) {
         UNREACHABLE_MSG("Device lost during submit: {}", err.what());
     }
+
+    Tb24RecordSubmit(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now() - tb24_t0)
+                                          .count()),
+                     tb24_lag);
 }
 
 constexpr u64 FENCE_RESERVE = 8;
@@ -147,11 +181,20 @@ void MasterSemaphoreFence::SubmitWork(vk::CommandBuffer cmdbuf, vk::Semaphore wa
 
     const vk::Fence fence = GetFreeFence();
 
+    // TB24 : idem sur le chemin fence (voir commentaire du chemin timeline).
+    const u64 tb24_lag = CurrentTick() > KnownGpuTick() ? CurrentTick() - KnownGpuTick() : 0;
+    const auto tb24_t0 = std::chrono::steady_clock::now();
+
     try {
         instance.GetGraphicsQueue().submit(submit_info, fence);
     } catch (vk::DeviceLostError& err) {
         UNREACHABLE_MSG("Device lost during submit: {}", err.what());
     }
+
+    Tb24RecordSubmit(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now() - tb24_t0)
+                                          .count()),
+                     tb24_lag);
 
     std::scoped_lock lock{wait_mutex};
     wait_queue.emplace(fence, signal_value);

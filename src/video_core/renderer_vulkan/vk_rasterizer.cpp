@@ -34,6 +34,7 @@
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/renderer_vulkan/vk_render_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -2468,6 +2469,12 @@ void RasterizerVulkan::TickFrame() {
         const u32 rp_end = g_tb14_rp_end.exchange(0, std::memory_order_relaxed);
         const u32 rp_flush = g_tb14_rp_flush.exchange(0, std::memory_order_relaxed);
 
+        // TB24 : soumissions GPU de la periode ecoulee.
+        const u64 sub_n = g_tb24_submits.exchange(0, std::memory_order_relaxed);
+        const u64 sub_ns = g_tb24_submit_ns.exchange(0, std::memory_order_relaxed);
+        const u64 sub_max = g_tb24_submit_max_ns.exchange(0, std::memory_order_relaxed);
+        const u64 sub_lag = g_tb24_gpu_lag.exchange(0, std::memory_order_relaxed);
+
         // ------------------------------------------------------------------
         // TB16 -- occupation CPU du thread qui pilote le rendu.
         //
@@ -2536,7 +2543,8 @@ void RasterizerVulkan::TickFrame() {
                      "swhist_le8={} swhist_le32={} swhist_le128={} swhist_le512={} "
                      "swhist_le2048={} swhist_gt2048={} "
                      "rp_begin={} rp_switch={} rp_area={} rp_end={} rp_flush={} "
-                     "cpu_us={} wall_us={} cpu_pct={} pframes={} tid={}",
+                     "cpu_us={} wall_us={} cpu_pct={} pframes={} tid={} "
+                     "sub_n={} sub_us={} sub_max_us={} sub_lag={}",
                      frame, frame_us, entered, completed, succeeded, absorbed,
                      static_cast<u32>(starved), accel, software,
                      entered > 0 ? (software * 100 / entered) : 0,
@@ -2549,7 +2557,7 @@ void RasterizerVulkan::TickFrame() {
                      g_a7z12_sw_vert_hist[4].load(std::memory_order_relaxed),
                      g_a7z12_sw_vert_hist[5].load(std::memory_order_relaxed), rp_begin,
                      rp_switch, rp_area, rp_end, rp_flush, cpu_us, wall_us, cpu_pct, pframes,
-                     tid);
+                     tid, sub_n, sub_ns / 1000ull, sub_max / 1000ull, sub_lag);
         }
     }
     res_cache.TickFrame();

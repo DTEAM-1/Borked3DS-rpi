@@ -12,6 +12,34 @@
 
 namespace Vulkan {
 
+// ---------------------------------------------------------------------------
+// TB24 -- instrumentation des soumissions GPU (axe B).
+//
+// Etabli par TB13/TB17/TB18 et les profils threads : le temps par frame est cloue
+// a ~68 ms alors qu'on peut retirer >20 ms de travail CPU sans rien gagner, et
+// qu'aucun thread n'est sature. Le profil perf place ~34 % du temps dans le noyau,
+// [drm] et libvulkan_broadcom -- des symboles de VALIDATION DE SOUMISSION
+// (objects_lookup, dma_resv_*, drm_gem_lock_reservations), pas de rendu.
+//
+// Question tranchee ici : le GPU calcule-t-il reellement 68 ms, ou paie-t-on un
+// cout fixe par vkQueueSubmit ?
+//
+//   g_tb24_submits        nombre de vkQueueSubmit
+//   g_tb24_submit_ns      temps mur passe DANS l'appel submit() (cout d'emission)
+//   g_tb24_submit_max_ns  pire appel unique
+//   g_tb24_gpu_lag        somme des (CurrentTick - KnownGpuTick) au moment du submit,
+//                         soit la profondeur de pipeline : 0 = le GPU suit en temps
+//                         reel (donc on ne l'attend pas), eleve = le GPU est en retard
+//
+// Cout : un fetch_add relaxed par soumission (~5/frame), negligeable.
+// Lus et remis a zero par le census A7Z12 dans vk_rasterizer.cpp.
+// ---------------------------------------------------------------------------
+extern std::atomic<u64> g_tb24_submits;
+extern std::atomic<u64> g_tb24_submit_ns;
+extern std::atomic<u64> g_tb24_submit_max_ns;
+extern std::atomic<u64> g_tb24_gpu_lag;
+
+
 class Instance;
 class Scheduler;
 
