@@ -39,6 +39,13 @@ extern std::atomic<u64> g_tb24_submit_ns;
 extern std::atomic<u64> g_tb24_submit_max_ns;
 extern std::atomic<u64> g_tb24_gpu_lag;
 
+// TB24b -- second chemin de soumission : la presentation soumet DIRECTEMENT a la file
+// graphique (vk_present_window.cpp), sans passer par MasterSemaphore::SubmitWork. La
+// premiere version de TB24 ne comptait donc que les soumissions du scheduler.
+extern std::atomic<u64> g_tb24_present_submits;
+extern std::atomic<u64> g_tb24_present_submit_ns;
+extern std::atomic<u64> g_tb24_present_submit_max_ns;
+
 
 class Instance;
 class Scheduler;

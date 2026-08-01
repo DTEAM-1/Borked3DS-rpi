@@ -1,3 +1,4 @@
+#include <chrono>
 // Copyright 2023 Citra Emulator Project
 // Copyright 2024 Borked3DS Emulator Project
 // Licensed under GPLv2 or any later version
@@ -8,6 +9,7 @@
 #include "common/thread.h"
 #include "core/frontend/emu_window.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_present_window.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -502,11 +504,29 @@ void PresentWindow::CopyToSwapchain(Frame* frame) {
 
     std::scoped_lock submit_lock{scheduler.submit_mutex, recreate_surface_mutex};
 
+    // TB24b : SECOND chemin de soumission. Il ne passe PAS par
+    // MasterSemaphore::SubmitWork, donc la premiere version de TB24 ne le voyait pas
+    // -- d'ou les 0,03 soumission/frame mesurees, qui ne comptaient que le scheduler.
+    // Ces compteurs-ci sont distincts pour garder les deux chemins separables.
+    const auto tb24_t0 = std::chrono::steady_clock::now();
+
     try {
         graphics_queue.submit(submit_info, frame->present_done);
     } catch (vk::DeviceLostError& err) {
         LOG_CRITICAL(Render_Vulkan, "Device lost during present submit: {}", err.what());
         UNREACHABLE();
+    }
+
+    {
+        const u64 tb24_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now() - tb24_t0)
+                                                 .count());
+        g_tb24_present_submits.fetch_add(1, std::memory_order_relaxed);
+        g_tb24_present_submit_ns.fetch_add(tb24_ns, std::memory_order_relaxed);
+        u64 prev = g_tb24_present_submit_max_ns.load(std::memory_order_relaxed);
+        while (tb24_ns > prev && !g_tb24_present_submit_max_ns.compare_exchange_weak(
+                                     prev, tb24_ns, std::memory_order_relaxed)) {
+        }
     }
 
     swapchain.Present();

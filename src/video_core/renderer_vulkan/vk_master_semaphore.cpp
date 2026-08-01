@@ -15,6 +15,9 @@ std::atomic<u64> g_tb24_submits{0};
 std::atomic<u64> g_tb24_submit_ns{0};
 std::atomic<u64> g_tb24_submit_max_ns{0};
 std::atomic<u64> g_tb24_gpu_lag{0};
+std::atomic<u64> g_tb24_present_submits{0};
+std::atomic<u64> g_tb24_present_submit_ns{0};
+std::atomic<u64> g_tb24_present_submit_max_ns{0};
 
 namespace {
 /// Enregistre une soumission : duree de l'appel submit() et retard du GPU.
