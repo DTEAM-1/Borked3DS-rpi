@@ -2478,6 +2478,19 @@ void RasterizerVulkan::TickFrame() {
         const u64 psub_ns = g_tb24_present_submit_ns.exchange(0, std::memory_order_relaxed);
         const u64 psub_max = g_tb24_present_submit_max_ns.exchange(0, std::memory_order_relaxed);
 
+        // TB26 : causes des bascules de render pass, puis remise a zero du suivi des
+        // framebuffers distincts pour que le compte porte bien sur la frame suivante.
+        const u32 d_fb = g_tb26_diff_fb.exchange(0, std::memory_order_relaxed);
+        const u32 d_rp = g_tb26_diff_rp.exchange(0, std::memory_order_relaxed);
+        const u32 d_ar = g_tb26_diff_area.exchange(0, std::memory_order_relaxed);
+        const u32 d_cl = g_tb26_diff_clear.exchange(0, std::memory_order_relaxed);
+        const u32 f_fb = g_tb26_first_fb.exchange(0, std::memory_order_relaxed);
+        const u32 f_rp = g_tb26_first_rp.exchange(0, std::memory_order_relaxed);
+        const u32 f_ar = g_tb26_first_area.exchange(0, std::memory_order_relaxed);
+        const u32 f_cl = g_tb26_first_clear.exchange(0, std::memory_order_relaxed);
+        const u32 fbn = g_tb26_fb_distinct.exchange(0, std::memory_order_relaxed);
+        renderpass_cache.Tb26ResetFrame();
+
         // ------------------------------------------------------------------
         // TB16 -- occupation CPU du thread qui pilote le rendu.
         //
@@ -2548,7 +2561,8 @@ void RasterizerVulkan::TickFrame() {
                      "rp_begin={} rp_switch={} rp_area={} rp_end={} rp_flush={} "
                      "cpu_us={} wall_us={} cpu_pct={} pframes={} tid={} "
                      "sub_n={} sub_us={} sub_max_us={} sub_lag={} "
-                     "psub_n={} psub_us={} psub_max_us={}",
+                     "psub_n={} psub_us={} psub_max_us={} "
+                     "d_fb={} d_rp={} d_ar={} d_cl={} f_fb={} f_rp={} f_ar={} f_cl={} fbn={}",
                      frame, frame_us, entered, completed, succeeded, absorbed,
                      static_cast<u32>(starved), accel, software,
                      entered > 0 ? (software * 100 / entered) : 0,
@@ -2562,7 +2576,8 @@ void RasterizerVulkan::TickFrame() {
                      g_a7z12_sw_vert_hist[5].load(std::memory_order_relaxed), rp_begin,
                      rp_switch, rp_area, rp_end, rp_flush, cpu_us, wall_us, cpu_pct, pframes,
                      tid, sub_n, sub_ns / 1000ull, sub_max / 1000ull, sub_lag, psub_n,
-                     psub_ns / 1000ull, psub_max / 1000ull);
+                     psub_ns / 1000ull, psub_max / 1000ull, d_fb, d_rp, d_ar, d_cl, f_fb,
+                     f_rp, f_ar, f_cl, fbn);
         }
     }
     res_cache.TickFrame();

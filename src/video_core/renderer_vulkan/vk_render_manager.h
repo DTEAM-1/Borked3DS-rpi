@@ -45,6 +45,38 @@ extern std::atomic<u32> g_tb14_rp_switch_area_only;
 extern std::atomic<u32> g_tb14_rp_end;
 extern std::atomic<u32> g_tb14_rp_flush;
 
+// ---------------------------------------------------------------------------
+// TB26 -- POURQUOI le render pass bascule-t-il a chaque draw ?
+//
+// Mesure TB24b (log brut, valeurs PAR FRAME) : entered=320, rp_begin=320,
+// rp_switch=315, rp_end=315. Autrement dit 315 render passes par frame, alors que
+// le V3D est TILE-BASED : chaque fermeture force un store complet du tile buffer,
+// chaque ouverture un reload. 67 ms / 315 ~ 213 us par cycle -- l'ordre de grandeur
+// colle exactement au temps mesure.
+//
+// rp_area vaut 0, donc ce n'est PAS la zone de rendu seule qui change. Ces compteurs
+// isolent le champ responsable, en les testant du plus structurel au plus anodin.
+// Un draw peut faire varier plusieurs champs a la fois : les compteurs ne
+// s'excluent pas, sauf cause_first_* qui attribue la bascule au premier champ
+// different dans l'ordre framebuffer > render_pass > area > clear.
+//
+//   g_tb26_diff_fb        le framebuffer differe (changement de cible de rendu)
+//   g_tb26_diff_rp        l'objet render pass differe (format/attachements)
+//   g_tb26_diff_area      la zone de rendu differe
+//   g_tb26_diff_clear     do_clear ou la valeur de clear differe
+//   g_tb26_first_fb/rp/area/clear  attribution exclusive de la bascule
+//   g_tb26_fb_distinct    nombre de framebuffers DISTINCTS vus dans la frame
+// ---------------------------------------------------------------------------
+extern std::atomic<u32> g_tb26_diff_fb;
+extern std::atomic<u32> g_tb26_diff_rp;
+extern std::atomic<u32> g_tb26_diff_area;
+extern std::atomic<u32> g_tb26_diff_clear;
+extern std::atomic<u32> g_tb26_first_fb;
+extern std::atomic<u32> g_tb26_first_rp;
+extern std::atomic<u32> g_tb26_first_area;
+extern std::atomic<u32> g_tb26_first_clear;
+extern std::atomic<u32> g_tb26_fb_distinct;
+
 struct RenderPass {
     vk::Framebuffer framebuffer;
     vk::RenderPass render_pass;
@@ -76,6 +108,9 @@ public:
 
     /// Exits from any currently active renderpass instance
     void EndRendering();
+
+    /// TB26 : remet a zero le suivi des framebuffers distincts (appele par le census).
+    void Tb26ResetFrame() noexcept;
 
     /// Returns the renderpass associated with the color-depth format pair
     vk::RenderPass GetRenderpass(VideoCore::PixelFormat color, VideoCore::PixelFormat depth,

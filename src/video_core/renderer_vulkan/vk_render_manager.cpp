@@ -3,8 +3,10 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <array>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include "common/assert.h"
 #include "video_core/rasterizer_cache/pixel_format.h"
@@ -23,6 +25,51 @@ std::atomic<u32> g_tb14_rp_switch{0};
 std::atomic<u32> g_tb14_rp_switch_area_only{0};
 std::atomic<u32> g_tb14_rp_end{0};
 std::atomic<u32> g_tb14_rp_flush{0};
+
+// --- TB26 : decomposition des causes de bascule (voir vk_render_manager.h) ---
+std::atomic<u32> g_tb26_diff_fb{0};
+std::atomic<u32> g_tb26_diff_rp{0};
+std::atomic<u32> g_tb26_diff_area{0};
+std::atomic<u32> g_tb26_diff_clear{0};
+std::atomic<u32> g_tb26_first_fb{0};
+std::atomic<u32> g_tb26_first_rp{0};
+std::atomic<u32> g_tb26_first_area{0};
+std::atomic<u32> g_tb26_first_clear{0};
+std::atomic<u32> g_tb26_fb_distinct{0};
+
+namespace {
+/// Compte les framebuffers distincts rencontres. Table minuscule, mono-thread
+/// (BeginRendering n'est appele que depuis l'EmuThread) : pas de verrou.
+/// Si le jeu depasse la capacite, on cesse simplement de compter -- la valeur
+/// devient un plancher, ce qui suffit a distinguer "quelques cibles" de "des dizaines".
+constexpr std::size_t Tb26MaxTracked = 64;
+std::array<VkFramebuffer, Tb26MaxTracked> tb26_seen_fb{};
+std::size_t tb26_seen_count = 0;
+
+void Tb26TrackFramebuffer(vk::Framebuffer fb) noexcept {
+    const VkFramebuffer raw = static_cast<VkFramebuffer>(fb);
+    for (std::size_t i = 0; i < tb26_seen_count; ++i) {
+        if (tb26_seen_fb[i] == raw) {
+            return;
+        }
+    }
+    if (tb26_seen_count < Tb26MaxTracked) {
+        tb26_seen_fb[tb26_seen_count++] = raw;
+        g_tb26_fb_distinct.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+/// Remet la table a zero -- appelee par le census a chaque tick via
+/// RenderManager::Tb26ResetFrame().
+void Tb26ResetTracking() noexcept {
+    tb26_seen_count = 0;
+}
+} // Anonymous namespace
+
+void RenderManager::Tb26ResetFrame() noexcept {
+    Tb26ResetTracking();
+}
+
 
 namespace {
 
@@ -75,6 +122,9 @@ RenderManager::~RenderManager() = default;
 void RenderManager::BeginRendering(const Framebuffer* framebuffer,
                                    Common::Rectangle<u32> draw_rect) {
     g_tb14_rp_begin.fetch_add(1, std::memory_order_relaxed);
+    if (framebuffer) {
+        Tb26TrackFramebuffer(framebuffer->Handle());
+    }
     const vk::Rect2D render_area = {
         .offset{
             .x = static_cast<s32>(draw_rect.left),
@@ -110,6 +160,40 @@ void RenderManager::BeginRendering(const RenderPass& new_pass) {
     if (pass.render_pass && pass.framebuffer == new_pass.framebuffer &&
         pass.render_pass == new_pass.render_pass) {
         g_tb14_rp_switch_area_only.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // TB26 : quel champ a change ? Un draw peut en faire varier plusieurs, donc on
+    // compte a la fois les differences individuelles et une attribution exclusive
+    // (first_*) au premier champ different, du plus structurel au plus anodin.
+    {
+        const bool d_fb = pass.framebuffer != new_pass.framebuffer;
+        const bool d_rp = pass.render_pass != new_pass.render_pass;
+        const bool d_area = pass.render_area != new_pass.render_area;
+        const bool d_clear = pass.do_clear != new_pass.do_clear ||
+                             std::memcmp(&pass.clear, &new_pass.clear, sizeof(vk::ClearValue)) != 0;
+
+        if (d_fb) {
+            g_tb26_diff_fb.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (d_rp) {
+            g_tb26_diff_rp.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (d_area) {
+            g_tb26_diff_area.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (d_clear) {
+            g_tb26_diff_clear.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (d_fb) {
+            g_tb26_first_fb.fetch_add(1, std::memory_order_relaxed);
+        } else if (d_rp) {
+            g_tb26_first_rp.fetch_add(1, std::memory_order_relaxed);
+        } else if (d_area) {
+            g_tb26_first_area.fetch_add(1, std::memory_order_relaxed);
+        } else if (d_clear) {
+            g_tb26_first_clear.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     EndRendering();
