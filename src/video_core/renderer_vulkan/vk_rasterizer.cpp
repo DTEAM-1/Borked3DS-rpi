@@ -7488,9 +7488,43 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     // TB28b : adresses physiques 3DS du draw courant, posees ici parce que les deux
     // sites d'appel a BeginRendering de cette fonction sont en aval. Purement
     // descriptif -- lu uniquement a la premiere apparition d'une cible dans la frame.
-    renderpass_cache.Tb28bNoteAddresses(
-        regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
-        regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+    const u32 tb28b_color_addr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
+    const u32 tb28b_depth_addr = regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress();
+    renderpass_cache.Tb28bNoteAddresses(tb28b_color_addr, tb28b_depth_addr);
+
+    // -----------------------------------------------------------------------
+    // TB29 -- SONDE DE MESURE, opt-in, jamais active par defaut.
+    //
+    // TB28a/b ont etabli que Metroid rend deux cibles couleur completes de l'ecran
+    // du haut par frame (130 draws chacune, entrelacees), et TB28c que la seconde
+    // est transferee vers un framebuffer qui n'est JAMAIS presente (0 occurrence
+    // dans TRACE_PRESENT, right_eye=true jamais atteint). Ce serait ~40 % des draws
+    // et ~65 des 148 bascules de render pass depenses pour rien.
+    //
+    // Cette sonde repond a UNE question chiffree : que gagne-t-on a ne pas rendre
+    // ces draws ? Elle saute tout draw dont le color buffer PICA vaut l'adresse
+    // fournie. Ce n'est PAS le correctif -- un correctif devra deriver le critere
+    // automatiquement, pas le recevoir en dur. C'est la mesure qui dit si le
+    // chantier vaut d'etre entrepris.
+    //
+    // Usage :  BORKED3DS_V3DV_TB29_SKIP_COLOR_ADDR=0x180ea600
+    // Absente ou nulle -> comportement strictement inchange (un seul test entier
+    // par draw). Conformement a la regle du projet, on RETIRE la variable de la
+    // ligne pour la desactiver ; ne jamais compter sur une valeur "=0".
+    //
+    // Retourne true = "draw traite", donc aucun repli software : le draw disparait
+    // reellement au lieu d'etre reexecute sur l'autre chemin.
+    // -----------------------------------------------------------------------
+    static const u32 tb29_skip_color_addr = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_TB29_SKIP_COLOR_ADDR");
+        if (value == nullptr || value[0] == '\0') {
+            return 0u;
+        }
+        return static_cast<u32>(std::strtoul(value, nullptr, 0));
+    }();
+    if (tb29_skip_color_addr != 0u && tb28b_color_addr == tb29_skip_color_addr) {
+        return true;
+    }
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_framebuffer_pointer");
         V114ShaderMultiplexFileTraceNumber("v115d_a7z40 framebuffer_handle_valid",
