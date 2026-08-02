@@ -2610,10 +2610,11 @@ void RasterizerVulkan::TickFrame() {
                          "A7Z12_FB_IDENT frame={} idx={} draws={} fb=0x{:x} rp=0x{:x} "
                          "img_c=0x{:x} img_d=0x{:x} color_id={} depth_id={} "
                          "color_lvl={} depth_lvl={} w={} h={} scale={} "
-                         "cfmt={} dfmt={} shadow={}",
+                         "cfmt={} dfmt={} shadow={} c_addr=0x{:08x} d_addr=0x{:08x}",
                          frame, i, fbh[i], t.fb, t.render_pass, t.img_color, t.img_depth,
                          t.color_id, t.depth_id, t.color_level, t.depth_level, t.width,
-                         t.height, t.scale, t.color_fmt, t.depth_fmt, t.shadow);
+                         t.height, t.scale, t.color_fmt, t.depth_fmt, t.shadow,
+                         t.color_addr, t.depth_addr);
             }
         }
     }
@@ -7484,6 +7485,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_get_framebuffer_surfaces");
     }
     const Framebuffer* framebuffer = fb_helper.Framebuffer();
+    // TB28b : adresses physiques 3DS du draw courant, posees ici parce que les deux
+    // sites d'appel a BeginRendering de cette fonction sont en aval. Purement
+    // descriptif -- lu uniquement a la premiere apparition d'une cible dans la frame.
+    renderpass_cache.Tb28bNoteAddresses(
+        regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+        regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_framebuffer_pointer");
         V114ShaderMultiplexFileTraceNumber("v115d_a7z40 framebuffer_handle_valid",

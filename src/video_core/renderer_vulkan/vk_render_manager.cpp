@@ -63,6 +63,12 @@ std::size_t tb26_seen_count = 0;
 VkFramebuffer tb27_run_fb = VK_NULL_HANDLE;
 bool tb27_have_run = false;
 
+// TB28b : adresses physiques 3DS du draw en cours, posees par le rasterizer juste
+// avant BeginRendering et lues a la premiere apparition de chaque cible.
+// Mono-thread (EmuThread), meme justification que la table tb26 ci-dessus.
+u32 tb28b_pending_color_addr = 0;
+u32 tb28b_pending_depth_addr = 0;
+
 /// Enregistre le framebuffer et renvoie son index d'apparition dans la frame
 /// (0 = premier vu). Renvoie Tb26MaxTracked si la table est pleine (jamais atteint
 /// avec ~5 cibles), auquel cas l'appelant n'incremente aucun bucket d'histogramme.
@@ -108,6 +114,11 @@ void Tb26ResetTracking() noexcept {
 
 void RenderManager::Tb26ResetFrame() noexcept {
     Tb26ResetTracking();
+}
+
+void RenderManager::Tb28bNoteAddresses(u32 color_addr, u32 depth_addr) noexcept {
+    tb28b_pending_color_addr = color_addr;
+    tb28b_pending_depth_addr = depth_addr;
 }
 
 
@@ -199,7 +210,9 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
                 t.color_fmt = static_cast<u32>(framebuffer->Format(SurfaceType::Color));
                 t.depth_fmt = static_cast<u32>(framebuffer->Format(SurfaceType::DepthStencil));
                 t.shadow = framebuffer->shadow_rendering ? 1u : 0u;
-                g_tb28a_count.store(fb_idx + 1, std::memory_order_relaxed);
+                t.color_addr = tb28b_pending_color_addr;
+                t.depth_addr = tb28b_pending_depth_addr;
+                g_tb28a_count.store(static_cast<u32>(fb_idx) + 1u, std::memory_order_relaxed);
             }
         }
     }

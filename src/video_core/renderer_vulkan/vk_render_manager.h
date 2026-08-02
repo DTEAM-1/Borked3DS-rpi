@@ -142,6 +142,9 @@ struct Tb28aTarget {
     u32 color_fmt;
     u32 depth_fmt;
     u32 shadow;
+    // TB28b : adresses physiques 3DS des buffers vises par le draw.
+    u32 color_addr;
+    u32 depth_addr;
 };
 
 /// Renseignees dans l'ordre d'apparition dans la frame, comme fbh0..fbh5 de TB27.
@@ -184,6 +187,14 @@ public:
 
     /// TB26 : remet a zero le suivi des framebuffers distincts (appele par le census).
     void Tb26ResetFrame() noexcept;
+
+    /// TB28b : enregistre les adresses physiques 3DS du draw en cours, lues au moment
+    /// ou une cible apparait pour la premiere fois dans la frame. Sert a repondre a
+    /// UNE question : les deux cibles a 130 draws de TB27 sont-elles les deux moities
+    /// d'une paire stereo (adresses gauche/droite), auquel cas l'une d'elles pourrait
+    /// n'etre jamais presentee en mode mono (render_3d=0) et son rendu serait du
+    /// travail pur perdu ? Purement descriptif : aucune decision de rendu ne la lit.
+    void Tb28bNoteAddresses(u32 color_addr, u32 depth_addr) noexcept;
 
     /// Returns the renderpass associated with the color-depth format pair
     vk::RenderPass GetRenderpass(VideoCore::PixelFormat color, VideoCore::PixelFormat depth,
