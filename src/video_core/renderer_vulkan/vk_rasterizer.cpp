@@ -2499,6 +2499,14 @@ void RasterizerVulkan::TickFrame() {
             fbh[i] = g_tb27_fb_draws[i].exchange(0, std::memory_order_relaxed);
         }
 
+        // TB28a : identite des cibles, copiee AVANT Tb26ResetFrame qui remet le
+        // compte a zero. Copie par valeur : l'emission a lieu plus bas, sous garde.
+        const u32 ident_n = std::min(g_tb28a_count.load(std::memory_order_relaxed), 6u);
+        Tb28aTarget idents[6];
+        for (std::size_t i = 0; i < 6; ++i) {
+            idents[i] = g_tb28a_targets[i];
+        }
+
         renderpass_cache.Tb26ResetFrame();
 
         // ------------------------------------------------------------------
@@ -2590,6 +2598,23 @@ void RasterizerVulkan::TickFrame() {
                      psub_ns / 1000ull, psub_max / 1000ull, d_fb, d_rp, d_ar, d_cl, f_fb,
                      f_rp, f_ar, f_cl, fbn, seq_count, seq_draws, fbh[0], fbh[1], fbh[2],
                      fbh[3], fbh[4], fbh[5]);
+
+            // TB28a : une ligne par cible de rendu, dans l'ordre d'apparition (le meme
+            // que fbh0..fbh5). Emise sous la meme garde que le census, donc au plus une
+            // fois par periode : cout negligeable. Sert a repondre a une seule question
+            // -- les cibles jumelles de TB27 sont-elles la meme surface (color_id egal
+            // -> deduplication) ou deux cibles distinctes (-> tri avec dependances) ?
+            for (u32 i = 0; i < ident_n; ++i) {
+                const Tb28aTarget& t = idents[i];
+                LOG_INFO(Render_Vulkan,
+                         "A7Z12_FB_IDENT frame={} idx={} draws={} fb=0x{:x} rp=0x{:x} "
+                         "img_c=0x{:x} img_d=0x{:x} color_id={} depth_id={} "
+                         "color_lvl={} depth_lvl={} w={} h={} scale={} "
+                         "cfmt={} dfmt={} shadow={}",
+                         frame, i, fbh[i], t.fb, t.render_pass, t.img_color, t.img_depth,
+                         t.color_id, t.depth_id, t.color_level, t.depth_level, t.width,
+                         t.height, t.scale, t.color_fmt, t.depth_fmt, t.shadow);
+            }
         }
     }
     res_cache.TickFrame();

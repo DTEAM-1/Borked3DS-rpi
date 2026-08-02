@@ -103,6 +103,53 @@ extern std::atomic<u32> g_tb27_seq_count;
 extern std::atomic<u32> g_tb27_seq_draws;
 extern std::atomic<u32> g_tb27_fb_draws[6];
 
+// ---------------------------------------------------------------------------
+// TB28a -- IDENTITE des cibles de rendu.
+//
+// TB27 a montre 5 cibles et un entrelacement serre (seq_len_avg = 2,16), avec un
+// histogramme en PAIRES : 130 / 130 / 12 / 12 / 36. Avant de trier ou de fusionner
+// quoi que ce soit, il faut savoir CE QUE SONT ces cibles -- on ne reordonne pas des
+// cibles qu'on n'a pas identifiees.
+//
+// L'hypothese stereo (oeil gauche / oeil droit) est CONTREDITE par la config :
+// render_3d=0 et factor_3d=0. Les champs ci-dessous tranchent :
+//
+//   color_id / depth_id  identifiants de surface dans la rasterizer cache. Deux
+//                        cibles partageant le meme color_id visent la MEME surface
+//                        couleur -> doublon (deduplication possible, correctif simple)
+//                        plutot que deux cibles logiques distinctes (tri necessaire).
+//   shadow_rendering     distingue une passe d'ombre d'une passe principale : cause
+//                        candidate directe des paires observees.
+//   color_level/depth_level  niveau de mip -- discrimine un rendu multi-niveau.
+//   width/height/scale/formats  geometrie et format : deux cibles "jumelles" doivent
+//                        coincider sur tout cela pour etre reellement equivalentes.
+//
+// Purement descriptif : aucune decision de rendu ne lit ces valeurs. Capture a la
+// PREMIERE apparition de chaque cible dans la frame, publiee par le census.
+// ---------------------------------------------------------------------------
+struct Tb28aTarget {
+    u64 fb;
+    u64 render_pass;
+    u64 img_color;
+    u64 img_depth;
+    u32 color_id;
+    u32 depth_id;
+    u32 color_level;
+    u32 depth_level;
+    u32 width;
+    u32 height;
+    u32 scale;
+    u32 color_fmt;
+    u32 depth_fmt;
+    u32 shadow;
+};
+
+/// Renseignees dans l'ordre d'apparition dans la frame, comme fbh0..fbh5 de TB27.
+/// Ecrites et lues depuis le seul EmuThread (meme justification que la table tb26) ;
+/// g_tb28a_count est atomique car le census la lit pour savoir combien sont valides.
+extern Tb28aTarget g_tb28a_targets[6];
+extern std::atomic<u32> g_tb28a_count;
+
 struct RenderPass {
     vk::Framebuffer framebuffer;
     vk::RenderPass render_pass;

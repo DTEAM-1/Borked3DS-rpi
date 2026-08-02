@@ -5,9 +5,11 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 #include "common/assert.h"
 #include "video_core/rasterizer_cache/pixel_format.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -41,6 +43,10 @@ std::atomic<u32> g_tb26_fb_distinct{0};
 std::atomic<u32> g_tb27_seq_count{0};
 std::atomic<u32> g_tb27_seq_draws{0};
 std::atomic<u32> g_tb27_fb_draws[6] = {};
+
+// --- TB28a : identite des cibles de rendu (voir vk_render_manager.h) ---
+Tb28aTarget g_tb28a_targets[6] = {};
+std::atomic<u32> g_tb28a_count{0};
 
 namespace {
 /// Compte les framebuffers distincts rencontres. Table minuscule, mono-thread
@@ -76,13 +82,27 @@ bool tb27_have_run = false;
     return Tb26MaxTracked;
 }
 
+/// Convertit un handle Vulkan natif en entier pour le log. Les handles non
+/// dispatchables sont un pointeur sur cible 64 bits (cas du Pi5) et un u64 ailleurs :
+/// le if constexpr couvre les deux sans avertissement.
+template <typename H>
+[[nodiscard]] u64 RawHandleU64(H raw) noexcept {
+    if constexpr (std::is_pointer_v<H>) {
+        return static_cast<u64>(reinterpret_cast<std::uintptr_t>(raw));
+    } else {
+        return static_cast<u64>(raw);
+    }
+}
+
 /// Remet le suivi a zero -- appele par le census a chaque tick via
 /// RenderManager::Tb26ResetFrame(). Reinitialise aussi le run TB27 pour que le
-/// premier draw de la frame suivante ouvre toujours un nouveau run.
+/// premier draw de la frame suivante ouvre toujours un nouveau run, et le compte
+/// TB28a pour que les identites soient recapturees a chaque frame.
 void Tb26ResetTracking() noexcept {
     tb26_seen_count = 0;
     tb27_run_fb = VK_NULL_HANDLE;
     tb27_have_run = false;
+    g_tb28a_count.store(0, std::memory_order_relaxed);
 }
 } // Anonymous namespace
 
@@ -156,6 +176,31 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
         g_tb27_seq_draws.fetch_add(1, std::memory_order_relaxed);
         if (fb_idx < 6) {
             g_tb27_fb_draws[fb_idx].fetch_add(1, std::memory_order_relaxed);
+
+            // TB28a : les index d'apparition sont attribues dans l'ordre croissant,
+            // donc fb_idx >= count identifie exactement la premiere apparition de
+            // cette cible dans la frame. Capture une seule fois par cible et par
+            // frame : aucun cout sur les ~320 draws suivants.
+            if (fb_idx >= g_tb28a_count.load(std::memory_order_relaxed)) {
+                const std::array<vk::Image, 2> imgs = framebuffer->Images();
+                Tb28aTarget& t = g_tb28a_targets[fb_idx];
+                t.fb = RawHandleU64(raw);
+                t.render_pass =
+                    RawHandleU64(static_cast<VkRenderPass>(framebuffer->RenderPass()));
+                t.img_color = RawHandleU64(static_cast<VkImage>(imgs[0]));
+                t.img_depth = RawHandleU64(static_cast<VkImage>(imgs[1]));
+                t.color_id = framebuffer->color_id.index;
+                t.depth_id = framebuffer->depth_id.index;
+                t.color_level = framebuffer->color_level;
+                t.depth_level = framebuffer->depth_level;
+                t.width = framebuffer->Width();
+                t.height = framebuffer->Height();
+                t.scale = framebuffer->Scale();
+                t.color_fmt = static_cast<u32>(framebuffer->Format(SurfaceType::Color));
+                t.depth_fmt = static_cast<u32>(framebuffer->Format(SurfaceType::DepthStencil));
+                t.shadow = framebuffer->shadow_rendering ? 1u : 0u;
+                g_tb28a_count.store(fb_idx + 1, std::memory_order_relaxed);
+            }
         }
     }
     const vk::Rect2D render_area = {
