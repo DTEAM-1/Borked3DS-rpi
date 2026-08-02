@@ -2489,6 +2489,16 @@ void RasterizerVulkan::TickFrame() {
         const u32 f_ar = g_tb26_first_area.exchange(0, std::memory_order_relaxed);
         const u32 f_cl = g_tb26_first_clear.exchange(0, std::memory_order_relaxed);
         const u32 fbn = g_tb26_fb_distinct.exchange(0, std::memory_order_relaxed);
+
+        // TB27 : geometrie des runs par cible. Lus AVANT Tb26ResetFrame, qui
+        // reinitialise le suivi des runs et la table d'index d'apparition.
+        const u32 seq_count = g_tb27_seq_count.exchange(0, std::memory_order_relaxed);
+        const u32 seq_draws = g_tb27_seq_draws.exchange(0, std::memory_order_relaxed);
+        u32 fbh[6];
+        for (std::size_t i = 0; i < 6; ++i) {
+            fbh[i] = g_tb27_fb_draws[i].exchange(0, std::memory_order_relaxed);
+        }
+
         renderpass_cache.Tb26ResetFrame();
 
         // ------------------------------------------------------------------
@@ -2562,7 +2572,8 @@ void RasterizerVulkan::TickFrame() {
                      "cpu_us={} wall_us={} cpu_pct={} pframes={} tid={} "
                      "sub_n={} sub_us={} sub_max_us={} sub_lag={} "
                      "psub_n={} psub_us={} psub_max_us={} "
-                     "d_fb={} d_rp={} d_ar={} d_cl={} f_fb={} f_rp={} f_ar={} f_cl={} fbn={}",
+                     "d_fb={} d_rp={} d_ar={} d_cl={} f_fb={} f_rp={} f_ar={} f_cl={} fbn={} "
+                     "seq_count={} seq_draws={} fbh0={} fbh1={} fbh2={} fbh3={} fbh4={} fbh5={}",
                      frame, frame_us, entered, completed, succeeded, absorbed,
                      static_cast<u32>(starved), accel, software,
                      entered > 0 ? (software * 100 / entered) : 0,
@@ -2577,7 +2588,8 @@ void RasterizerVulkan::TickFrame() {
                      rp_switch, rp_area, rp_end, rp_flush, cpu_us, wall_us, cpu_pct, pframes,
                      tid, sub_n, sub_ns / 1000ull, sub_max / 1000ull, sub_lag, psub_n,
                      psub_ns / 1000ull, psub_max / 1000ull, d_fb, d_rp, d_ar, d_cl, f_fb,
-                     f_rp, f_ar, f_cl, fbn);
+                     f_rp, f_ar, f_cl, fbn, seq_count, seq_draws, fbh[0], fbh[1], fbh[2],
+                     fbh[3], fbh[4], fbh[5]);
         }
     }
     res_cache.TickFrame();

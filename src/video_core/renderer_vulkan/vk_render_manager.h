@@ -77,6 +77,32 @@ extern std::atomic<u32> g_tb26_first_area;
 extern std::atomic<u32> g_tb26_first_clear;
 extern std::atomic<u32> g_tb26_fb_distinct;
 
+// ---------------------------------------------------------------------------
+// TB27 -- FAISABILITE du regroupement des draws par cible de rendu.
+//
+// TB26 a etabli QUE la bascule vient du framebuffer (f_fb=148/frame pour fbn=5).
+// TB27 mesure la GEOMETRIE de ces bascules : les draws d'une meme cible arrivent-ils
+// deja groupes, ou entrelaces ?
+//
+//   runs LONGS  (ex. 60 draws/run) -> fusionner les sequences adjacentes suffit,
+//                                      correctif simple et sur ;
+//   runs COURTS (2-3 draws/run)    -> il faut un vrai tri avec analyse de
+//                                      dependances lecture/ecriture, chantier lourd.
+//
+// Un "run" est une sequence maximale de draws CONSECUTIFS visant le meme framebuffer
+// (meme cible = meme tile buffer sur le V3D). Segmentation par frame, comme fbn.
+//
+//   g_tb27_seq_count   nombre de runs dans la frame
+//   g_tb27_seq_draws   total des draws segmentes (== rp_begin ; compte local pour que
+//                      seq_len_avg = seq_draws / seq_count soit auto-coherent)
+//   g_tb27_fb_draws[i] draws vers le i-eme framebuffer dans l'ordre de premiere
+//                      apparition dans la frame (publie en fbh0..fbh5 ; au-dela de 6
+//                      cibles, le surplus n'est pas ventile -- fbn en donne le total)
+// ---------------------------------------------------------------------------
+extern std::atomic<u32> g_tb27_seq_count;
+extern std::atomic<u32> g_tb27_seq_draws;
+extern std::atomic<u32> g_tb27_fb_draws[6];
+
 struct RenderPass {
     vk::Framebuffer framebuffer;
     vk::RenderPass render_pass;

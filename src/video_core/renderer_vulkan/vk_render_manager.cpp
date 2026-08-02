@@ -37,6 +37,11 @@ std::atomic<u32> g_tb26_first_area{0};
 std::atomic<u32> g_tb26_first_clear{0};
 std::atomic<u32> g_tb26_fb_distinct{0};
 
+// --- TB27 : longueur des runs consecutifs par cible + histogramme par framebuffer ---
+std::atomic<u32> g_tb27_seq_count{0};
+std::atomic<u32> g_tb27_seq_draws{0};
+std::atomic<u32> g_tb27_fb_draws[6] = {};
+
 namespace {
 /// Compte les framebuffers distincts rencontres. Table minuscule, mono-thread
 /// (BeginRendering n'est appele que depuis l'EmuThread) : pas de verrou.
@@ -46,23 +51,38 @@ constexpr std::size_t Tb26MaxTracked = 64;
 std::array<VkFramebuffer, Tb26MaxTracked> tb26_seen_fb{};
 std::size_t tb26_seen_count = 0;
 
-void Tb26TrackFramebuffer(vk::Framebuffer fb) noexcept {
+// TB27 : segmentation en runs. tb27_run_fb retient la cible du run courant ;
+// tb27_have_run distingue "aucun draw encore vu cette frame" du framebuffer nul.
+// Mono-thread (EmuThread), meme justification que la table tb26 ci-dessus.
+VkFramebuffer tb27_run_fb = VK_NULL_HANDLE;
+bool tb27_have_run = false;
+
+/// Enregistre le framebuffer et renvoie son index d'apparition dans la frame
+/// (0 = premier vu). Renvoie Tb26MaxTracked si la table est pleine (jamais atteint
+/// avec ~5 cibles), auquel cas l'appelant n'incremente aucun bucket d'histogramme.
+[[nodiscard]] std::size_t Tb26TrackFramebuffer(vk::Framebuffer fb) noexcept {
     const VkFramebuffer raw = static_cast<VkFramebuffer>(fb);
     for (std::size_t i = 0; i < tb26_seen_count; ++i) {
         if (tb26_seen_fb[i] == raw) {
-            return;
+            return i;
         }
     }
     if (tb26_seen_count < Tb26MaxTracked) {
+        const std::size_t idx = tb26_seen_count;
         tb26_seen_fb[tb26_seen_count++] = raw;
         g_tb26_fb_distinct.fetch_add(1, std::memory_order_relaxed);
+        return idx;
     }
+    return Tb26MaxTracked;
 }
 
-/// Remet la table a zero -- appelee par le census a chaque tick via
-/// RenderManager::Tb26ResetFrame().
+/// Remet le suivi a zero -- appele par le census a chaque tick via
+/// RenderManager::Tb26ResetFrame(). Reinitialise aussi le run TB27 pour que le
+/// premier draw de la frame suivante ouvre toujours un nouveau run.
 void Tb26ResetTracking() noexcept {
     tb26_seen_count = 0;
+    tb27_run_fb = VK_NULL_HANDLE;
+    tb27_have_run = false;
 }
 } // Anonymous namespace
 
@@ -123,7 +143,20 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
                                    Common::Rectangle<u32> draw_rect) {
     g_tb14_rp_begin.fetch_add(1, std::memory_order_relaxed);
     if (framebuffer) {
-        Tb26TrackFramebuffer(framebuffer->Handle());
+        const VkFramebuffer raw = static_cast<VkFramebuffer>(framebuffer->Handle());
+        const std::size_t fb_idx = Tb26TrackFramebuffer(framebuffer->Handle());
+
+        // TB27 : un run s'ouvre au premier draw de la frame ou des que la cible change
+        // par rapport au draw precedent. seq_draws compte chaque draw segmente.
+        if (!tb27_have_run || raw != tb27_run_fb) {
+            g_tb27_seq_count.fetch_add(1, std::memory_order_relaxed);
+            tb27_run_fb = raw;
+            tb27_have_run = true;
+        }
+        g_tb27_seq_draws.fetch_add(1, std::memory_order_relaxed);
+        if (fb_idx < 6) {
+            g_tb27_fb_draws[fb_idx].fetch_add(1, std::memory_order_relaxed);
+        }
     }
     const vk::Rect2D render_area = {
         .offset{
