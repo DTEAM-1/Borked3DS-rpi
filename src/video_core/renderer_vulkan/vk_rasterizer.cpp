@@ -720,31 +720,6 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return cached;
 }
 
-// ---------------------------------------------------------------------------
-// TB31 -- SUPPRESSION DES BASCULES DE RENDER PASS A CIBLE IDENTIQUE. Opt-in.
-//
-// TB26 : sur 315 bascules par frame, 148 viennent du framebuffer et 167 du seul
-// objet render pass, A FRAMEBUFFER IDENTIQUE. TB28a en donne la cause : Metroid
-// alterne, sur la MEME surface couleur, entre une cible AVEC profondeur (130 draws)
-// et la meme cible SANS profondeur (12 draws, depth_id=INVALID). En Vulkan un
-// render pass est lie aux formats de ses attachements, d'ou la fermeture.
-//
-// TB30b chiffre une bascule a 124 us. Ces 167 bascules coutent donc ~20,7 ms par
-// frame, soit le passage de 48,8 % a environ 70 %.
-//
-// Principe : garder la profondeur attachee meme quand le draw ne s'en sert pas.
-// C'est sans effet sur le rendu, car la condition ci-dessous n'est fausse QUE si
-// le jeu n'ecrit pas la profondeur, ne la teste pas, et n'utilise pas le stencil --
-// le pipeline pose alors depthTestEnable=false et depthWriteEnable=false. La cible
-// reste donc identique d'un draw a l'autre et le render pass n'a plus a etre ferme.
-//
-// Reste opt-in tant que le garde-fou non-regression n'a pas ete passe sur les trois
-// temoins. Absent de la ligne -> comportement strictement inchange.
-// ---------------------------------------------------------------------------
-[[nodiscard]] bool IsTb31ForceDepthAttachEnabled() {
-    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TB31_FORCE_DEPTH_ATTACH");
-    return cached;
-}
 
 /// TB34 : sondes de trace lourdes, desormais opt-in. Elles etaient INCONDITIONNELLES :
 /// ~266 lignes/s cumulees, 11 Mo par session. Tant que le GPU etait le mur (TB26-TB32)
@@ -7526,11 +7501,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     const bool using_depth_fb =
         !shadow_rendering && regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress() != 0 &&
         (write_depth_fb || regs.framebuffer.output_merger.depth_test_enable != 0 ||
-         (has_stencil && pipeline_info.depth_stencil.stencil_test_enable) ||
-         // TB31 : garde la profondeur attachee meme inutilisee, pour que la cible ne
-         // change pas entre deux draws consecutifs. Le pipeline desactive de toute
-         // facon test et ecriture dans ce cas -- voir le commentaire du predicat.
-         IsTb31ForceDepthAttachEnabled());
+         (has_stencil && pipeline_info.depth_stencil.stencil_test_enable));
 
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_get_framebuffer_surfaces");
@@ -7551,39 +7522,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     const u32 tb28b_depth_addr = regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress();
     renderpass_cache.Tb28bNoteAddresses(tb28b_color_addr, tb28b_depth_addr);
 
-    // -----------------------------------------------------------------------
-    // TB29 -- SONDE DE MESURE, opt-in, jamais active par defaut.
-    //
-    // TB28a/b ont etabli que Metroid rend deux cibles couleur completes de l'ecran
-    // du haut par frame (130 draws chacune, entrelacees), et TB28c que la seconde
-    // est transferee vers un framebuffer qui n'est JAMAIS presente (0 occurrence
-    // dans TRACE_PRESENT, right_eye=true jamais atteint). Ce serait ~40 % des draws
-    // et ~65 des 148 bascules de render pass depenses pour rien.
-    //
-    // Cette sonde repond a UNE question chiffree : que gagne-t-on a ne pas rendre
-    // ces draws ? Elle saute tout draw dont le color buffer PICA vaut l'adresse
-    // fournie. Ce n'est PAS le correctif -- un correctif devra deriver le critere
-    // automatiquement, pas le recevoir en dur. C'est la mesure qui dit si le
-    // chantier vaut d'etre entrepris.
-    //
-    // Usage :  BORKED3DS_V3DV_TB29_SKIP_COLOR_ADDR=0x180ea600
-    // Absente ou nulle -> comportement strictement inchange (un seul test entier
-    // par draw). Conformement a la regle du projet, on RETIRE la variable de la
-    // ligne pour la desactiver ; ne jamais compter sur une valeur "=0".
-    //
-    // Retourne true = "draw traite", donc aucun repli software : le draw disparait
-    // reellement au lieu d'etre reexecute sur l'autre chemin.
-    // -----------------------------------------------------------------------
-    static const u32 tb29_skip_color_addr = [] {
-        const char* value = std::getenv("BORKED3DS_V3DV_TB29_SKIP_COLOR_ADDR");
-        if (value == nullptr || value[0] == '\0') {
-            return 0u;
-        }
-        return static_cast<u32>(std::strtoul(value, nullptr, 0));
-    }();
-    if (tb29_skip_color_addr != 0u && tb28b_color_addr == tb29_skip_color_addr) {
-        return true;
-    }
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_framebuffer_pointer");
         V114ShaderMultiplexFileTraceNumber("v115d_a7z40 framebuffer_handle_valid",

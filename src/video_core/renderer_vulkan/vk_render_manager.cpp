@@ -161,33 +161,6 @@ namespace {
     return cached;
 }
 
-// ---------------------------------------------------------------------------
-// TB30b -- COUT MARGINAL D'UNE BASCULE DE RENDER PASS. Sonde de mesure, opt-in.
-//
-// TB29 a retire 145 bascules ET 142 draws d'un coup : 68,2 -> 43,3 ms. Le gain est
-// donc une BORNE SUPERIEURE, puisqu'un regroupement correct conserverait les draws.
-// Pour predire ce que vaut le regroupement seul, il faut le cout d'UNE bascule.
-//
-// TB30 (1re version) tentait de faire echouer le court-circuit de BeginRendering.
-// INVALIDE par la mesure : seuls ~5 draws sur 320 reussissent ce court-circuit
-// (rp_switch=315 pour rp_begin=320), donc la sonde n'ajoutait que 1 a 5 bascules --
-// noyees dans le bruit. Le systeme est deja sature : on ne peut pas ajouter de
-// bascules ENTRE les draws, le plafond d'une par draw est quasiment atteint.
-//
-// D'ou cette version : ajouter K cycles fermeture/reouverture SUR LE MEME pass,
-// pour chaque draw. K=1 double le nombre de bascules, K=2 le triple. Aucun draw
-// n'est ajoute, retire ni deplace, et le contenu est preserve (on ne rouvre jamais
-// avec un loadOp CLEAR). Le rendu doit rester STRICTEMENT identique : seule la
-// vitesse bouge. La pente (delta ms / delta rp_switch) donne le cout unitaire.
-//
-// Usage :  BORKED3DS_V3DV_TB30B_EXTRA_CYCLES=<k>
-// Absente ou nulle -> comportement strictement inchange. Conformement a la regle
-// du projet, on RETIRE la variable pour desactiver ; jamais de valeur "=0".
-// ---------------------------------------------------------------------------
-[[nodiscard]] u32 GetTb30ExtraCycles() {
-    static const u32 cached = ReadEnvU32("BORKED3DS_V3DV_TB30B_EXTRA_CYCLES", 0);
-    return cached;
-}
 
 // --- TB32 : comptage des fermetures de render pass par site d'appel ---
 struct Tb32Site {
@@ -376,44 +349,6 @@ void RenderManager::BeginRendering(const RenderPass& new_pass) {
     });
 
     pass = new_pass;
-
-    // -----------------------------------------------------------------------
-    // TB30b : sonde de mesure, inactive par defaut. Ajoute K cycles fermeture /
-    // reouverture sur CE MEME pass. Chaque cycle paie un store puis un load complet
-    // du tile buffer, sans toucher au moindre draw.
-    //
-    // Garde de correction : on saute les passes a clear. Rouvrir un render pass dont
-    // le loadOp est CLEAR reeffacerait ce qui vient d'etre dessine ; ici on ne rouvre
-    // qu'avec clearValueCount=0, ce qui n'est valide que pour un loadOp LOAD.
-    // TB26 mesure f_cl=0 et d_cl=0 sur la scene de reference : en pratique cette
-    // garde n'exclut quasiment aucun draw.
-    //
-    // EndRendering() remet pass.render_pass a null et vide images/aspects (il s'en
-    // sert pour emettre ses barrieres) : on les restaure avant chaque reouverture,
-    // sinon le cycle suivant -- et le EndRendering final -- n'emettraient plus rien.
-    // -----------------------------------------------------------------------
-    const u32 extra_cycles = GetTb30ExtraCycles();
-    if (extra_cycles > 0 && !new_pass.do_clear) {
-        const auto saved_images = images;
-        const auto saved_aspects = aspects;
-        for (u32 i = 0; i < extra_cycles; ++i) {
-            g_tb14_rp_switch.fetch_add(1, std::memory_order_relaxed);
-            EndRendering();
-            images = saved_images;
-            aspects = saved_aspects;
-            scheduler.Record([info = new_pass](vk::CommandBuffer cmdbuf) {
-                const vk::RenderPassBeginInfo renderpass_begin_info = {
-                    .renderPass = info.render_pass,
-                    .framebuffer = info.framebuffer,
-                    .renderArea = info.render_area,
-                    .clearValueCount = 0u,
-                    .pClearValues = nullptr,
-                };
-                cmdbuf.beginRenderPass(renderpass_begin_info, vk::SubpassContents::eInline);
-            });
-            pass = new_pass;
-        }
-    }
 }
 
 void RenderManager::EndRendering(const char* site_file, int site_line) {

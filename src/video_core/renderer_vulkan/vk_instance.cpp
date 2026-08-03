@@ -475,12 +475,22 @@ bool Instance::CreateDevice() {
     const bool is_v3dv_driver = driver_id == vk::DriverId::eMesaV3Dv ||
                                 driver_id == vk::DriverId::eBroadcomProprietary;
     const bool v3dv_strict_compat = is_v3dv_driver && IsEnvEnabled("BORKED3DS_V3DV_STRICT_COMPAT");
-    // vFACET v155 : reactiver VK_KHR_fragment_shader_barycentric sur V3DV via env. Sa desactivation
-    // en dur (blocklist + force-false ci-dessous + FS hardcode) est la regression qui facette toute
-    // la geometrie eclairee (le FS retombe sur le flip quaternion CPU per-triangle -> aretes
-    // discontinues). gvx64 (reference) l'active sur V3DV et rend lisse. Defaut : desactive (inchange).
-    const bool allow_fs_barycentric =
-        is_v3dv_driver && IsEnvEnabled("BORKED3DS_V3DV_ALLOW_FS_BARYCENTRIC");
+    // vFACET v155 -- CORRIGE (session TB33/TB34). L'ancien commentaire affirmait que la
+    // desactivation en dur du barycentrique etait la cause des facettes et que gvx64
+    // l'activait sur V3DV. C'est FAUX et verifie :
+    //     log      : "Optional extension VK_KHR_fragment_shader_barycentric not available"
+    //     vulkaninfo | grep -i barycentric  ->  aucune sortie
+    // V3DV n'expose tout simplement PAS cette extension. La blocklist et le force-false
+    // qui la visaient etaient donc doublement morts, ainsi que l'echappatoire
+    // BORKED3DS_V3DV_ALLOW_FS_BARYCENTRIC : tous retires ici. Si Mesa l'ajoute un jour,
+    // le chemin normal la prendra sans modification.
+    //
+    // La vraie cause des facettes est ailleurs : le flip de quaternion (q et -q designent
+    // la meme rotation) n'est applique que sur le chemin software, par AddTriangle dans
+    // rasterizer_accelerated.cpp. Sur le chemin accelere c'est le GEOMETRY SHADER qui s'en
+    // charge (glsl_shader_gen.cpp, EmitVtx/AreQuaternionsOpposite), or geometry_shader=false
+    // est banni ici pour un crash SPIR-V (varyings sans decoration Location). Corriger ce
+    // crash est le vrai correctif -- pas une limitation de Mesa.
 
     if (is_v3dv_driver) {
         LOG_WARNING(Render_Vulkan,
@@ -534,7 +544,6 @@ bool Instance::CreateDevice() {
         const bool block_on_v3dv =
             is_v3dv_driver &&
             (std::strcmp(ext.name, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME) == 0 ||
-             (!allow_fs_barycentric && std::strcmp(ext.name, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME) == 0) ||
              (v3dv_strict_compat && std::strcmp(ext.name, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME) == 0) ||
              (v3dv_strict_compat && std::strcmp(ext.name, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME) == 0));
 
@@ -562,9 +571,6 @@ bool Instance::CreateDevice() {
 
     if (is_v3dv_driver) {
         shader_stencil_export = false;
-        if (!allow_fs_barycentric) {
-            fragment_shader_barycentric = false;
-        }
         if (v3dv_strict_compat) {
             fragment_shader_interlock = false;
             extended_dynamic_state3 = false;
