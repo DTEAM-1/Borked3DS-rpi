@@ -746,6 +746,12 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return cached;
 }
 
+/// TB33 : voir le bloc explicatif au site d'appel (liaison des textures).
+[[nodiscard]] bool IsTb33LazyCopyViewEnabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TB33_LAZY_COPY_VIEW");
+    return cached;
+}
+
 [[nodiscard]] bool IsSoftwareClearProbeEnabled() {
     // v82: the v82 descriptorless clear bridge proved that the Pi5/V3DV render target
     // and final present path are alive, but it also creates the green moving rectangles
@@ -8943,14 +8949,42 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         Surface& surface = res_cache.GetTextureSurface(texture);
         Sampler& sampler = res_cache.GetSampler(texture.config);
         const vk::ImageView base_view = surface.ImageView();
-        const vk::ImageView copy_view = surface.CopyImageView();
+        const bool direct_feedback = IsValidImageView(color_view) && color_view == base_view;
+
+        // -------------------------------------------------------------------
+        // TB33 -- NE MATERIALISER LA COPIE QUE SI ELLE PEUT SERVIR.
+        //
+        // Surface::CopyImageView() n'est pas un accesseur : elle ferme le render pass
+        // en cours et blitte l'image entiere de la surface. Elle etait appelee ici
+        // INCONDITIONNELLEMENT, pour chaque texture de chaque draw, alors que son
+        // resultat n'est consulte que dans deux cas (voir plus bas) :
+        //     - feedback direct : la texture EST la cible de rendu courante ;
+        //     - base_view invalide : la copie sert alors de repli.
+        //
+        // Le correctif v115-D avait restreint l'USAGE de copy_view aux vraies boucles
+        // de feedback, mais avait laisse l'APPEL inconditionnel -- la copie etait donc
+        // toujours payee, puis jetee.
+        //
+        // Mesure TB32 : vk_texture_runtime.cpp:1665 (le EndRendering de CopyImageView)
+        // ferme le render pass 303 fois par frame sur 315, contre 5 pour les vraies
+        // bascules de cible. A 124 us la fermeture (TB30b), cela represente ~37,6 ms
+        // par frame -- sans compter le cout des blits eux-memes.
+        //
+        // Equivalence : si copy_view_needed est faux, alors direct_feedback est faux ET
+        // base_view est valide ; les quatre branches qui consultent copy_view sont donc
+        // toutes fausses et texture_view reste base_view. Comportement identique.
+        //
+        // Opt-in le temps de l'A/B et du garde-fou non-regression.
+        // -------------------------------------------------------------------
+        const bool copy_view_needed =
+            !IsTb33LazyCopyViewEnabled() || direct_feedback || !IsValidImageView(base_view);
+        const vk::ImageView copy_view =
+            copy_view_needed ? surface.CopyImageView() : vk::ImageView{};
 
         if (!IsValidImageView(base_view) && !IsValidImageView(copy_view)) {
             bind_null("invalid_base_and_copy_view");
             continue;
         }
-
-        const bool direct_feedback = IsValidImageView(color_view) && color_view == base_view;
         vk::ImageView texture_view = base_view;
         const char* bind_reason = "base_view";
 
