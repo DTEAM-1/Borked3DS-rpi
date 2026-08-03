@@ -2575,6 +2575,11 @@ void RasterizerVulkan::TickFrame() {
 
         const u32 period = GetA7Z12CensusPeriod();
         const bool periodic = period != 0 && (frame % period) == 0;
+        // TB32 : remet les compteurs de sites a zero A CHAQUE tick -- sans quoi ils
+        // cumuleraient sur toute la periode et ne seraient plus par-frame, exactement
+        // le piege documente au recap. Le log, lui, ne sort que sous la garde.
+        renderpass_cache.Tb32DumpAndResetSites(frame <= 400 || starved || periodic);
+
         if (frame <= 400 || starved || periodic) {
             // TB16 : deltas depuis le census precedent (et non depuis la frame
             // precedente), pour que cpu_pct porte sur toute la periode observee.

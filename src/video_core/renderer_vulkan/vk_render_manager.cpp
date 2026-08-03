@@ -11,6 +11,7 @@
 #include <limits>
 #include <type_traits>
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "video_core/rasterizer_cache/pixel_format.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_render_manager.h"
@@ -188,6 +189,42 @@ namespace {
     return cached;
 }
 
+// --- TB32 : comptage des fermetures de render pass par site d'appel ---
+struct Tb32Site {
+    const char* file;
+    int line;
+    u32 count;
+};
+constexpr std::size_t Tb32MaxSites = 32;
+std::array<Tb32Site, Tb32MaxSites> tb32_sites{};
+std::size_t tb32_site_count = 0;
+
+void Tb32NoteSite(const char* file, int line) noexcept {
+    for (std::size_t i = 0; i < tb32_site_count; ++i) {
+        if (tb32_sites[i].line == line && tb32_sites[i].file == file) {
+            ++tb32_sites[i].count;
+            return;
+        }
+    }
+    if (tb32_site_count < Tb32MaxSites) {
+        tb32_sites[tb32_site_count++] = Tb32Site{file, line, 1};
+    }
+}
+
+/// Ne garde que le nom de fichier, pas le chemin complet : les logs restent lisibles.
+[[nodiscard]] const char* Tb32BaseName(const char* path) noexcept {
+    if (path == nullptr) {
+        return "?";
+    }
+    const char* base = path;
+    for (const char* p = path; *p != '\0'; ++p) {
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+    }
+    return base;
+}
+
 } // Anonymous namespace
 
 using VideoCore::PixelFormat;
@@ -197,6 +234,17 @@ RenderManager::RenderManager(const Instance& instance, Scheduler& scheduler)
     : instance{instance}, scheduler{scheduler} {}
 
 RenderManager::~RenderManager() = default;
+
+void RenderManager::Tb32DumpAndResetSites(bool emit_log) {
+    if (emit_log) {
+        for (std::size_t i = 0; i < tb32_site_count; ++i) {
+            LOG_INFO(Render_Vulkan, "A7Z12_RP_END_SITE file={} line={} n={}",
+                     Tb32BaseName(tb32_sites[i].file), tb32_sites[i].line, tb32_sites[i].count);
+        }
+    }
+    tb32_site_count = 0;
+    tb32_sites = {};
+}
 
 void RenderManager::BeginRendering(const Framebuffer* framebuffer,
                                    Common::Rectangle<u32> draw_rect) {
@@ -368,10 +416,14 @@ void RenderManager::BeginRendering(const RenderPass& new_pass) {
     }
 }
 
-void RenderManager::EndRendering() {
+void RenderManager::EndRendering(const char* site_file, int site_line) {
     if (!pass.render_pass) {
         return;
     }
+
+    // TB32 : attribuer cette fermeture a son site d'appel. Table minuscule, recherche
+    // lineaire (18 sites au plus), mono-thread comme le reste du render manager.
+    Tb32NoteSite(site_file, site_line);
 
     g_tb14_rp_end.fetch_add(1, std::memory_order_relaxed);
 

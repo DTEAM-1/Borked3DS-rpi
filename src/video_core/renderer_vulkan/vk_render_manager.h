@@ -183,7 +183,21 @@ public:
     void BeginRendering(const RenderPass& new_pass);
 
     /// Exits from any currently active renderpass instance
-    void EndRendering();
+    /// TB32 : les arguments par defaut capturent le SITE D'APPEL sans qu'aucun des 18
+    /// appelants n'ait a changer. Motif : TB31 a montre que les 168 bascules "f_rp"
+    /// ne sont pas des changements de cible mais des fermetures forcees du render pass
+    /// par du code exterieur au chemin de draw (EndRendering() remet render_pass a null
+    /// en gardant framebuffer, d'ou l'attribution a f_rp). Verifie par l'arithmetique :
+    /// rp_end = 315 = 168 fermetures externes + 147 vraies bascules de framebuffer.
+    /// A 124 us la bascule (TB30b), ces 168 fermetures coutent ~20,8 ms par frame.
+    /// Cette sonde dit LESQUELS des 18 sites en sont responsables.
+    void EndRendering(const char* site_file = __builtin_FILE(),
+                      int site_line = __builtin_LINE());
+
+    /// TB32 : remet a zero les compteurs de sites de fermeture, et si emit_log est
+    /// vrai, ecrit d'abord une ligne par site. Le reset a lieu a CHAQUE tick pour que
+    /// les valeurs restent par-frame ; seul le log est soumis a la garde du census.
+    void Tb32DumpAndResetSites(bool emit_log);
 
     /// TB26 : remet a zero le suivi des framebuffers distincts (appele par le census).
     void Tb26ResetFrame() noexcept;
