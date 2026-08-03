@@ -746,6 +746,21 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return cached;
 }
 
+/// TB34 : sondes de trace lourdes, desormais opt-in. Elles etaient INCONDITIONNELLES :
+/// ~266 lignes/s cumulees, 11 Mo par session. Tant que le GPU etait le mur (TB26-TB32)
+/// ce cout se noyait ; depuis TB33 le CPU est limitant (cpu_pct=99), donc toute charge
+/// CPU retiree se lit directement en vitesse. Gater l'EMISSION ne retire pas la chaine
+/// du binaire : les marqueurs de borked3ds.sh continuent de fonctionner.
+[[nodiscard]] bool IsTraceBlendEnabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TRACE_BLEND");
+    return cached;
+}
+
+[[nodiscard]] bool IsTraceDisplayTransferEnabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TRACE_DISPLAY_TRANSFER");
+    return cached;
+}
+
 /// Echappatoire : retablit l'appel inconditionnel a Surface::CopyImageView().
 /// Voir le bloc explicatif au site d'appel (liaison des textures). N'existe que pour
 /// pouvoir revenir a l'ancien comportement sans rebuild si un titre non teste
@@ -9153,14 +9168,16 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
     const PAddr src_addr = config.GetPhysicalInputAddress();
     const PAddr dst_addr = config.GetPhysicalOutputAddress();
     const bool result = res_cache.AccelerateDisplayTransfer(config);
-    LOG_WARNING(Render_Vulkan,
-                "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
-                " input_fmt={} output_fmt={} flip_v={} result={}",
-                src_addr, dst_addr,
-                static_cast<u32>(config.input_format.Value()),
-                static_cast<u32>(config.output_format.Value()),
-                static_cast<u32>(config.flip_vertically.Value()),
-                static_cast<u32>(result));
+    if (IsTraceDisplayTransferEnabled()) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_DISPLAY_TRANSFER src=0x{:08x} dst=0x{:08x}"
+                    " input_fmt={} output_fmt={} flip_v={} result={}",
+                    src_addr, dst_addr,
+                    static_cast<u32>(config.input_format.Value()),
+                    static_cast<u32>(config.output_format.Value()),
+                    static_cast<u32>(config.flip_vertically.Value()),
+                    static_cast<u32>(result));
+    }
 
     return result;
 }
@@ -9499,7 +9516,7 @@ void RasterizerVulkan::SyncColorWriteMask() {
     // invisible UI layers (transparent text / 2D images). A color_write_mask that drops
     // channels, blend_enable off when the game expects blending, or a src/dst factor pair
     // that collapses the output to zero would all manifest as "present but invisible".
-    {
+    if (IsTraceBlendEnabled()) {
         static u32 last_sig = 0xFFFFFFFFu;
         const auto& bl = regs.framebuffer.output_merger.alpha_blending;
         const u32 sig =
