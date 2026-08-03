@@ -746,9 +746,12 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return cached;
 }
 
-/// TB33 : voir le bloc explicatif au site d'appel (liaison des textures).
-[[nodiscard]] bool IsTb33LazyCopyViewEnabled() {
-    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TB33_LAZY_COPY_VIEW");
+/// Echappatoire : retablit l'appel inconditionnel a Surface::CopyImageView().
+/// Voir le bloc explicatif au site d'appel (liaison des textures). N'existe que pour
+/// pouvoir revenir a l'ancien comportement sans rebuild si un titre non teste
+/// revelait une boucle de feedback que color_view == base_view ne detecte pas.
+[[nodiscard]] bool IsLazyCopyViewDisabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_LAZY_COPY_VIEW");
     return cached;
 }
 
@@ -8974,10 +8977,22 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         // base_view est valide ; les quatre branches qui consultent copy_view sont donc
         // toutes fausses et texture_view reste base_view. Comportement identique.
         //
-        // Opt-in le temps de l'A/B et du garde-fou non-regression.
+        // RESULTAT MESURE (TB33, scene de reference TB13, Metroid) :
+        //     67,55 ms = 49,3 %   ->   37,56 ms = 88,7 %
+        //     rp_switch 315 -> 148, f_rp 167 -> 0, entered inchange a 320,
+        //     cpu_pct 55 -> 99 : le GPU est passe sous le mur CPU (~37,2 ms).
+        // Garde-fou non-regression PASSE : Metroid, Sonic (calque pale present) et
+        // Kid Icarus sans aucune regression visuelle, les trois a 100 %.
+        //
+        // Actif PAR DEFAUT. BORKED3DS_V3DV_DISABLE_LAZY_COPY_VIEW=1 retablit l'ancien
+        // comportement sans rebuild.
+        //
+        // Corollaire : les 148 bascules restantes coutent ~18 ms de GPU, mais ce GPU
+        // s'execute en parallele d'un CPU a ~37 ms. Les supprimer ne rapporterait donc
+        // quasiment rien -- le chantier de tri des draws par cible est SANS OBJET.
         // -------------------------------------------------------------------
         const bool copy_view_needed =
-            !IsTb33LazyCopyViewEnabled() || direct_feedback || !IsValidImageView(base_view);
+            direct_feedback || !IsValidImageView(base_view) || IsLazyCopyViewDisabled();
         const vk::ImageView copy_view =
             copy_view_needed ? surface.CopyImageView() : vk::ImageView{};
 
