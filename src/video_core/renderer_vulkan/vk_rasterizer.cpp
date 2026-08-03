@@ -720,6 +720,32 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return cached;
 }
 
+// ---------------------------------------------------------------------------
+// TB31 -- SUPPRESSION DES BASCULES DE RENDER PASS A CIBLE IDENTIQUE. Opt-in.
+//
+// TB26 : sur 315 bascules par frame, 148 viennent du framebuffer et 167 du seul
+// objet render pass, A FRAMEBUFFER IDENTIQUE. TB28a en donne la cause : Metroid
+// alterne, sur la MEME surface couleur, entre une cible AVEC profondeur (130 draws)
+// et la meme cible SANS profondeur (12 draws, depth_id=INVALID). En Vulkan un
+// render pass est lie aux formats de ses attachements, d'ou la fermeture.
+//
+// TB30b chiffre une bascule a 124 us. Ces 167 bascules coutent donc ~20,7 ms par
+// frame, soit le passage de 48,8 % a environ 70 %.
+//
+// Principe : garder la profondeur attachee meme quand le draw ne s'en sert pas.
+// C'est sans effet sur le rendu, car la condition ci-dessous n'est fausse QUE si
+// le jeu n'ecrit pas la profondeur, ne la teste pas, et n'utilise pas le stencil --
+// le pipeline pose alors depthTestEnable=false et depthWriteEnable=false. La cible
+// reste donc identique d'un draw a l'autre et le render pass n'a plus a etre ferme.
+//
+// Reste opt-in tant que le garde-fou non-regression n'a pas ete passe sur les trois
+// temoins. Absent de la ligne -> comportement strictement inchange.
+// ---------------------------------------------------------------------------
+[[nodiscard]] bool IsTb31ForceDepthAttachEnabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TB31_FORCE_DEPTH_ATTACH");
+    return cached;
+}
+
 [[nodiscard]] bool IsSoftwareClearProbeEnabled() {
     // v82: the v82 descriptorless clear bridge proved that the Pi5/V3DV render target
     // and final present path are alive, but it also creates the green moving rectangles
@@ -7471,7 +7497,11 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     const bool using_depth_fb =
         !shadow_rendering && regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress() != 0 &&
         (write_depth_fb || regs.framebuffer.output_merger.depth_test_enable != 0 ||
-         (has_stencil && pipeline_info.depth_stencil.stencil_test_enable));
+         (has_stencil && pipeline_info.depth_stencil.stencil_test_enable) ||
+         // TB31 : garde la profondeur attachee meme inutilisee, pour que la cible ne
+         // change pas entre deux draws consecutifs. Le pipeline desactive de toute
+         // facon test et ecriture dans ce cas -- voir le commentaire du predicat.
+         IsTb31ForceDepthAttachEnabled());
 
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_get_framebuffer_surfaces");
