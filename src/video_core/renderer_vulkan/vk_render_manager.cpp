@@ -160,6 +160,39 @@ namespace {
     return cached;
 }
 
+// ---------------------------------------------------------------------------
+// TB30 -- COUT MARGINAL D'UNE BASCULE DE RENDER PASS. Sonde de mesure, opt-in.
+//
+// TB29 a retire 145 bascules ET 142 draws d'un coup : 68,2 -> 43,3 ms. Le gain est
+// donc une BORNE SUPERIEURE, puisqu'un regroupement correct conserverait les draws.
+// Pour predire ce que vaut le regroupement seul, il faut le cout d'UNE bascule.
+//
+// Principe : faire echouer periodiquement le court-circuit de BeginRendering. La
+// cible ne change pas -- on ferme et rouvre LE MEME render pass -- donc un cycle
+// store/load complet du tile buffer est paye sans qu'aucun draw ne soit ajoute,
+// retire ni deplace. Le rendu doit rester STRICTEMENT identique : seule la vitesse
+// bouge. La pente (delta ms / delta rp_switch) donne le cout unitaire.
+//
+// Usage :  BORKED3DS_V3DV_TB30_EXTRA_SWITCH_EVERY=<n>
+//   n=1 force une bascule a chaque court-circuit reussi, n=2 une sur deux, etc.
+// Absente ou nulle -> comportement strictement inchange. Conformement a la regle
+// du projet, on RETIRE la variable pour desactiver ; jamais de valeur "=0".
+// ---------------------------------------------------------------------------
+u32 tb30_shortcircuit_counter = 0;
+
+[[nodiscard]] u32 GetTb30ExtraSwitchEvery() {
+    static const u32 cached = ReadEnvU32("BORKED3DS_V3DV_TB30_EXTRA_SWITCH_EVERY", 0);
+    return cached;
+}
+
+[[nodiscard]] bool Tb30ShouldForceSwitch() noexcept {
+    const u32 every = GetTb30ExtraSwitchEvery();
+    if (every == 0) {
+        return false;
+    }
+    return (++tb30_shortcircuit_counter % every) == 0;
+}
+
 } // Anonymous namespace
 
 using VideoCore::PixelFormat;
@@ -241,7 +274,13 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
 void RenderManager::BeginRendering(const RenderPass& new_pass) {
     if (pass == new_pass) [[likely]] {
         num_draws++;
-        return;
+        // TB30 : sonde de mesure, inactive par defaut. Quand elle est armee, on laisse
+        // volontairement tomber dans le chemin de bascule ci-dessous, qui fermera et
+        // rouvrira le meme render pass -- un cycle store/load pur, sans toucher au
+        // moindre draw.
+        if (!Tb30ShouldForceSwitch()) {
+            return;
+        }
     }
 
     // TB14 : une bascule est sur le point d'avoir lieu. On distingue le cas ou seule
