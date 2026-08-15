@@ -3510,6 +3510,31 @@ bool RasterizerVulkan::SetupGeometryShader() {
     // faux au centre des triangles -> facettes. Inerte sans BORKED3DS_V3DV_TG02_GS_TRACE.
     static const bool tg02_trace = std::getenv("BORKED3DS_V3DV_TG02_GS_TRACE") != nullptr;
     if (tg02_trace) {
+        // TG03 : comptage EXHAUSTIF (et non echantillonne) des draws selon l'etat de
+        // l'eclairage fragment PICA. Tranche la question : existe-t-il des draws avec
+        // lighting_disable=0 (qui auraient besoin du GS de fix-up quaternion) ?
+        static std::atomic<u64> tg03_total{0};
+        static std::atomic<u64> tg03_lit{0};    // lighting_disable == 0 -> eclairage ACTIF
+        static std::atomic<u64> tg03_unlit{0};  // lighting_disable == 1 -> eclairage INACTIF
+        const bool lit = (static_cast<u32>(regs.lighting.disable.Value()) == 0u);
+        const u64 tg03_n = ++tg03_total;
+        if (lit) {
+            ++tg03_lit;
+        } else {
+            ++tg03_unlit;
+        }
+        // Premier draw eclaire rencontre : le signaler immediatement, il est decisif.
+        if (lit && tg03_lit.load() <= 4) {
+            LOG_INFO(Render_Vulkan,
+                     "TG03_LIT_DRAW n={} use_gs={} barycentric={} use_geometry_shaders={}",
+                     tg03_n, static_cast<u32>(regs.pipeline.use_gs.Value()),
+                     static_cast<u32>(instance.IsFragmentShaderBarycentricSupported()),
+                     static_cast<u32>(instance.UseGeometryShaders()));
+        }
+        if ((tg03_n % 4096u) == 0u) {
+            LOG_INFO(Render_Vulkan, "TG03_CENSUS total={} lit={} unlit={}", tg03_n,
+                     tg03_lit.load(), tg03_unlit.load());
+        }
         static std::atomic<u64> tg02_counter{0};
         const u64 tg02_n = ++tg02_counter;
         if (tg02_n <= 8 || (tg02_n % 512u) == 0u) {
