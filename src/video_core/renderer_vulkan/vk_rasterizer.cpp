@@ -3504,16 +3504,48 @@ bool RasterizerVulkan::SetupVertexShader() {
 bool RasterizerVulkan::SetupGeometryShader() {
     BORKED3DS_PROFILE("Vulkan", "Geometry Shader Setup");
 
+    // TG02 (axe G, facettes) : sonde de decision du geometry shader de fix-up quaternion.
+    // Question tranchee : SetupGeometryShader() est-il atteint, et par quelle branche sort-il ?
+    // Le GS porte le flip de quaternion (q / -q) sans lequel l'eclairage par fragment est
+    // faux au centre des triangles -> facettes. Inerte sans BORKED3DS_V3DV_TG02_GS_TRACE.
+    static const bool tg02_trace = std::getenv("BORKED3DS_V3DV_TG02_GS_TRACE") != nullptr;
+    if (tg02_trace) {
+        static std::atomic<u64> tg02_counter{0};
+        const u64 tg02_n = ++tg02_counter;
+        if (tg02_n <= 8 || (tg02_n % 512u) == 0u) {
+            LOG_INFO(Render_Vulkan,
+                     "TG02_GS n={} use_gs={} lighting_disable={} barycentric={} use_geometry_shaders={}",
+                     tg02_n, static_cast<u32>(regs.pipeline.use_gs.Value()),
+                     static_cast<u32>(regs.lighting.disable.Value()),
+                     static_cast<u32>(instance.IsFragmentShaderBarycentricSupported()),
+                     static_cast<u32>(instance.UseGeometryShaders()));
+        }
+    }
+
     if (regs.pipeline.use_gs != Pica::PipelineRegs::UseGS::No) {
         LOG_ERROR(Render_Vulkan, "Accelerate draw doesn't support geometry shader");
         return false;
     }
 
     if (regs.lighting.disable || instance.IsFragmentShaderBarycentricSupported()) {
+        if (tg02_trace) {
+            static std::atomic<u64> tg02_trivial{0};
+            const u64 n = ++tg02_trivial;
+            if (n <= 4 || (n % 512u) == 0u) {
+                LOG_INFO(Render_Vulkan, "TG02_GS_EXIT trivial n={}", n);
+            }
+        }
         pipeline_cache.UseTrivialGeometryShader();
         return true;
     }
 
+    if (tg02_trace) {
+        static std::atomic<u64> tg02_fixed{0};
+        const u64 n = ++tg02_fixed;
+        if (n <= 4 || (n % 512u) == 0u) {
+            LOG_INFO(Render_Vulkan, "TG02_GS_EXIT fixed n={}", n);
+        }
+    }
     return pipeline_cache.UseFixedGeometryShader(regs);
 }
 
