@@ -795,11 +795,21 @@ layout(triangle_strip, max_vertices = 3) out;
 
 )";
 
-    // ADD THIS: Declare input arrays from vertex shader
-    for (u32 i = 0; i < config.state.vs_output_attributes; ++i) { //gvx64 - testing only
-        out << "in vec4 vs_out_attr" << i << "[];\n"; //gvx64
-    } //gvx64
-    out << "\n"; //gvx64
+    // Declare input arrays from vertex shader.
+    // TG04 (axe G, facettes) : les varyings d'entree du GS DOIVENT porter le meme
+    // decorateur layout(location = N) que les sorties correspondantes du vertex shader
+    // (cf. branche use_geometry_shader plus haut, qui emet bien "layout(location = i)").
+    // GLSL/OpenGL tolere leur absence, SPIR-V non : sans eux glslang echoue avec
+    // "SPIR-V requires location for user input/output" -> bytecode vide -> le GS de
+    // fix-up quaternion n'est jamais compilé -> pas de flip q/-q sur le chemin accelere
+    // -> eclairage faux au centre des triangles -> facettes sur les surfaces courbes.
+    for (u32 i = 0; i < config.state.vs_output_attributes; ++i) {
+        if (separable_shader) {
+            out << fmt::format("layout(location = {}) ", i);
+        }
+        out << "in vec4 vs_out_attr" << i << "[];\n";
+    }
+    out << "\n";
 
     out << GetGSCommonSource(config.state, separable_shader);
 
