@@ -223,6 +223,48 @@ void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
 // w so it is correct for any clip magnitude, while genuine 3D depths (orders of magnitude larger)
 // are left untouched. Applied in the shader so it covers the software path (Sonic) and the
 // accelerated path (Kid Icarus Uprising) alike.
+// ---------------------------------------------------------------------------------------------
+// TG06 -- quaternion de normale NEUTRE quand le jeu n'en mappe aucun.
+//
+// Mesure (session 17/08, sonde TG05 + desassemblage SPIR-V du GS) : sur les configurations ou
+// AUCUNE semantique QUATERNION_X..W n'est mappee (semantic_maps == 16, la valeur de remplissage),
+// la lambda semantic() renvoie le litteral "1.0" pour les quatre composantes. Le geometry shader
+// compile contient alors, constant-folde par glslang :
+//
+//     OpStore %normquat %76      avec  %76 = OpConstantComposite %v4float 1.0 1.0 1.0 1.0
+//
+// Or normalize(vec4(1,1,1,1)) = (0.5,0.5,0.5,0.5) est une rotation de 120 degres autour de
+// (1,1,1)/sqrt(3) : une normale constante et INCLINEE, alors que le cas neutre est l'identite
+// vec4(0,0,0,1), qui laisse normal = surface_normal. Le fragment shader de ces draws LIT bien
+// normquat (verifie : 6 des 8 FS eclaires du dump font OpLoad %normquat + OpNormalize), donc la
+// valeur arbitraire est reellement consommee par l'eclairage.
+//
+// Constate : TG05 mesure quat_never_mapped=1 sur les configs vs_total=3 et vs_total=5 de Metroid,
+// et quat_ok=1 sur la config vs_total=7. TG04 (v162) avait rendu ces GS COMPILABLES ; il ne les
+// avait pas rendus CORRECTS -- ce qui explique pourquoi la cinematique du vaisseau (config a
+// quaternion mappe) a ete corrigee et pas le vaisseau en jeu.
+//
+// N'agit QUE lorsque les quatre composantes sont non mappees. Une config partiellement mappee
+// garde le comportement d'origine.
+// Actif par defaut ; BORKED3DS_TG06_NO_QUAT_IDENTITY=1 restaure l'ancien comportement pour A/B
+// sans recompilation.
+bool IsQuatIdentityFixEnabled() {
+    static const bool disabled = IsEnabledEnv("BORKED3DS_TG06_NO_QUAT_IDENTITY");
+    return !disabled;
+}
+
+bool AreQuaternionSemanticsUnmapped(const PicaGSConfigState& state) {
+    const auto out_of_range = [&state](VSOutputAttributes::Semantic slot_semantic) {
+        const u32 slot = static_cast<u32>(slot_semantic);
+        return state.semantic_maps[slot].attribute_index >= state.gs_output_attributes;
+    };
+    return out_of_range(VSOutputAttributes::QUATERNION_X) &&
+           out_of_range(VSOutputAttributes::QUATERNION_Y) &&
+           out_of_range(VSOutputAttributes::QUATERNION_Z) &&
+           out_of_range(VSOutputAttributes::QUATERNION_W);
+}
+// ---------------------------------------------------------------------------------------------
+
 std::string ClipZFixupLine(const char* indent) {
     // Enabled by default (correctness fix for the GL/Vulkan clip-convention mismatch).
     // BORKED3DS_V3DV_NO_NEG_ZERO_FIX=1 restores the old behaviour for diagnostics.
@@ -566,10 +608,15 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
 
         V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_emit_quaternion_source");
         out += "vec4 GetVertexQuaternion() {\n";
-        out += "    return vec4(" + semantic(VSOutputAttributes::QUATERNION_X) + ", " +
-               semantic(VSOutputAttributes::QUATERNION_Y) + ", " +
-               semantic(VSOutputAttributes::QUATERNION_Z) + ", " +
-               semantic(VSOutputAttributes::QUATERNION_W) + ");\n";
+        if (IsQuatIdentityFixEnabled() && AreQuaternionSemanticsUnmapped(config.state.gs_state)) {
+            // TG06 : voir le commentaire au-dessus de IsQuatIdentityFixEnabled().
+            out += "    return vec4(0.0, 0.0, 0.0, 1.0);\n";
+        } else {
+            out += "    return vec4(" + semantic(VSOutputAttributes::QUATERNION_X) + ", " +
+                   semantic(VSOutputAttributes::QUATERNION_Y) + ", " +
+                   semantic(VSOutputAttributes::QUATERNION_Z) + ", " +
+                   semantic(VSOutputAttributes::QUATERNION_W) + ");\n";
+        }
         out += "}\n\n";
 
         V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_emit_vtx_source");
@@ -706,10 +753,16 @@ struct Vertex {
     };
 
     out += "vec4 GetVertexQuaternion(Vertex vtx) {\n";
-    out += "    return vec4(" + semantic(VSOutputAttributes::QUATERNION_X) + ", " +
-           semantic(VSOutputAttributes::QUATERNION_Y) + ", " +
-           semantic(VSOutputAttributes::QUATERNION_Z) + ", " +
-           semantic(VSOutputAttributes::QUATERNION_W) + ");\n";
+    if (IsQuatIdentityFixEnabled() && AreQuaternionSemanticsUnmapped(state)) {
+        // TG06 : aucune semantique quaternion mappee -> identite (rotation nulle),
+        // au lieu du repli "1.0" qui donnait une normale constante inclinee de 120 degres.
+        out += "    return vec4(0.0, 0.0, 0.0, 1.0);\n";
+    } else {
+        out += "    return vec4(" + semantic(VSOutputAttributes::QUATERNION_X) + ", " +
+               semantic(VSOutputAttributes::QUATERNION_Y) + ", " +
+               semantic(VSOutputAttributes::QUATERNION_Z) + ", " +
+               semantic(VSOutputAttributes::QUATERNION_W) + ");\n";
+    }
     out += "}\n\n";
 
     out += "void EmitVtx(Vertex vtx, bool quats_opposite) {\n";
