@@ -3,11 +3,97 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <array>
 #include <cstdlib>
 
+#include "common/bit_set.h"
 #include "video_core/shader/generator/pica_fs_config.h"
 
 namespace Pica::Shader {
+
+// ---------------------------------------------------------------------------------------------
+// TG07 (BORKED3DS_TG07_NO_QUAT_LIGHTING=1|2|3) -- INACTIF PAR DEFAUT.
+//
+// Mesure (sonde TG05b, session 17/08, Metroid Samus Returns, vaisseau) : sur les configurations
+// de sortie ou le jeu ne mappe AUCUNE semantique QUATERNION_X..W, l'etat d'eclairage PICA est :
+//
+//     light_disable=0  bump_mode=0  lights=1  clamp_hl=1  shadow=0
+//     LUT desactivees : d0=1 d1=1        LUT ACTIVES : fr=0 rr=0 rg=0 rb=0
+//
+// Autrement dit : les deux lobes classiques (diffus D0, speculaire D1) sont eteints, et ce qui
+// reste actif est le Fresnel plus les trois LUT de REFLEXION RR/RG/RB. Ces draws ne font donc pas
+// de l'eclairage ordinaire, ils font une REFLEXION PURE. Et bump_mode=0 impose
+// surface_normal = (0,0,1), donc la normale du fragment est ENTIEREMENT determinee par normquat.
+//
+// Sans quaternion, normquat vaut une constante de repli, la normale est constante en espace oeil,
+// et refl_value devient une fonction de 'view' seul -- c'est-a-dire une reflexion qui vit dans
+// l'ESPACE ECRAN et balaie l'image quand la camera tourne. C'est le "faisceau" observe, et ca
+// explique que le defaut soit speculaire uniquement : avec D0 et D1 eteints, la reflexion est la
+// seule chose que ces draws calculent.
+//
+// Plutot que d'inventer une normale (TG06 l'a tente et l'A/B a montre que ca AGGRAVE : l'identite
+// oriente la surface face a la camera et maximise l'eclairement), TG07 retire la dependance a une
+// normale inexistante, en reprenant la valeur neutre que le generateur utilise deja lorsque la LUT
+// de reflexion est desactivee (glsl_fs_shader_gen.cpp : "otherwise, 1.0 is used").
+//
+// Trois paliers, du plus chirurgical au plus radical, pour mesurer sans recompiler :
+//   1 : RR/RG/RB neutralisees            -> refl_value = 1.0, plus de reflexion dependante normale
+//   2 : palier 1 + Fresnel neutralise + clamp_highlights desactive (autre terme lie a la normale)
+//   3 : eclairage fragment entierement desactive pour ces draws
+//
+// N'agit QUE si les quatre composantes du quaternion sont non mappees. Toute autre configuration,
+// y compris celle du vaisseau en cinematique (quat_ok=1), est laissee strictement intacte.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+u32 TG07Mode() {
+    static const u32 mode = []() -> u32 {
+        const char* value = std::getenv("BORKED3DS_TG07_NO_QUAT_LIGHTING");
+        if (value == nullptr || value[0] == '\0') {
+            return 0u;
+        }
+        const int parsed = std::atoi(value);
+        return parsed > 0 ? static_cast<u32>(parsed) : 0u;
+    }();
+    return mode;
+}
+
+/// Vrai si AUCUNE des quatre composantes QUATERNION_X..W n'est mappee sur un attribut de sortie
+/// reellement produit par le vertex shader. Reproduit exactement le test de
+/// PicaGSConfigState::Init (shader_gen.cpp) : remplissage par 16, borne = popcount(output_mask).
+bool AreQuaternionSemanticsUnmapped(const Pica::RegsInternal& regs) {
+    using VSOut = Pica::RasterizerRegs::VSOutputAttributes;
+
+    const u32 num_output_attributes = Common::BitSet<u32>(regs.vs.output_mask).Count();
+
+    std::array<u32, 24> attribute_of_semantic{};
+    attribute_of_semantic.fill(16u);
+
+    for (u32 attrib = 0; attrib < regs.rasterizer.vs_output_total; ++attrib) {
+        const std::array semantics{
+            regs.rasterizer.vs_output_attributes[attrib].map_x.Value(),
+            regs.rasterizer.vs_output_attributes[attrib].map_y.Value(),
+            regs.rasterizer.vs_output_attributes[attrib].map_z.Value(),
+            regs.rasterizer.vs_output_attributes[attrib].map_w.Value(),
+        };
+        for (u32 comp = 0; comp < 4; ++comp) {
+            const auto semantic = semantics[comp];
+            if (static_cast<std::size_t>(semantic) < 24) {
+                attribute_of_semantic[static_cast<std::size_t>(semantic)] = attrib;
+            }
+        }
+    }
+
+    const auto unmapped = [&](VSOut::Semantic slot_semantic) {
+        return attribute_of_semantic[static_cast<std::size_t>(slot_semantic)] >=
+               num_output_attributes;
+    };
+
+    return unmapped(VSOut::QUATERNION_X) && unmapped(VSOut::QUATERNION_Y) &&
+           unmapped(VSOut::QUATERNION_Z) && unmapped(VSOut::QUATERNION_W);
+}
+
+} // Anonymous namespace
 
 FramebufferConfig::FramebufferConfig(const Pica::RegsInternal& regs, const Profile& profile) {
     const auto& output_merger = regs.framebuffer.output_merger;
@@ -207,6 +293,36 @@ ProcTexConfig::ProcTexConfig(const Pica::TexturingRegs& regs) {
 
 FSConfig::FSConfig(const Pica::RegsInternal& regs, const UserConfig& user_, const Profile& profile)
     : framebuffer{regs, profile}, texture{regs.texturing, profile}, lighting{regs.lighting},
-      proctex{regs.texturing}, user{user_} {}
+      proctex{regs.texturing}, user{user_} {
+    // TG07 : voir le commentaire en tete de fichier. Inactif hors variable d'environnement.
+    const u32 tg07 = TG07Mode();
+    if (tg07 == 0 || !lighting.enable) {
+        return;
+    }
+    if (!AreQuaternionSemanticsUnmapped(regs)) {
+        return;
+    }
+
+    if (tg07 >= 3) {
+        // Palier 3 : plus d'eclairage fragment du tout sur ces draws.
+        lighting.enable.Assign(0);
+        return;
+    }
+
+    // Palier 1 : reflexion neutralisee -> refl_value = 1.0 (branche "else" du generateur).
+    lighting.lut_rr.raw = 0;
+    lighting.lut_rr.scale = 0.f;
+    lighting.lut_rg.raw = 0;
+    lighting.lut_rg.scale = 0.f;
+    lighting.lut_rb.raw = 0;
+    lighting.lut_rb.scale = 0.f;
+
+    if (tg07 >= 2) {
+        // Palier 2 : on retire aussi les deux autres termes dependant de la normale.
+        lighting.lut_fr.raw = 0;
+        lighting.lut_fr.scale = 0.f;
+        lighting.clamp_highlights.Assign(0);
+    }
+}
 
 } // namespace Pica::Shader
