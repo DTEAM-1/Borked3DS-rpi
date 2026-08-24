@@ -110,18 +110,49 @@ void PicaGSConfigState::Init(const Pica::RegsInternal& regs, bool use_clip_plane
         const bool quat_never_mapped = (qx == 16) && (qy == 16) && (qz == 16) && (qw == 16);
 
         const u32 vs_total = regs.rasterizer.vs_output_total;
-        const u64 key = (static_cast<u64>(vs_total) << 24) |
-                        (static_cast<u64>(gs_output_attributes) << 16) |
-                        (static_cast<u64>(quat_ok ? 1u : 0u) << 8) |
-                        static_cast<u64>(quat_never_mapped ? 1u : 0u);
+
+        // --- TG05b : etat d'eclairage associe a CETTE configuration de sortie ------------------
+        // Motif : le defaut observe sur le vaisseau de Metroid est SPECULAIRE seulement -- correct
+        // a l'ombre, faux sur le reflet. La question decisive est donc : ces draws sans quaternion
+        // demandent-ils vraiment un terme speculaire / une reflexion (LUT D1, RR, RG, RB) ?
+        const u32 lighting_disable = regs.lighting.disable.Value();
+        const u32 light_config = static_cast<u32>(regs.lighting.config0.config.Value());
+        const u32 bump_mode = static_cast<u32>(regs.lighting.config0.bump_mode.Value());
+        const u32 bump_selector = regs.lighting.config0.bump_selector.Value();
+        const u32 bump_renorm_off = regs.lighting.config0.disable_bump_renorm.Value();
+        const u32 clamp_highlights = regs.lighting.config0.clamp_highlights.Value();
+        const u32 enable_shadow = regs.lighting.config0.enable_shadow.Value();
+        const u32 num_lights = regs.lighting.max_light_index.Value() + 1u;
+        const u32 lut_d0 = regs.lighting.config1.disable_lut_d0.Value();
+        const u32 lut_d1 = regs.lighting.config1.disable_lut_d1.Value();
+        const u32 lut_fr = regs.lighting.config1.disable_lut_fr.Value();
+        const u32 lut_rr = regs.lighting.config1.disable_lut_rr.Value();
+        const u32 lut_rg = regs.lighting.config1.disable_lut_rg.Value();
+        const u32 lut_rb = regs.lighting.config1.disable_lut_rb.Value();
+
+        const u64 key = (static_cast<u64>(vs_total) << 40) |
+                        (static_cast<u64>(gs_output_attributes) << 32) |
+                        (static_cast<u64>(quat_ok ? 1u : 0u) << 31) |
+                        (static_cast<u64>(quat_never_mapped ? 1u : 0u) << 30) |
+                        (static_cast<u64>(lighting_disable) << 29) |
+                        (static_cast<u64>(light_config & 0xF) << 25) |
+                        (static_cast<u64>(bump_mode & 0x3) << 23) |
+                        (static_cast<u64>(lut_d1) << 22) | (static_cast<u64>(lut_rr) << 21) |
+                        (static_cast<u64>(lut_rg) << 20) | (static_cast<u64>(lut_rb) << 19) |
+                        (static_cast<u64>(lut_d0) << 18) | (static_cast<u64>(lut_fr) << 17) |
+                        (static_cast<u64>(num_lights & 0xF) << 13);
 
         if (TG05ShouldLog(key)) {
             LOG_INFO(Render,
                      "TG05_SEMANTIC vs_total={} popcount={} quat_attr=({},{},{},{}) quat_ok={} "
-                     "quat_never_mapped={} (quat_ok=0 => normquat force a vec4(1,1,1,1) => "
-                     "normale CONSTANTE => ombrage plat)",
+                     "quat_never_mapped={} | light_disable={} config={} lights={} bump_mode={} "
+                     "bump_sel={} bump_renorm_off={} clamp_hl={} shadow={} | LUT_off d0={} d1={} "
+                     "fr={} rr={} rg={} rb={} (d1/rr/rg/rb = speculaire et reflexion : 0 = LUT "
+                     "ACTIF)",
                      vs_total, gs_output_attributes, qx, qy, qz, qw, quat_ok ? 1 : 0,
-                     quat_never_mapped ? 1 : 0);
+                     quat_never_mapped ? 1 : 0, lighting_disable, light_config, num_lights,
+                     bump_mode, bump_selector, bump_renorm_off, clamp_highlights, enable_shadow,
+                     lut_d0, lut_d1, lut_fr, lut_rr, lut_rg, lut_rb);
         }
     }
     // ------------------------------------------------------------------------------------------

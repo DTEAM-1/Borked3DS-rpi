@@ -246,11 +246,17 @@ void V115DA7Z3DumpGeneratedVertexShader(const std::string& source) {
 //
 // N'agit QUE lorsque les quatre composantes sont non mappees. Une config partiellement mappee
 // garde le comportement d'origine.
-// Actif par defaut ; BORKED3DS_TG06_NO_QUAT_IDENTITY=1 restaure l'ancien comportement pour A/B
-// sans recompilation.
+// RESULTAT MESURE (A/B du 17/08, vaisseau Metroid, async_shader_compilation=false) : l'identite
+// est PIRE que le repli d'origine -- environ 2x plus de triangles visibles. Explication coherente :
+// normalize(1,1,1,1) tourne la normale vers (1,0,0), la surface est alors peu eclairee et le
+// defaut reste discret ; l'identite laisse normal = (0,0,1), face a la camera, donc eclairement
+// maximal et defaut pleinement expose. Aucune des deux valeurs n'est "juste" : elles ne changent
+// que la VISIBILITE d'un probleme situe ailleurs.
+// => TG06 est donc INACTIF PAR DEFAUT. Conserve uniquement comme levier de diagnostic :
+//    BORKED3DS_TG06_QUAT_IDENTITY=1 l'active (utile pour RENDRE VISIBLES les draws concernes).
 bool IsQuatIdentityFixEnabled() {
-    static const bool disabled = IsEnabledEnv("BORKED3DS_TG06_NO_QUAT_IDENTITY");
-    return !disabled;
+    static const bool enabled = IsEnabledEnv("BORKED3DS_TG06_QUAT_IDENTITY");
+    return enabled;
 }
 
 bool AreQuaternionSemanticsUnmapped(const PicaGSConfigState& state) {
