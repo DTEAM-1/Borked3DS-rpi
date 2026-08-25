@@ -9581,16 +9581,23 @@ void RasterizerVulkan::SyncAndUploadLUTsLF() {
     constexpr std::size_t max_size = sizeof(Common::Vec2f) * 256 *
                                          Pica::LightingRegs::NumLightingSampler +
                                      sizeof(Common::Vec2f) * 128;
-    if (!fs_uniform_block_data.lighting_lut_dirty_any && !fs_uniform_block_data.fog_lut_dirty) {
+    // TG10 : voir le commentaire au-dessus de TG10ForceLutUploadLevel() dans
+    // rasterizer_accelerated.h. Retourne 0 hors BORKED3DS_TG10_FORCE_LUT_UPLOAD : les quatre
+    // conditions ci-dessous reprennent alors exactement leur forme d'origine.
+    const u32 tg10_force = TG10ForceLutUploadLevel();
+
+    if (tg10_force < 2 && !fs_uniform_block_data.lighting_lut_dirty_any &&
+        !fs_uniform_block_data.fog_lut_dirty) {
         return;
     }
 
     std::size_t bytes_used = 0;
     auto [buffer, offset, invalidate] = texture_lf_buffer.Map(max_size, sizeof(Common::Vec4f));
 
-    if (fs_uniform_block_data.lighting_lut_dirty_any || invalidate) {
+    if (fs_uniform_block_data.lighting_lut_dirty_any || invalidate || tg10_force != 0) {
         for (unsigned index = 0; index < fs_uniform_block_data.lighting_lut_dirty.size(); index++) {
-            if (fs_uniform_block_data.lighting_lut_dirty[index] || invalidate) {
+            if (fs_uniform_block_data.lighting_lut_dirty[index] || invalidate ||
+                tg10_force != 0) {
                 std::array<Common::Vec2f, 256> new_data;
                 const auto& source_lut = pica.lighting.luts[index];
                 std::transform(source_lut.begin(), source_lut.end(), new_data.begin(),
@@ -9598,7 +9605,7 @@ void RasterizerVulkan::SyncAndUploadLUTsLF() {
                                    return Common::Vec2f{entry.ToFloat(), entry.DiffToFloat()};
                                });
 
-                if (new_data != lighting_lut_data[index] || invalidate) {
+                if (new_data != lighting_lut_data[index] || invalidate || tg10_force != 0) {
                     lighting_lut_data[index] = new_data;
                     std::memcpy(buffer + bytes_used, new_data.data(),
                                 new_data.size() * sizeof(Common::Vec2f));
