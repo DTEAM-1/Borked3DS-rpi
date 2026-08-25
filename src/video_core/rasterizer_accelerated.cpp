@@ -22,6 +22,12 @@ namespace VideoCore {
 
 using Pica::f24;
 
+// TG09 / TG10 : declarations anticipees. Les definitions vivent dans le namespace anonyme en
+// bas de ce fichier, avec le bloc de commentaires qui explique la sonde.
+namespace {
+u32 TG09Level();
+} // Anonymous namespace
+
 static Common::Vec4f ColorRGBA8(const u32 color) {
     const auto rgba =
         Common::Vec4u{color >> 0 & 0xFF, color >> 8 & 0xFF, color >> 16 & 0xFF, color >> 24 & 0xFF};
@@ -670,6 +676,13 @@ void RasterizerAccelerated::NotifyPicaRegisterChanged(u32 id) {
         const auto& lut_config = regs.lighting.lut_config;
         fs_uniform_block_data.lighting_lut_dirty[lut_config.type] = true;
         fs_uniform_block_data.lighting_lut_dirty_any = true;
+        // TG10 : compte les ecritures du jeu dans chaque LUT. Inerte hors sonde TG09.
+        if (TG09Level() != 0) {
+            const u32 lut_type = lut_config.type.Value();
+            if (lut_type < Pica::LightingRegs::NumLightingSampler) {
+                ++tg10_lut_writes[lut_type];
+            }
+        }
         break;
     }
 
@@ -1082,6 +1095,18 @@ const char* TG09LutInputName(Pica::LightingRegs::LightingLutInput input) {
 
 } // Anonymous namespace
 
+u32 RasterizerAccelerated::TG10ForceLutUploadLevel() {
+    static const u32 level = []() -> u32 {
+        const char* const value = std::getenv("BORKED3DS_TG10_FORCE_LUT_UPLOAD");
+        if (value == nullptr) {
+            return 0u;
+        }
+        const int parsed = std::atoi(value);
+        return parsed <= 0 ? 0u : static_cast<u32>(parsed);
+    }();
+    return level;
+}
+
 void RasterizerAccelerated::TG09LogLightingState(const char* backend, const char* path,
                                                  u64 map_offset, u64 bytes_used) {
     const u32 level = TG09Level();
@@ -1280,17 +1305,44 @@ void RasterizerAccelerated::TG09LogLightingState(const char* backend, const char
             }
         }
 
+        // --- TG10 : la SOURCE PICA, a comparer au cache televerse ci-dessus ---------------------
+        // TG09 lit lighting_lut_data[] = ce qui a ete TELEVERSE. Si la source pica.lighting.luts[]
+        // est non nulle alors que le cache est nul, le bug est dans la synchro. Si les deux sont
+        // nuls, le jeu n'a jamais rempli cette LUT -- et writes= le dit directement.
+        const auto& source_lut = pica.lighting.luts[index];
+        std::array<Common::Vec2f, 256> source_data;
+        std::transform(source_lut.begin(), source_lut.end(), source_data.begin(),
+                       [](const auto& entry) {
+                           return Common::Vec2f{entry.ToFloat(), entry.DiffToFloat()};
+                       });
+        const u64 source_hash = TG09HashWords(
+            source_data.data(), source_data.size() * sizeof(Common::Vec2f), TG09_FNV_OFFSET);
+        f32 source_min = source_data[0].x;
+        f32 source_max = source_data[0].x;
+        u32 source_nonzero = 0;
+        for (const auto& entry : source_data) {
+            source_min = std::min(source_min, entry.x);
+            source_max = std::max(source_max, entry.x);
+            if (entry.x != 0.0f || entry.y != 0.0f) {
+                ++source_nonzero;
+            }
+        }
+
         LOG_INFO(Render,
                  "TG09_LUT [{}] idx={:2d} name={} off={} hash={:#018x} min={:.6f} max={:.6f} "
                  "mean={:.6f} max_abs_diff={:.6f} non_finite={} "
                  "s[0]=({:.6f},{:.6f}) s[64]=({:.6f},{:.6f}) s[128]=({:.6f},{:.6f}) "
-                 "s[192]=({:.6f},{:.6f}) s[255]=({:.6f},{:.6f})",
+                 "s[192]=({:.6f},{:.6f}) s[255]=({:.6f},{:.6f}) | "
+                 "src_hash={:#018x} src_min={:.6f} src_max={:.6f} src_nonzero={}/256 "
+                 "writes={} src_eq_cache={}",
                  backend, index, TG09SamplerName(index),
                  fs_uniform_block_data.data.lighting_lut_offset[index / 4][index % 4],
                  lut_hash[index], min_value, max_value,
                  static_cast<f32>(sum_value / static_cast<double>(lut.size())), max_abs_diff,
                  nan_count, lut[0].x, lut[0].y, lut[64].x, lut[64].y, lut[128].x, lut[128].y,
-                 lut[192].x, lut[192].y, lut[255].x, lut[255].y);
+                 lut[192].x, lut[192].y, lut[255].x, lut[255].y, source_hash, source_min,
+                 source_max, source_nonzero, tg10_lut_writes[index],
+                 source_hash == lut_hash[index] ? 1 : 0);
 
         if (level < 2) {
             continue;

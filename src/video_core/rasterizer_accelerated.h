@@ -122,6 +122,35 @@ protected:
     void TG09LogLightingState(const char* backend, const char* path, u64 map_offset,
                               u64 bytes_used);
 
+    // ---------------------------------------------------------------------------------------
+    // TG10 (BORKED3DS_TG10_FORCE_LUT_UPLOAD=1|2) -- LEVIER DE DIAGNOSTIC, inactif par defaut.
+    //
+    // Mesure TG09 du 25/08 : la LUT ReflectRed est nulle et son offset d'adressage vaut 0 en
+    // permanence, des deux cotes. Or `lighting_lut_offset[index]` n'est ecrit QUE dans la
+    // branche de re-televersement de SyncAndUploadLUTsLF() :
+    //
+    //     if (new_data != lighting_lut_data[index] || invalidate) {
+    //         lighting_lut_data[index] = new_data;
+    //         memcpy(buffer + bytes_used, ...);
+    //         lighting_lut_offset[index/4][index%4] = (offset + bytes_used) / ...;  // <-- ICI
+    //     }
+    //
+    // Une LUT dont le contenu n'a pas change n'est donc PAS re-televersee, et son offset reste
+    // celui d'un televersement anterieur -- dans un buffer EN FLOT dont le pointeur d'ecriture a
+    // avance depuis. Pour une LUT jamais televersee (contenu identique a l'initialisation a
+    // zero, cas de RR), l'offset reste a sa valeur d'initialisation 0, et le fragment shader lit
+    // les 256 premiers texels du buffer -- c'est-a-dire les restes de la derniere LUT ecrite par
+    // un autre draw.
+    //
+    // Le levier force le re-televersement ET la reecriture de l'offset de TOUTES les LUT a
+    // chaque invocation, ce qui rend tous les offsets valides en permanence :
+    //   1 = re-televersement complet a chaque invocation (l'early return est conserve, donc la
+    //       frequence d'appel est inchangee).  C'est le CANDIDAT CORRECTIF.
+    //   2 = idem + contournement de l'early return (paranoiaque, lent, diagnostic seulement).
+    //
+    // Retourne 0 hors variable d'environnement : comportement par defaut strictement inchange.
+    static u32 TG10ForceLutUploadLevel();
+
 protected:
     /// Structure that keeps tracks of the vertex shader uniform state
     struct VSUniformBlockData {
@@ -180,6 +209,10 @@ protected:
     FSUniformBlockData fs_uniform_block_data{};
     using LightLUT = std::array<Common::Vec2f, 256>;
     std::array<LightLUT, Pica::LightingRegs::NumLightingSampler> lighting_lut_data{};
+    // TG10 : nombre d'ecritures du jeu dans chaque LUT d'eclairage, via le registre
+    // lighting.lut_data. Repond a "le jeu remplit-il vraiment ReflectRed ?". Incremente
+    // uniquement quand TG09 est active ; jamais lu autrement.
+    std::array<u32, Pica::LightingRegs::NumLightingSampler> tg10_lut_writes{};
     std::array<Common::Vec2f, 128> fog_lut_data{};
     std::array<Common::Vec2f, 128> proctex_noise_lut_data{};
     std::array<Common::Vec2f, 128> proctex_color_map_data{};
