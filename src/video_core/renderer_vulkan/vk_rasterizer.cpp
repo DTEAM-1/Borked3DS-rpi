@@ -9632,6 +9632,10 @@ void RasterizerVulkan::SyncAndUploadLUTsLF() {
     }
 
     texture_lf_buffer.Commit(static_cast<u32>(bytes_used));
+
+    // TG09 : sonde de mesure, inerte hors BORKED3DS_TG09_LIGHT_DUMP. Voir le commentaire
+    // au-dessus de TG09LogLightingState() dans rasterizer_accelerated.cpp.
+    TG09LogLightingState("VK", "tbo", static_cast<u64>(offset), static_cast<u64>(bytes_used));
 }
 
 void RasterizerVulkan::SyncAndUploadLUTs() {
