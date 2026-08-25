@@ -94,6 +94,71 @@ bool AreQuaternionSemanticsUnmapped(const Pica::RegsInternal& regs) {
 }
 
 } // Anonymous namespace
+// ---------------------------------------------------------------------------------------------
+// TG08 (BORKED3DS_TG08_NO_CLAMP_HIGHLIGHTS=1|2) -- INACTIF PAR DEFAUT.
+//
+// Angle mort de TG07 : TG07 ne touchait QUE les configurations sans quaternion, or les trois
+// paliers ont ete quasi nuls. Le defaut residuel vit donc sur la configuration vs_total=7 /
+// quat_ok=1 -- celle dont le geometry shader emet bien trois quaternions distincts. TG08 vise
+// cette configuration-la, en agissant sur TOUS les draws eclaires.
+//
+// Cible : clamp_highlights. Mesure TG05b : clamp_hl=1 sur les QUATRE configurations, ship
+// comprise. Et le generateur l'emet ainsi (glsl_fs_shader_gen.cpp) :
+//
+//     dot_product      = max(dot(light_vector, normal), 0.0);
+//     clamp_highlights = sign(dot_product);                       // <-- 0.0 ou 1.0, binaire
+//     specular_sum.rgb += (specular_0 + specular_1) * clamp_highlights * ...;
+//
+// C'est un MASQUE BINAIRE qui multiplie tout le terme speculaire et donc toute la reflexion.
+// Sa frontiere est le terminateur dot(light_vector, normal) == 0. Sur un modele peu dense dont
+// la normale est interpolee par fragment, cette frontiere est une courbe franche qui balaie la
+// surface quand la camera ou la lumiere tourne, et la ou la normale varie peu dans un triangle,
+// le triangle entier bascule de 0 a 1 d'un coup. C'est exactement le symptome decrit : "un
+// faisceau qui bascule la couleur des triangles".
+//
+// Palier 1 : clamp_highlights neutralise (= 1.0) sur tous les draws eclaires.
+// Palier 2 : palier 1 + RR/RG/RB neutralisees partout, pour separer "le masque est trop dur" de
+//            "la reflexion elle-meme est en cause".
+//
+// Diagnostic uniquement : clamp_highlights est un comportement PICA reel, le neutraliser n'est
+// pas un correctif acceptable en l'etat. Le but est de savoir si c'est lui qui dessine le
+// faisceau.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+u32 TG08Mode() {
+    static const u32 mode = []() -> u32 {
+        const char* value = std::getenv("BORKED3DS_TG08_NO_CLAMP_HIGHLIGHTS");
+        if (value == nullptr || value[0] == '\0') {
+            return 0u;
+        }
+        const int parsed = std::atoi(value);
+        return parsed > 0 ? static_cast<u32>(parsed) : 0u;
+    }();
+    return mode;
+}
+
+void ApplyTG08(LightConfig& lighting) {
+    const u32 tg08 = TG08Mode();
+    if (tg08 == 0 || !lighting.enable) {
+        return;
+    }
+
+    // Palier 1 : masque binaire neutralise sur TOUS les draws eclaires.
+    lighting.clamp_highlights.Assign(0);
+
+    if (tg08 >= 2) {
+        // Palier 2 : reflexion neutralisee partout (refl_value = 1.0).
+        lighting.lut_rr.raw = 0;
+        lighting.lut_rr.scale = 0.f;
+        lighting.lut_rg.raw = 0;
+        lighting.lut_rg.scale = 0.f;
+        lighting.lut_rb.raw = 0;
+        lighting.lut_rb.scale = 0.f;
+    }
+}
+
+} // Anonymous namespace
 
 FramebufferConfig::FramebufferConfig(const Pica::RegsInternal& regs, const Profile& profile) {
     const auto& output_merger = regs.framebuffer.output_merger;
@@ -294,6 +359,9 @@ ProcTexConfig::ProcTexConfig(const Pica::TexturingRegs& regs) {
 FSConfig::FSConfig(const Pica::RegsInternal& regs, const UserConfig& user_, const Profile& profile)
     : framebuffer{regs, profile}, texture{regs.texturing, profile}, lighting{regs.lighting},
       proctex{regs.texturing}, user{user_} {
+    // TG08 d'abord : il s'applique a TOUS les draws eclaires, independamment de TG07.
+    ApplyTG08(lighting);
+
     // TG07 : voir le commentaire en tete de fichier. Inactif hors variable d'environnement.
     const u32 tg07 = TG07Mode();
     if (tg07 == 0 || !lighting.enable) {
@@ -324,5 +392,6 @@ FSConfig::FSConfig(const Pica::RegsInternal& regs, const UserConfig& user_, cons
         lighting.clamp_highlights.Assign(0);
     }
 }
+
 
 } // namespace Pica::Shader
