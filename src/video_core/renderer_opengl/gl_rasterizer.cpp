@@ -1231,6 +1231,11 @@ void RasterizerOpenGL::SyncAndUploadLUTsLF() {
             }
             fs_uniform_block_data.fog_lut_dirty = false;
         }
+
+        // TG09 : sonde de mesure, inerte hors BORKED3DS_TG09_LIGHT_DUMP. Repli GLES sans
+        // GL_OES_texture_buffer : l'adressage devient x + y * 1024 dans une texture 2D, ce que
+        // la ligne TG09_OFFSETS rend explicite.
+        TG09LogLightingState("GL", "tex2d", 0, 0);
     } else {
         // Original buffer update code
         std::size_t bytes_used = 0;
@@ -1286,6 +1291,11 @@ void RasterizerOpenGL::SyncAndUploadLUTsLF() {
         }
 
         texture_lf_buffer.Unmap(bytes_used);
+
+        // TG09 : sonde de mesure, inerte hors BORKED3DS_TG09_LIGHT_DUMP. Voir le commentaire
+        // au-dessus de TG09LogLightingState() dans rasterizer_accelerated.cpp.
+        TG09LogLightingState("GL", "tbo", static_cast<u64>(offset),
+                             static_cast<u64>(bytes_used));
     }
 }
 
