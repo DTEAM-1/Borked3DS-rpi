@@ -149,6 +149,12 @@ protected:
     //   2 = idem + contournement de l'early return (paranoiaque, lent, diagnostic seulement).
     //
     // Retourne 0 hors variable d'environnement : comportement par defaut strictement inchange.
+    //
+    // IMPORTANT : TG10 n'ajoute AUCUN membre de donnees a cette classe. Le compteur d'ecritures
+    // LUT vit dans un tableau statique de rasterizer_accelerated.cpp, precisement pour que la
+    // DISPOSITION de RasterizerAccelerated reste inchangee. Ajouter un membre ici decalerait
+    // l'offset de fog_lut_data et des proctex_*_data, et toute unite de compilation incluant cet
+    // en-tete sans etre recompilee lirait les mauvais offsets -- ecran unicolore, aucune image.
     static u32 TG10ForceLutUploadLevel();
 
 protected:
@@ -209,10 +215,6 @@ protected:
     FSUniformBlockData fs_uniform_block_data{};
     using LightLUT = std::array<Common::Vec2f, 256>;
     std::array<LightLUT, Pica::LightingRegs::NumLightingSampler> lighting_lut_data{};
-    // TG10 : nombre d'ecritures du jeu dans chaque LUT d'eclairage, via le registre
-    // lighting.lut_data. Repond a "le jeu remplit-il vraiment ReflectRed ?". Incremente
-    // uniquement quand TG09 est active ; jamais lu autrement.
-    std::array<u32, Pica::LightingRegs::NumLightingSampler> tg10_lut_writes{};
     std::array<Common::Vec2f, 128> fog_lut_data{};
     std::array<Common::Vec2f, 128> proctex_noise_lut_data{};
     std::array<Common::Vec2f, 128> proctex_color_map_data{};

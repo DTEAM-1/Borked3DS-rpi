@@ -26,6 +26,8 @@ using Pica::f24;
 // bas de ce fichier, avec le bloc de commentaires qui explique la sonde.
 namespace {
 u32 TG09Level();
+void TG10CountLutWrite(u32 lut_type);
+u32 TG10LutWriteCount(u32 lut_type);
 } // Anonymous namespace
 
 static Common::Vec4f ColorRGBA8(const u32 color) {
@@ -677,12 +679,7 @@ void RasterizerAccelerated::NotifyPicaRegisterChanged(u32 id) {
         fs_uniform_block_data.lighting_lut_dirty[lut_config.type] = true;
         fs_uniform_block_data.lighting_lut_dirty_any = true;
         // TG10 : compte les ecritures du jeu dans chaque LUT. Inerte hors sonde TG09.
-        if (TG09Level() != 0) {
-            const u32 lut_type = lut_config.type.Value();
-            if (lut_type < Pica::LightingRegs::NumLightingSampler) {
-                ++tg10_lut_writes[lut_type];
-            }
-        }
+        TG10CountLutWrite(lut_config.type.Value());
         break;
     }
 
@@ -1093,6 +1090,26 @@ const char* TG09LutInputName(Pica::LightingRegs::LightingLutInput input) {
     }
 }
 
+/// TG10 : compteur d'ecritures du jeu dans chaque LUT d'eclairage (registre lighting.lut_data).
+/// Volontairement un statique de FICHIER et non un membre de RasterizerAccelerated : ajouter un
+/// membre a cette classe decalerait l'offset de tous les membres suivants, et une unite de
+/// compilation incluant l'en-tete sans etre recompilee lirait aux mauvais offsets.
+std::array<std::atomic<u32>, Pica::LightingRegs::NumLightingSampler> tg10_lut_writes{};
+
+void TG10CountLutWrite(u32 lut_type) {
+    if (TG09Level() == 0 || lut_type >= Pica::LightingRegs::NumLightingSampler) {
+        return;
+    }
+    tg10_lut_writes[lut_type].fetch_add(1, std::memory_order_relaxed);
+}
+
+u32 TG10LutWriteCount(u32 lut_type) {
+    if (lut_type >= Pica::LightingRegs::NumLightingSampler) {
+        return 0u;
+    }
+    return tg10_lut_writes[lut_type].load(std::memory_order_relaxed);
+}
+
 } // Anonymous namespace
 
 u32 RasterizerAccelerated::TG10ForceLutUploadLevel() {
@@ -1341,7 +1358,7 @@ void RasterizerAccelerated::TG09LogLightingState(const char* backend, const char
                  static_cast<f32>(sum_value / static_cast<double>(lut.size())), max_abs_diff,
                  nan_count, lut[0].x, lut[0].y, lut[64].x, lut[64].y, lut[128].x, lut[128].y,
                  lut[192].x, lut[192].y, lut[255].x, lut[255].y, source_hash, source_min,
-                 source_max, source_nonzero, tg10_lut_writes[index],
+                 source_max, source_nonzero, TG10LutWriteCount(index),
                  source_hash == lut_hash[index] ? 1 : 0);
 
         if (level < 2) {
