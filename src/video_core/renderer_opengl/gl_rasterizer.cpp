@@ -1177,16 +1177,22 @@ void RasterizerOpenGL::SyncAndUploadLUTsLF() {
         sizeof(Common::Vec2f) * 256 * Pica::LightingRegs::NumLightingSampler + // lighting
         sizeof(Common::Vec2f) * 128;                                           // fog
 
-    if (!fs_uniform_block_data.lighting_lut_dirty_any && !fs_uniform_block_data.fog_lut_dirty) {
+    // TG10 : voir le commentaire au-dessus de TG10ForceLutUploadLevel() dans
+    // rasterizer_accelerated.h. Retourne 0 hors BORKED3DS_TG10_FORCE_LUT_UPLOAD : les conditions
+    // ci-dessous reprennent alors exactement leur forme d'origine.
+    const u32 tg10_force = TG10ForceLutUploadLevel();
+
+    if (tg10_force < 2 && !fs_uniform_block_data.lighting_lut_dirty_any &&
+        !fs_uniform_block_data.fog_lut_dirty) {
         return;
     }
 
     if (is_gles && !GLAD_GL_OES_texture_buffer) { //gvx64
         // Update 2D textures directly for the fallback path
-        if (fs_uniform_block_data.lighting_lut_dirty_any) {
+        if (fs_uniform_block_data.lighting_lut_dirty_any || tg10_force != 0) {
             for (unsigned index = 0; index < fs_uniform_block_data.lighting_lut_dirty.size();
                  index++) {
-                if (fs_uniform_block_data.lighting_lut_dirty[index]) {
+                if (fs_uniform_block_data.lighting_lut_dirty[index] || tg10_force != 0) {
                     std::array<Common::Vec2f, 256> new_data;
                     const auto& source_lut = pica.lighting.luts[index];
                     std::transform(source_lut.begin(), source_lut.end(), new_data.begin(),
@@ -1194,7 +1200,7 @@ void RasterizerOpenGL::SyncAndUploadLUTsLF() {
                                        return Common::Vec2f{entry.ToFloat(), entry.DiffToFloat()};
                                    });
 
-                    if (new_data != lighting_lut_data[index]) {
+                    if (new_data != lighting_lut_data[index] || tg10_force != 0) {
                         lighting_lut_data[index] = new_data;
                         glActiveTexture(TextureUnits::TextureBufferLUT_RG.Enum());
                         glBindTexture(GL_TEXTURE_2D, texture_buffer_lut_rg.handle);
@@ -1244,9 +1250,10 @@ void RasterizerOpenGL::SyncAndUploadLUTsLF() {
             texture_lf_buffer.Map(max_size, sizeof(Common::Vec4f));
 //gvx64printf("../src/video_core/renderer_opengl/gl_rasterizer.cpp, lutslf(), offset = %08lx, invalidate = %08x\n",offset, invalidate); //gvx64
         // Sync the lighting luts
-        if (fs_uniform_block_data.lighting_lut_dirty_any || invalidate) {
+        if (fs_uniform_block_data.lighting_lut_dirty_any || invalidate || tg10_force != 0) {
             for (unsigned index = 0; index < fs_uniform_block_data.lighting_lut_dirty.size(); index++) {
-                if (fs_uniform_block_data.lighting_lut_dirty[index] || invalidate) {
+                if (fs_uniform_block_data.lighting_lut_dirty[index] || invalidate ||
+                    tg10_force != 0) {
                     std::array<Common::Vec2f, 256> new_data;
                     const auto& source_lut = pica.lighting.luts[index];
                     std::transform(source_lut.begin(), source_lut.end(), new_data.begin(),
@@ -1254,7 +1261,8 @@ void RasterizerOpenGL::SyncAndUploadLUTsLF() {
                                        return Common::Vec2f{entry.ToFloat(), entry.DiffToFloat()};
                                    });
 
-                    if (new_data != lighting_lut_data[index] || invalidate) {
+                    if (new_data != lighting_lut_data[index] || invalidate ||
+                        tg10_force != 0) {
                         lighting_lut_data[index] = new_data;
                         std::memcpy(buffer + bytes_used, new_data.data(),
                                     new_data.size() * sizeof(Common::Vec2f));
