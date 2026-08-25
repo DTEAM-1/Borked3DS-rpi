@@ -3,9 +3,15 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_set>
 #include "common/alignment.h"
 #include "common/logging/log.h"
 #include "core/memory.h"
@@ -931,6 +937,379 @@ void RasterizerAccelerated::SyncClipPlane() {
         vs_uniform_block_data.data.enable_clip1 = enable_clip1;
         vs_uniform_block_data.data.clip_coef = new_clip_coef;
         vs_uniform_block_data.dirty = true;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// TG09 (BORKED3DS_TG09_LIGHT_DUMP=1|2|3) -- sonde de MESURE, inerte hors variable d'environnement.
+//
+// Motif (RECAP v163, section 6, point 2). Apres quatorze eliminations, il ne reste qu'une seule
+// famille d'explications non instrumentee pour le defaut de reflexion du vaisseau de Metroid :
+//
+//   - la SOURCE des shaders est commune aux deux backends (audit v162bis, faits F1 a F3) ;
+//   - la CONFIGURATION de shader est identique entre save state et partie depuis le debut
+//     (sonde TG05, section 2.5 du RECAP v163) ;
+//   - il reste donc les DONNEES : contenu reel des LUT de reflexion RR / RG / RB, parametres des
+//     sources de lumiere, ambiante globale, et leur chemin de televersement.
+//
+// La sonde vit dans la classe de base COMMUNE aux deux backends (RasterizerAccelerated), donc le
+// formatage est rigoureusement identique en OpenGL/GLES et en Vulkan : un `diff` de deux logs
+// repond directement a la question. Elle est appelee depuis SyncAndUploadLUTsLF() de chaque
+// backend, c'est-a-dire au moment exact du televersement, et lit :
+//
+//   - lighting_lut_data[]                     = ce qui a REELLEMENT ete televerse (pas la source) ;
+//   - fs_uniform_block_data.data.light_src[]  = ce qui atteint REELLEMENT le fragment shader ;
+//   - fs_uniform_block_data.data.lighting_lut_offset[] = l'adressage, seul element structurellement
+//     divergent entre les deux backends (TBO Vulkan vs TBO/texture 2D OpenGL).
+//
+// Trois usages prevus, dans cet ordre :
+//
+//   1. Vulkan vs OpenGL/GLES, meme scene : si les hachages de LUT et les light_src sont identiques,
+//      les donnees sont innocentees et le mur se deplace vers l'adressage (champ `off=`) ou vers
+//      l'echantillonnage cote shader. S'ils different, la cause racine est trouvee.
+//   2. Save state vs partie depuis le debut, MEME backend : repond au point 2 de la section 6 du
+//      RECAP v163 (les ~50 % de triangles en moins du save state).
+//   3. Attribution du gain 60-70 % : rejouer deux binaires avec la meme sonde et diffter.
+//
+// Dedupliquee par signature de contenu (configuration + lumieres actives + hachage des LUT
+// pertinentes) : quelques lignes par session, pas un flot. Plafond dur de TG09_MAX_SIGNATURES
+// signatures distinctes pour borner la memoire et le log.
+//
+// Niveaux :
+//   1 = configuration + lumieres + une ligne de resume par LUT pertinente (hachage, min/max/moyenne,
+//       cinq points d'echantillonnage, offset d'adressage) ;
+//   2 = niveau 1 + dump integral des 256 entrees des LUT de reflexion RR / RG / RB ;
+//   3 = niveau 2 + dump integral de TOUTES les LUT pertinentes (verbeux, diagnostic ponctuel).
+//
+// Cout par defaut : une lecture de bool statique. Aucun effet sur le rendu, a aucun niveau.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+u32 TG09Level() {
+    static const u32 level = []() -> u32 {
+        const char* const value = std::getenv("BORKED3DS_TG09_LIGHT_DUMP");
+        if (value == nullptr) {
+            return 0u;
+        }
+        const int parsed = std::atoi(value);
+        return parsed <= 0 ? 0u : static_cast<u32>(parsed);
+    }();
+    return level;
+}
+
+constexpr u64 TG09_FNV_OFFSET = 0xcbf29ce484222325ULL;
+constexpr u64 TG09_FNV_PRIME = 0x100000001b3ULL;
+constexpr std::size_t TG09_MAX_SIGNATURES = 64;
+constexpr u64 TG09_OFFSET_PERIOD = 1024;
+
+/// FNV-1a par mots de 32 bits (assez rapide pour tourner sur le chemin de televersement).
+u64 TG09HashWords(const void* data, std::size_t size_bytes, u64 seed) {
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    const std::size_t count = size_bytes / sizeof(u32);
+    u64 hash = seed;
+    for (std::size_t i = 0; i < count; ++i) {
+        u32 word = 0;
+        std::memcpy(&word, bytes + i * sizeof(u32), sizeof(word));
+        hash ^= static_cast<u64>(word);
+        hash *= TG09_FNV_PRIME;
+    }
+    return hash;
+}
+
+u64 TG09HashU64(u64 value, u64 seed) {
+    u64 hash = seed;
+    hash ^= value;
+    hash *= TG09_FNV_PRIME;
+    return hash;
+}
+
+/// Retourne true une seule fois par signature de contenu, et jamais au-dela du plafond.
+bool TG09ShouldLog(u64 key) {
+    static std::mutex mutex;
+    static std::unordered_set<u64> seen;
+    std::scoped_lock lock{mutex};
+    if (seen.size() >= TG09_MAX_SIGNATURES) {
+        return false;
+    }
+    return seen.insert(key).second;
+}
+
+const char* TG09SamplerName(u32 index) {
+    using Sampler = Pica::LightingRegs::LightingSampler;
+    if (index >= static_cast<u32>(Sampler::DistanceAttenuation)) {
+        return "DA";
+    }
+    if (index >= static_cast<u32>(Sampler::SpotlightAttenuation)) {
+        return "SP";
+    }
+    switch (static_cast<Sampler>(index)) {
+    case Sampler::Distribution0:
+        return "D0";
+    case Sampler::Distribution1:
+        return "D1";
+    case Sampler::Fresnel:
+        return "FR";
+    case Sampler::ReflectBlue:
+        return "RB";
+    case Sampler::ReflectGreen:
+        return "RG";
+    case Sampler::ReflectRed:
+        return "RR";
+    default:
+        return "??";
+    }
+}
+
+const char* TG09LutInputName(Pica::LightingRegs::LightingLutInput input) {
+    using Input = Pica::LightingRegs::LightingLutInput;
+    switch (input) {
+    case Input::NH:
+        return "NH";
+    case Input::VH:
+        return "VH";
+    case Input::NV:
+        return "NV";
+    case Input::LN:
+        return "LN";
+    case Input::SP:
+        return "SP";
+    case Input::CP:
+        return "CP";
+    default:
+        return "??";
+    }
+}
+
+} // Anonymous namespace
+
+void RasterizerAccelerated::TG09LogLightingState(const char* backend, const char* path,
+                                                 u64 map_offset, u64 bytes_used) {
+    const u32 level = TG09Level();
+    if (level == 0) {
+        return;
+    }
+
+    using LightingRegs = Pica::LightingRegs;
+    using Sampler = LightingRegs::LightingSampler;
+
+    const auto& lighting = regs.lighting;
+    const auto config = lighting.config0.config.Value();
+    const u32 num_lights = lighting.max_light_index.Value() + 1u;
+
+    // --- 1. Quelles LUT comptent pour CETTE configuration ? ------------------------------------
+    // On ne hache et n'affiche que celles-la : hacher les 24 a chaque televersement couterait
+    // trop cher sur le chemin chaud, et les LUT non selectionnees ne sont jamais lues par le FS.
+    std::array<bool, LightingRegs::NumLightingSampler> relevant{};
+    const std::array<Sampler, 6> fixed_samplers{
+        Sampler::Distribution0, Sampler::Distribution1, Sampler::Fresnel,
+        Sampler::ReflectBlue,   Sampler::ReflectGreen,  Sampler::ReflectRed,
+    };
+    for (const auto sampler : fixed_samplers) {
+        if (LightingRegs::IsLightingSamplerSupported(config, sampler)) {
+            relevant[static_cast<std::size_t>(sampler)] = true;
+        }
+    }
+    const bool spot_supported =
+        LightingRegs::IsLightingSamplerSupported(config, Sampler::SpotlightAttenuation);
+    for (u32 slot = 0; slot < num_lights; ++slot) {
+        const u32 light_index = lighting.light_enable.GetNum(slot);
+        if (spot_supported && !lighting.IsSpotAttenDisabled(light_index)) {
+            relevant[static_cast<std::size_t>(Sampler::SpotlightAttenuation) + light_index] = true;
+        }
+        if (!lighting.IsDistAttenDisabled(light_index)) {
+            relevant[static_cast<std::size_t>(Sampler::DistanceAttenuation) + light_index] = true;
+        }
+    }
+
+    // --- 2. Signature de contenu : registres + lumieres actives + contenu reel des LUT ----------
+    // Volontairement SANS les offsets de televersement : ils bougent a chaque frame (buffer en
+    // flot) et noieraient la deduplication. Ils sont echantillonnes separement (TG09_OFFSETS).
+    u64 key = TG09HashU64(static_cast<u64>(static_cast<unsigned char>(backend[0])),
+                          TG09_FNV_OFFSET);
+    key = TG09HashU64(lighting.disable.Value(), key);
+    key = TG09HashWords(&lighting.config0, sizeof(lighting.config0), key);
+    key = TG09HashWords(&lighting.config1, sizeof(lighting.config1), key);
+    key = TG09HashWords(&lighting.abs_lut_input, sizeof(lighting.abs_lut_input), key);
+    key = TG09HashWords(&lighting.lut_input, sizeof(lighting.lut_input), key);
+    key = TG09HashWords(&lighting.lut_scale, sizeof(lighting.lut_scale), key);
+    key = TG09HashWords(&lighting.light_enable, sizeof(lighting.light_enable), key);
+    key = TG09HashWords(&lighting.global_ambient, sizeof(lighting.global_ambient), key);
+    key = TG09HashU64(num_lights, key);
+    for (u32 slot = 0; slot < num_lights; ++slot) {
+        const u32 light_index = lighting.light_enable.GetNum(slot);
+        key = TG09HashWords(&lighting.light[light_index], sizeof(lighting.light[light_index]), key);
+        key = TG09HashWords(&fs_uniform_block_data.data.light_src[light_index],
+                            sizeof(fs_uniform_block_data.data.light_src[light_index]), key);
+    }
+
+    std::array<u64, LightingRegs::NumLightingSampler> lut_hash{};
+    for (u32 index = 0; index < LightingRegs::NumLightingSampler; ++index) {
+        if (!relevant[index]) {
+            continue;
+        }
+        lut_hash[index] = TG09HashWords(lighting_lut_data[index].data(),
+                                        lighting_lut_data[index].size() * sizeof(Common::Vec2f),
+                                        TG09_FNV_OFFSET);
+        key = TG09HashU64(lut_hash[index], key);
+    }
+
+    // --- 3. Echantillonnage periodique des offsets, independant de la deduplication -------------
+    // Seul point structurellement divergent entre les backends : Vulkan adresse un texel buffer,
+    // OpenGL adresse soit un texel buffer, soit une texture 2D (repli GLES sans
+    // GL_OES_texture_buffer, ou l'offset devient x + y * 1024). Une divergence d'adressage ferait
+    // lire la BONNE LUT au MAUVAIS endroit -- exactement le genre de defaut qui epargne l'ombre et
+    // casse le reflet.
+    {
+        static std::atomic<u64> counter{0};
+        const u64 n = counter.fetch_add(1, std::memory_order_relaxed);
+        if ((n % TG09_OFFSET_PERIOD) == 0) {
+            std::string offsets;
+            offsets.reserve(256);
+            for (u32 index = 0; index < LightingRegs::NumLightingSampler; ++index) {
+                if (!relevant[index]) {
+                    continue;
+                }
+                offsets += fmt::format(
+                    "{}:{} ", TG09SamplerName(index),
+                    fs_uniform_block_data.data.lighting_lut_offset[index / 4][index % 4]);
+            }
+            LOG_INFO(Render,
+                     "TG09_OFFSETS [{}/{}] n={} map_off={} bytes={} use_tex2d_lut={} off({})",
+                     backend, path, n, map_offset, bytes_used,
+                     fs_uniform_block_data.data.use_texture2d_lut, offsets);
+        }
+    }
+
+    if (!TG09ShouldLog(key)) {
+        return;
+    }
+
+    // --- 4. Configuration d'eclairage ------------------------------------------------------------
+    std::string slots;
+    slots.reserve(32);
+    for (u32 slot = 0; slot < num_lights; ++slot) {
+        slots += fmt::format("{}{}", slot == 0 ? "" : ",", lighting.light_enable.GetNum(slot));
+    }
+    const auto& ambient = fs_uniform_block_data.data.lighting_global_ambient;
+
+    LOG_INFO(Render,
+             "TG09_LIGHT [{}/{}] sig={:#018x} disable={} config={} lights={} slots=({}) "
+             "bump_mode={} bump_sel={} renorm_off={} clamp_hl={} shadow={} prim_alpha={} "
+             "sec_alpha={} global_ambient=({:.6f},{:.6f},{:.6f}) map_off={} bytes={} "
+             "use_tex2d_lut={}",
+             backend, path, key, lighting.disable.Value(), static_cast<u32>(config), num_lights,
+             slots, static_cast<u32>(lighting.config0.bump_mode.Value()),
+             lighting.config0.bump_selector.Value(),
+             lighting.config0.disable_bump_renorm.Value(),
+             lighting.config0.clamp_highlights.Value(), lighting.config0.enable_shadow.Value(),
+             lighting.config0.enable_primary_alpha.Value(),
+             lighting.config0.enable_secondary_alpha.Value(), ambient.x, ambient.y, ambient.z,
+             map_offset, bytes_used, fs_uniform_block_data.data.use_texture2d_lut);
+
+    LOG_INFO(Render,
+             "TG09_LUTCFG [{}] in(d0={} d1={} fr={} rr={} rg={} rb={} sp={}) "
+             "abs(d0={} d1={} fr={} rr={} rg={} rb={} sp={}) "
+             "scale(d0={:.4f} d1={:.4f} fr={:.4f} rr={:.4f} rg={:.4f} rb={:.4f} sp={:.4f}) "
+             "lut_off(d0={} d1={} fr={} rr={} rg={} rb={})",
+             backend, TG09LutInputName(lighting.lut_input.d0.Value()),
+             TG09LutInputName(lighting.lut_input.d1.Value()),
+             TG09LutInputName(lighting.lut_input.fr.Value()),
+             TG09LutInputName(lighting.lut_input.rr.Value()),
+             TG09LutInputName(lighting.lut_input.rg.Value()),
+             TG09LutInputName(lighting.lut_input.rb.Value()),
+             TG09LutInputName(lighting.lut_input.sp.Value()),
+             lighting.abs_lut_input.disable_d0.Value(), lighting.abs_lut_input.disable_d1.Value(),
+             lighting.abs_lut_input.disable_fr.Value(), lighting.abs_lut_input.disable_rr.Value(),
+             lighting.abs_lut_input.disable_rg.Value(), lighting.abs_lut_input.disable_rb.Value(),
+             lighting.abs_lut_input.disable_sp.Value(),
+             lighting.lut_scale.GetScale(lighting.lut_scale.d0.Value()),
+             lighting.lut_scale.GetScale(lighting.lut_scale.d1.Value()),
+             lighting.lut_scale.GetScale(lighting.lut_scale.fr.Value()),
+             lighting.lut_scale.GetScale(lighting.lut_scale.rr.Value()),
+             lighting.lut_scale.GetScale(lighting.lut_scale.rg.Value()),
+             lighting.lut_scale.GetScale(lighting.lut_scale.rb.Value()),
+             lighting.lut_scale.GetScale(lighting.lut_scale.sp.Value()),
+             lighting.config1.disable_lut_d0.Value(), lighting.config1.disable_lut_d1.Value(),
+             lighting.config1.disable_lut_fr.Value(), lighting.config1.disable_lut_rr.Value(),
+             lighting.config1.disable_lut_rg.Value(), lighting.config1.disable_lut_rb.Value());
+
+    // --- 5. Sources de lumiere, telles qu'elles atteignent le fragment shader ---------------------
+    for (u32 slot = 0; slot < num_lights; ++slot) {
+        const u32 light_index = lighting.light_enable.GetNum(slot);
+        const auto& src = fs_uniform_block_data.data.light_src[light_index];
+        const auto& raw = lighting.light[light_index];
+        LOG_INFO(Render,
+                 "TG09_LIGHTSRC [{}] slot={} light={} spec0=({:.6f},{:.6f},{:.6f}) "
+                 "spec1=({:.6f},{:.6f},{:.6f}) diff=({:.6f},{:.6f},{:.6f}) "
+                 "amb=({:.6f},{:.6f},{:.6f}) pos=({:.6f},{:.6f},{:.6f}) "
+                 "spot_dir=({:.6f},{:.6f},{:.6f}) datten(bias={:.6f} scale={:.6f}) "
+                 "directional={} two_sided={} geo0={} geo1={} spot_off={} datten_off={} "
+                 "shadow_off={}",
+                 backend, slot, light_index, src.specular_0.x, src.specular_0.y, src.specular_0.z,
+                 src.specular_1.x, src.specular_1.y, src.specular_1.z, src.diffuse.x,
+                 src.diffuse.y, src.diffuse.z, src.ambient.x, src.ambient.y, src.ambient.z,
+                 src.position.x, src.position.y, src.position.z, src.spot_direction.x,
+                 src.spot_direction.y, src.spot_direction.z, src.dist_atten_bias,
+                 src.dist_atten_scale, raw.config.directional.Value(),
+                 raw.config.two_sided_diffuse.Value(), raw.config.geometric_factor_0.Value(),
+                 raw.config.geometric_factor_1.Value(),
+                 lighting.IsSpotAttenDisabled(light_index) ? 1 : 0,
+                 lighting.IsDistAttenDisabled(light_index) ? 1 : 0,
+                 lighting.IsShadowDisabled(light_index) ? 1 : 0);
+    }
+
+    // --- 6. Contenu reel des LUT televersees ------------------------------------------------------
+    for (u32 index = 0; index < LightingRegs::NumLightingSampler; ++index) {
+        if (!relevant[index]) {
+            continue;
+        }
+        const auto& lut = lighting_lut_data[index];
+
+        f32 min_value = lut[0].x;
+        f32 max_value = lut[0].x;
+        double sum_value = 0.0;
+        f32 max_abs_diff = 0.0f;
+        u32 nan_count = 0;
+        for (const auto& entry : lut) {
+            min_value = std::min(min_value, entry.x);
+            max_value = std::max(max_value, entry.x);
+            sum_value += static_cast<double>(entry.x);
+            max_abs_diff = std::max(max_abs_diff, std::fabs(entry.y));
+            if (!std::isfinite(entry.x) || !std::isfinite(entry.y)) {
+                ++nan_count;
+            }
+        }
+
+        LOG_INFO(Render,
+                 "TG09_LUT [{}] idx={:2d} name={} off={} hash={:#018x} min={:.6f} max={:.6f} "
+                 "mean={:.6f} max_abs_diff={:.6f} non_finite={} "
+                 "s[0]=({:.6f},{:.6f}) s[64]=({:.6f},{:.6f}) s[128]=({:.6f},{:.6f}) "
+                 "s[192]=({:.6f},{:.6f}) s[255]=({:.6f},{:.6f})",
+                 backend, index, TG09SamplerName(index),
+                 fs_uniform_block_data.data.lighting_lut_offset[index / 4][index % 4],
+                 lut_hash[index], min_value, max_value,
+                 static_cast<f32>(sum_value / static_cast<double>(lut.size())), max_abs_diff,
+                 nan_count, lut[0].x, lut[0].y, lut[64].x, lut[64].y, lut[128].x, lut[128].y,
+                 lut[192].x, lut[192].y, lut[255].x, lut[255].y);
+
+        if (level < 2) {
+            continue;
+        }
+        const bool is_reflection = index == static_cast<u32>(Sampler::ReflectRed) ||
+                                   index == static_cast<u32>(Sampler::ReflectGreen) ||
+                                   index == static_cast<u32>(Sampler::ReflectBlue);
+        if (level < 3 && !is_reflection) {
+            continue;
+        }
+        for (std::size_t base = 0; base < lut.size(); base += 8) {
+            std::string values;
+            values.reserve(160);
+            for (std::size_t k = 0; k < 8; ++k) {
+                values += fmt::format("{:.6f}/{:.6f} ", lut[base + k].x, lut[base + k].y);
+            }
+            LOG_INFO(Render, "TG09_LUTDUMP [{}] idx={:2d} name={} [{:3d}] {}", backend, index,
+                     TG09SamplerName(index), base, values);
+        }
     }
 }
 

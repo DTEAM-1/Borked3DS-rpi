@@ -106,6 +106,22 @@ protected:
     /// Syncs the clip plane state to match the PICA register
     void SyncClipPlane();
 
+    // ---------------------------------------------------------------------------------------
+    // TG09 (BORKED3DS_TG09_LIGHT_DUMP=1|2|3) -- sonde de MESURE, inerte hors variable
+    // d'environnement. Journalise, au moment exact du televersement des LUT d'eclairage, la
+    // configuration d'eclairage PICA, les sources de lumiere telles qu'elles atteignent le
+    // fragment shader, et le CONTENU REEL des tables de reflexion RR / RG / RB.
+    //
+    // Implementee ici, dans la classe de base COMMUNE aux deux backends, pour que le formatage
+    // soit rigoureusement identique en OpenGL/GLES et en Vulkan : un `diff` des deux logs
+    // repond directement a la question laissee ouverte par le RECAP v163, section 6, point 2.
+    //
+    // `backend` : "GL" ou "VK".  `path` : "tbo" (texel buffer) ou "tex2d" (repli GLES sans
+    // GL_OES_texture_buffer).  `map_offset` / `bytes_used` : etat du televersement en cours.
+    // Aucun effet sur le rendu, a aucun niveau.
+    void TG09LogLightingState(const char* backend, const char* path, u64 map_offset,
+                              u64 bytes_used);
+
 protected:
     /// Structure that keeps tracks of the vertex shader uniform state
     struct VSUniformBlockData {
