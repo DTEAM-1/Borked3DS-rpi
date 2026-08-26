@@ -30,6 +30,66 @@
 
 namespace Pica {
 
+// ---------------------------------------------------------------------------------------------
+// TG12 (BORKED3DS_TG12_LUT_WRITES=1) -- sonde de MESURE, inerte hors variable d'environnement.
+//
+// Question laissee ouverte par TG09/TG10/TG11 (25/08). La LUT ReflectRed est mesuree ENTIEREMENT
+// NULLE (src_nonzero=0/256) alors que le jeu y fait 256 ecritures (writes=256) et que la
+// LightingConfig selectionnee (config=0 et config=1) UTILISE ReflectRed. Selectionner une
+// configuration qui consomme RR tout en y ecrivant 256 zeros n'a pas de sens sur une vraie 3DS :
+// cela donnerait un speculaire noir.
+//
+// TG10 comptait les ecritures sans regarder ni la VALEUR BRUTE ecrite, ni l'INDEX auquel elle
+// atterrit. TG12 journalise les deux, au point d'ecriture exact :
+//
+//     lighting.luts[lut_config.type][lut_config.index].raw = value;
+//     lut_config.index.Assign(lut_config.index + 1);
+//
+// Trois issues, toutes concluantes :
+//   - valeurs brutes NON NULLES et index de 0 a 255  -> les donnees existent mais n'arrivent pas
+//     dans luts[6] : bug d'emulation du chemin d'ecriture, cause racine du defaut de reflet ;
+//   - valeurs brutes NULLES                          -> le jeu efface reellement RR, le reflet a
+//     une autre origine, et le chantier redevient les facettes elles-memes ;
+//   - index ou type qui DERIVE                       -> la LUT est remplie au mauvais endroit.
+//
+// Sortie bornee : les 8 premieres ecritures de chaque type, puis une ligne de synthese tous les
+// 256. Quelques dizaines de lignes par session au maximum.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+bool TG12Enabled() {
+    static const bool enabled = std::getenv("BORKED3DS_TG12_LUT_WRITES") != nullptr;
+    return enabled;
+}
+
+constexpr u32 TG12_NUM_TYPES = 32;   // lut_config.type est un BitField<8,5,u32> : 0..31
+constexpr u32 TG12_DETAIL_WRITES = 8;
+
+std::array<std::atomic<u32>, TG12_NUM_TYPES> tg12_writes{};
+std::array<std::atomic<u32>, TG12_NUM_TYPES> tg12_nonzero{};
+
+const char* TG12TypeName(u32 type) {
+    switch (type) {
+    case 0:  return "D0";
+    case 1:  return "D1";
+    case 3:  return "FR";
+    case 4:  return "RB";
+    case 5:  return "RG";
+    case 6:  return "RR";
+    default: break;
+    }
+    if (type >= 16) {
+        return "DA";
+    }
+    if (type >= 8) {
+        return "SP";
+    }
+    return "??";
+}
+
+} // Anonymous namespace
+
+
 using namespace DebugUtils;
 
 union CommandHeader {
@@ -1639,6 +1699,30 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     case PICA_REG_INDEX(lighting.lut_data[7]): {
         auto& lut_config = regs.internal.lighting.lut_config;
         ASSERT_MSG(lut_config.index < 256, "lut_config.index exceeded maximum value of 255!");
+        // TG12 : sonde de mesure, inerte hors BORKED3DS_TG12_LUT_WRITES. Lue AVANT l'ecriture
+        // pour capturer l'index et la valeur brute reellement presentes.
+        if (TG12Enabled()) {
+            const u32 tg12_type = lut_config.type.Value();
+            const u32 tg12_index = lut_config.index.Value();
+            if (tg12_type < TG12_NUM_TYPES) {
+                const u32 n = tg12_writes[tg12_type].fetch_add(1, std::memory_order_relaxed) + 1;
+                if (value != 0) {
+                    tg12_nonzero[tg12_type].fetch_add(1, std::memory_order_relaxed);
+                }
+                if (n <= TG12_DETAIL_WRITES) {
+                    LOG_INFO(HW_GPU,
+                             "TG12_LUTWRITE type={:2d} name={} index={:3d} raw={:#010x} n={}",
+                             tg12_type, TG12TypeName(tg12_type), tg12_index, value, n);
+                }
+                if ((n % 256u) == 0u) {
+                    LOG_INFO(HW_GPU,
+                             "TG12_LUTSUM type={:2d} name={} writes={} nonzero_raw={} "
+                             "last_index={:3d}",
+                             tg12_type, TG12TypeName(tg12_type), n,
+                             tg12_nonzero[tg12_type].load(std::memory_order_relaxed), tg12_index);
+                }
+            }
+        }
         lighting.luts[lut_config.type][lut_config.index].raw = value;
         lut_config.index.Assign(lut_config.index + 1);
         break;
