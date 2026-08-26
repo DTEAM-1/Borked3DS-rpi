@@ -9586,18 +9586,30 @@ void RasterizerVulkan::SyncAndUploadLUTsLF() {
     // conditions ci-dessous reprennent alors exactement leur forme d'origine.
     const u32 tg10_force = TG10ForceLutUploadLevel();
 
+    // TG11 : correctif candidat. Voir le commentaire au-dessus de TG11RefreshEnabled() dans
+    // rasterizer_accelerated.h. Chaque Map() est le moment ou les emplacements precedents
+    // commencent a vieillir : on y reecrit les LUT reellement selectionnees par la configuration
+    // courante ET leurs offsets, pour qu'aucun offset ne pointe sur une zone recyclee.
+    const bool tg11_refresh = TG11RefreshEnabled();
+    std::array<bool, Pica::LightingRegs::NumLightingSampler> tg11_relevant{};
+
     if (tg10_force < 2 && !fs_uniform_block_data.lighting_lut_dirty_any &&
         !fs_uniform_block_data.fog_lut_dirty) {
         return;
     }
 
+    if (tg11_refresh) {
+        TG11ComputeRelevantLuts(tg11_relevant);
+    }
+
     std::size_t bytes_used = 0;
     auto [buffer, offset, invalidate] = texture_lf_buffer.Map(max_size, sizeof(Common::Vec4f));
 
-    if (fs_uniform_block_data.lighting_lut_dirty_any || invalidate || tg10_force != 0) {
+    if (fs_uniform_block_data.lighting_lut_dirty_any || invalidate || tg10_force != 0 ||
+        tg11_refresh) {
         for (unsigned index = 0; index < fs_uniform_block_data.lighting_lut_dirty.size(); index++) {
             if (fs_uniform_block_data.lighting_lut_dirty[index] || invalidate ||
-                tg10_force != 0) {
+                tg10_force != 0 || (tg11_refresh && tg11_relevant[index])) {
                 std::array<Common::Vec2f, 256> new_data;
                 const auto& source_lut = pica.lighting.luts[index];
                 std::transform(source_lut.begin(), source_lut.end(), new_data.begin(),
@@ -9605,7 +9617,8 @@ void RasterizerVulkan::SyncAndUploadLUTsLF() {
                                    return Common::Vec2f{entry.ToFloat(), entry.DiffToFloat()};
                                });
 
-                if (new_data != lighting_lut_data[index] || invalidate || tg10_force != 0) {
+                if (new_data != lighting_lut_data[index] || invalidate || tg10_force != 0 ||
+                    (tg11_refresh && tg11_relevant[index])) {
                     lighting_lut_data[index] = new_data;
                     std::memcpy(buffer + bytes_used, new_data.data(),
                                 new_data.size() * sizeof(Common::Vec2f));
