@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <functional>
 #include <mutex>
+#include <string>
 #include <unordered_set>
 
 #include "common/logging/log.h"
@@ -49,9 +50,31 @@ namespace Pica::Shader::Generator::GLSL {
 // ---------------------------------------------------------------------------------------------
 namespace {
 
-bool TG13Enabled() {
-    static const bool enabled = std::getenv("BORKED3DS_TG13_FS_HASH") != nullptr;
-    return enabled;
+u32 TG13Level() {
+    static const u32 level = []() -> u32 {
+        const char* const value = std::getenv("BORKED3DS_TG13_FS_HASH");
+        if (value == nullptr) {
+            return 0u;
+        }
+        const int parsed = std::atoi(value);
+        return parsed <= 0 ? 0u : static_cast<u32>(parsed);
+    }();
+    return level;
+}
+
+/// Niveau 2 : ecrit la source GLSL complete dans /tmp/tg13_<VK|GL>_<cfg_hash>.frag.
+/// cfg_hash vient de FSConfig::Hash() (memcmp sur toute la structure), donc DEUX draws de meme
+/// etat PICA donnent le MEME nom de fichier sur les deux backends : le diff est direct.
+void TG13DumpSource(bool is_vulkan, u64 cfg_hash, const std::string& source) {
+    char path[128];
+    std::snprintf(path, sizeof(path), "/tmp/tg13_%s_%016llx.frag", is_vulkan ? "VK" : "GL",
+                  static_cast<unsigned long long>(cfg_hash));
+    std::FILE* const f = std::fopen(path, "wb");
+    if (f == nullptr) {
+        return;
+    }
+    std::fwrite(source.data(), 1, source.size(), f);
+    std::fclose(f);
 }
 
 constexpr u64 TG13_FNV_OFFSET = 0xcbf29ce484222325ULL;
@@ -3117,20 +3140,26 @@ std::string GenerateFragmentShader(const FSConfig& config, const Profile& profil
 
     // TG13 : sonde de mesure, inerte hors BORKED3DS_TG13_FS_HASH. Voir le bloc de commentaires
     // en haut de ce fichier. Ne modifie ni la source produite, ni le comportement.
-    if (TG13Enabled()) {
+    const u32 tg13_level = TG13Level();
+    if (tg13_level != 0) {
         const u64 glsl_hash = TG13Hash(source.data(), source.size());
+        const u64 cfg_hash = static_cast<u64>(config.Hash());
         const auto& lighting = config.lighting;
         const u64 key = glsl_hash ^ (profile.is_vulkan ? 0x9e3779b97f4a7c15ULL : 0ULL);
         if (TG13ShouldLog(key)) {
+            if (tg13_level >= 2) {
+                TG13DumpSource(profile.is_vulkan, cfg_hash, source);
+            }
             LOG_INFO(Render,
-                     "TG13_FSHASH backend={} glsl_hash={:#018x} glsl_len={} | light_raw={:#010x} "
+                     "TG13_FSHASH backend={} cfg_hash={:#018x} glsl_hash={:#018x} glsl_len={} | "
+                     "light_raw={:#010x} "
                      "light_enable={} config={} src_num={} bump_mode={} clamp_hl={} "
                      "prim_alpha={} sec_alpha={} shadow={} | "
                      "d0(en={} abs={} in={} sc={:.4f}) d1(en={} abs={} in={} sc={:.4f}) "
                      "fr(en={} abs={} in={} sc={:.4f}) rr(en={} abs={} in={} sc={:.4f}) "
                      "rg(en={} abs={} in={} sc={:.4f}) rb(en={} abs={} in={} sc={:.4f}) | "
                      "prof(sep={} clip={} gs={} tbo_ext={} tbo_oes={} fsi={} bary={})",
-                     profile.is_vulkan ? "VK" : "GL", glsl_hash, source.size(),
+                     profile.is_vulkan ? "VK" : "GL", cfg_hash, glsl_hash, source.size(),
                      lighting.raw, lighting.enable.Value(),
                      static_cast<u32>(lighting.config.Value()), lighting.src_num.Value(),
                      static_cast<u32>(lighting.bump_mode.Value()),
