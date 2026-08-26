@@ -6,6 +6,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <mutex>
+#include <unordered_set>
+
+#include "common/logging/log.h"
 
 #ifndef __APPLE__
 #include <glad/gl.h>
@@ -17,6 +21,64 @@
 #include "video_core/shader/generator/shader_uniforms.h"
 
 namespace Pica::Shader::Generator::GLSL {
+
+// ---------------------------------------------------------------------------------------------
+// TG13 (BORKED3DS_TG13_FS_HASH=1) -- sonde de MESURE, inerte hors variable d'environnement.
+//
+// Derniere asymetrie non mesuree entre les deux backends (passes du 26/08, quatre captures de
+// reference) :
+//
+//   - OpenGL/GLES : corriger l'adressage de la LUT ReflectRed (TG11) ne change RIEN a l'image.
+//   - Vulkan      : la meme correction fait basculer completement le rendu du vaisseau, de
+//                   "reflet vif" a "coque plate sans reflet".
+//
+// Or les donnees sont identiques (hachages de LUT et light_src mesures egaux, TG09), les
+// configurations d'eclairage sont identiques (config 0, 1 et 3 des deux cotes, TG09 niveau 2), et
+// l'audit v162bis a etabli PAR LECTURE STATIQUE que les deux backends passent par le meme
+// GLSL::GenerateFragmentShader, sans une seule branche is_vulkan dans WriteLighting().
+//
+// Mais c'est une deduction, pas une mesure. TG13 la verifie a l'execution : il hache la source
+// GLSL REELLEMENT produite pour chaque configuration, et la journalise avec le backend.
+//
+//   - hachages IDENTIQUES  -> le shader est bien le meme ; l'ecart est en aval, dans la
+//                             compilation (glslang -> SPIR-V -> V3DV) ou dans l'echantillonnage
+//                             du texel buffer. Perimetre minuscule.
+//   - hachages DIFFERENTS  -> l'audit statique etait incomplet, la divergence est dans la source.
+//
+// Deduplique par (backend, hachage) : quelques lignes par session. Plafond dur.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+bool TG13Enabled() {
+    static const bool enabled = std::getenv("BORKED3DS_TG13_FS_HASH") != nullptr;
+    return enabled;
+}
+
+constexpr u64 TG13_FNV_OFFSET = 0xcbf29ce484222325ULL;
+constexpr u64 TG13_FNV_PRIME = 0x100000001b3ULL;
+constexpr std::size_t TG13_MAX_LINES = 48;
+
+u64 TG13Hash(const char* data, std::size_t size) {
+    u64 hash = TG13_FNV_OFFSET;
+    for (std::size_t i = 0; i < size; ++i) {
+        hash ^= static_cast<u64>(static_cast<unsigned char>(data[i]));
+        hash *= TG13_FNV_PRIME;
+    }
+    return hash;
+}
+
+bool TG13ShouldLog(u64 key) {
+    static std::mutex mutex;
+    static std::unordered_set<u64> seen;
+    std::scoped_lock lock{mutex};
+    if (seen.size() >= TG13_MAX_LINES) {
+        return false;
+    }
+    return seen.insert(key).second;
+}
+
+} // Anonymous namespace
+
 
 using ProcTexClamp = TexturingRegs::ProcTexClamp;
 using ProcTexShift = TexturingRegs::ProcTexShift;
@@ -3051,7 +3113,50 @@ void FragmentModule::DefineTexUnitSampler(u32 texture_unit) {
 
 std::string GenerateFragmentShader(const FSConfig& config, const Profile& profile) {
     FragmentModule module{config, profile};
-    return module.Generate();
+    std::string source = module.Generate();
+
+    // TG13 : sonde de mesure, inerte hors BORKED3DS_TG13_FS_HASH. Voir le bloc de commentaires
+    // en haut de ce fichier. Ne modifie ni la source produite, ni le comportement.
+    if (TG13Enabled()) {
+        const u64 glsl_hash = TG13Hash(source.data(), source.size());
+        const auto& lighting = config.lighting;
+        const u64 key = glsl_hash ^ (profile.is_vulkan ? 0x9e3779b97f4a7c15ULL : 0ULL);
+        if (TG13ShouldLog(key)) {
+            LOG_INFO(Render,
+                     "TG13_FSHASH backend={} glsl_hash={:#018x} glsl_len={} | light_raw={:#010x} "
+                     "light_enable={} config={} src_num={} bump_mode={} clamp_hl={} "
+                     "prim_alpha={} sec_alpha={} shadow={} | "
+                     "d0(en={} abs={} in={} sc={:.4f}) d1(en={} abs={} in={} sc={:.4f}) "
+                     "fr(en={} abs={} in={} sc={:.4f}) rr(en={} abs={} in={} sc={:.4f}) "
+                     "rg(en={} abs={} in={} sc={:.4f}) rb(en={} abs={} in={} sc={:.4f}) | "
+                     "prof(sep={} clip={} gs={} tbo_ext={} tbo_oes={} fsi={} bary={})",
+                     profile.is_vulkan ? "VK" : "GL", glsl_hash, source.size(),
+                     lighting.raw, lighting.enable.Value(),
+                     static_cast<u32>(lighting.config.Value()), lighting.src_num.Value(),
+                     static_cast<u32>(lighting.bump_mode.Value()),
+                     lighting.clamp_highlights.Value(), lighting.enable_primary_alpha.Value(),
+                     lighting.enable_secondary_alpha.Value(), lighting.enable_shadow.Value(),
+                     lighting.lut_d0.enable.Value(), lighting.lut_d0.abs_input.Value(),
+                     static_cast<u32>(lighting.lut_d0.type.Value()), lighting.lut_d0.scale,
+                     lighting.lut_d1.enable.Value(), lighting.lut_d1.abs_input.Value(),
+                     static_cast<u32>(lighting.lut_d1.type.Value()), lighting.lut_d1.scale,
+                     lighting.lut_fr.enable.Value(), lighting.lut_fr.abs_input.Value(),
+                     static_cast<u32>(lighting.lut_fr.type.Value()), lighting.lut_fr.scale,
+                     lighting.lut_rr.enable.Value(), lighting.lut_rr.abs_input.Value(),
+                     static_cast<u32>(lighting.lut_rr.type.Value()), lighting.lut_rr.scale,
+                     lighting.lut_rg.enable.Value(), lighting.lut_rg.abs_input.Value(),
+                     static_cast<u32>(lighting.lut_rg.type.Value()), lighting.lut_rg.scale,
+                     lighting.lut_rb.enable.Value(), lighting.lut_rb.abs_input.Value(),
+                     static_cast<u32>(lighting.lut_rb.type.Value()), lighting.lut_rb.scale,
+                     profile.has_separable_shaders, profile.has_clip_planes,
+                     profile.has_geometry_shader, profile.has_gl_ext_texture_buffer,
+                     profile.has_gl_oes_texture_buffer,
+                     profile.has_fragment_shader_interlock,
+                     profile.has_fragment_shader_barycentric);
+        }
+    }
+
+    return source;
 }
 
 } // namespace Pica::Shader::Generator::GLSL
