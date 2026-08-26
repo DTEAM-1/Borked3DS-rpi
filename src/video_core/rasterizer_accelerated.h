@@ -157,6 +157,40 @@ protected:
     // en-tete sans etre recompilee lirait les mauvais offsets -- ecran unicolore, aucune image.
     static u32 TG10ForceLutUploadLevel();
 
+    // ---------------------------------------------------------------------------------------
+    // TG11 (BORKED3DS_TG11_LUT_REFRESH=1) -- CORRECTIF CANDIDAT, inactif par defaut.
+    //
+    // Cause racine mesuree le 25/08 (sonde TG09+TG10, Metroid, vaisseau) :
+    //   writes=256  src_nonzero=0/256  src_eq_cache=1  off=0
+    // Le jeu ECRIT bien 256 valeurs dans la LUT ReflectRed, et elles sont toutes NULLES. Comme
+    // lighting_lut_data[] est initialise a zero, `new_data != lighting_lut_data[index]` est
+    // toujours faux : la LUT n'est jamais televersee, donc lighting_lut_offset[] n'est JAMAIS
+    // ecrit et conserve sa valeur d'initialisation 0. Le fragment shader lit alors les 256
+    // premiers texels du buffer EN FLOT -- les restes de la derniere LUT ecrite par un autre
+    // draw. D'ou un reflet fantome qui suit le contenu du buffer, donc la camera.
+    //
+    // TG10=1 l'a prouve en re-televersant les 24 LUT a chaque invocation : le reflet est devenu
+    // realiste, MAIS 49 152 octets par invocation font recycler l'anneau toutes les ~40
+    // invocations, ce qui ecrase des donnees encore lues par le GPU -- d'ou les triangles
+    // supplementaires observes.
+    //
+    // TG11 fait la meme chose en ne re-televersant que les LUT que la LightingConfig courante
+    // selectionne REELLEMENT (typiquement 3 ou 4 sur 24, soit ~6-8 Ko au lieu de 49 Ko) :
+    // l'anneau ne recycle plus qu'apres ~300 invocations, alors que le GPU consomme les donnees
+    // en une ou deux frames. Aucun Map() supplementaire : l'early return reste en place, on
+    // ecrit seulement un peu plus d'octets quand on mappe deja.
+    //
+    // Une fois valide, ce comportement a vocation a devenir le DEFAUT dans la source, sans
+    // variable d'environnement (regle du projet : un correctif ne doit jamais dependre d'une
+    // variable pour etre DESACTIVE).
+    static bool TG11RefreshEnabled();
+
+    /// Remplit `out[i]` avec true si le sampler d'eclairage i est reellement selectionne par la
+    /// configuration PICA courante. Sert a la fois au correctif TG11 et a la sonde TG09, pour
+    /// qu'ils ne puissent pas diverger. Aucun membre de donnees : voir la note ci-dessus.
+    void TG11ComputeRelevantLuts(
+        std::array<bool, Pica::LightingRegs::NumLightingSampler>& out) const;
+
 protected:
     /// Structure that keeps tracks of the vertex shader uniform state
     struct VSUniformBlockData {

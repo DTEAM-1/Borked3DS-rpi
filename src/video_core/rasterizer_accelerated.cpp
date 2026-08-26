@@ -1124,6 +1124,48 @@ u32 RasterizerAccelerated::TG10ForceLutUploadLevel() {
     return level;
 }
 
+bool RasterizerAccelerated::TG11RefreshEnabled() {
+    static const bool enabled = []() -> bool {
+        const char* const value = std::getenv("BORKED3DS_TG11_LUT_REFRESH");
+        return value != nullptr && std::atoi(value) > 0;
+    }();
+    return enabled;
+}
+
+void RasterizerAccelerated::TG11ComputeRelevantLuts(
+    std::array<bool, Pica::LightingRegs::NumLightingSampler>& out) const {
+    using LightingRegs = Pica::LightingRegs;
+    using Sampler = LightingRegs::LightingSampler;
+
+    out.fill(false);
+
+    const auto& lighting = regs.lighting;
+    const auto config = lighting.config0.config.Value();
+    const u32 num_lights = lighting.max_light_index.Value() + 1u;
+
+    const std::array<Sampler, 6> fixed_samplers{
+        Sampler::Distribution0, Sampler::Distribution1, Sampler::Fresnel,
+        Sampler::ReflectBlue,   Sampler::ReflectGreen,  Sampler::ReflectRed,
+    };
+    for (const auto sampler : fixed_samplers) {
+        if (LightingRegs::IsLightingSamplerSupported(config, sampler)) {
+            out[static_cast<std::size_t>(sampler)] = true;
+        }
+    }
+
+    const bool spot_supported =
+        LightingRegs::IsLightingSamplerSupported(config, Sampler::SpotlightAttenuation);
+    for (u32 slot = 0; slot < num_lights; ++slot) {
+        const u32 light_index = lighting.light_enable.GetNum(slot);
+        if (spot_supported && !lighting.IsSpotAttenDisabled(light_index)) {
+            out[static_cast<std::size_t>(Sampler::SpotlightAttenuation) + light_index] = true;
+        }
+        if (!lighting.IsDistAttenDisabled(light_index)) {
+            out[static_cast<std::size_t>(Sampler::DistanceAttenuation) + light_index] = true;
+        }
+    }
+}
+
 void RasterizerAccelerated::TG09LogLightingState(const char* backend, const char* path,
                                                  u64 map_offset, u64 bytes_used) {
     const u32 level = TG09Level();
@@ -1142,26 +1184,7 @@ void RasterizerAccelerated::TG09LogLightingState(const char* backend, const char
     // On ne hache et n'affiche que celles-la : hacher les 24 a chaque televersement couterait
     // trop cher sur le chemin chaud, et les LUT non selectionnees ne sont jamais lues par le FS.
     std::array<bool, LightingRegs::NumLightingSampler> relevant{};
-    const std::array<Sampler, 6> fixed_samplers{
-        Sampler::Distribution0, Sampler::Distribution1, Sampler::Fresnel,
-        Sampler::ReflectBlue,   Sampler::ReflectGreen,  Sampler::ReflectRed,
-    };
-    for (const auto sampler : fixed_samplers) {
-        if (LightingRegs::IsLightingSamplerSupported(config, sampler)) {
-            relevant[static_cast<std::size_t>(sampler)] = true;
-        }
-    }
-    const bool spot_supported =
-        LightingRegs::IsLightingSamplerSupported(config, Sampler::SpotlightAttenuation);
-    for (u32 slot = 0; slot < num_lights; ++slot) {
-        const u32 light_index = lighting.light_enable.GetNum(slot);
-        if (spot_supported && !lighting.IsSpotAttenDisabled(light_index)) {
-            relevant[static_cast<std::size_t>(Sampler::SpotlightAttenuation) + light_index] = true;
-        }
-        if (!lighting.IsDistAttenDisabled(light_index)) {
-            relevant[static_cast<std::size_t>(Sampler::DistanceAttenuation) + light_index] = true;
-        }
-    }
+    TG11ComputeRelevantLuts(relevant);
 
     // --- 2. Signature de contenu : registres + lumieres actives + contenu reel des LUT ----------
     // Volontairement SANS les offsets de televersement : ils bougent a chaque frame (buffer en
