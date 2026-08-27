@@ -1741,6 +1741,58 @@ std::array<std::atomic<u64>, 6> g_a7z12_sw_vert_hist{};
     return enabled;
 }
 
+// ---------------------------------------------------------------------------------------------
+// TG14 (v168) -- recensement PAR DRAW et isolation de draw. Sonde de MESURE, inerte hors
+// variables d'environnement.
+//
+// Motif. Toutes les sondes fragment (BORKED3DS_FS_SHOW_*) ecrivent `color` pour TOUS les draws.
+// Ce qu'on voit a l'ecran est donc le DERNIER draw qui couvre le pixel, jamais l'objet vise.
+// Les passes 14 a 24 de la session v167 ont ainsi mesure le fond, pas le vaisseau de Metroid.
+// TG14 corrige la methode a la racine, en donnant le moyen d'isoler UN draw :
+//
+//   BORKED3DS_TG14_MAX_DRAWS=N   ne dessine que les N premiers draws de chaque frame. En
+//                                augmentant N par dichotomie, on trouve l'index de draw exact
+//                                ou le vaisseau apparait. Combine a une sonde FS, plus aucun
+//                                draw posterieur ne peut ecraser le resultat.
+//   BORKED3DS_TG14_LOG=1         une ligne par draw : index, sommets, chemin materiel/software,
+//                                etat d'eclairage et couleurs reelles de la lumiere 0.
+//   BORKED3DS_TG14_LOG_MAX=N     plafond de lignes journalisees (defaut 2000).
+//   BORKED3DS_TG14_LOG_FRAME=N   ne journaliser que la frame N (0 = toutes les frames).
+//
+// Contrairement a TG09, il n'y a ici AUCUNE deduplication par signature : le plafond de 64
+// signatures de TG09 arretait la journalisation a 4,7 s, donc bien avant la scene du vaisseau.
+//
+// Cout nul hors variables d'environnement : tous les predicats sont des `static const`, et
+// IsTG14Active() court-circuite le bloc entier des le premier draw.
+std::atomic<u32> g_tg14_draw_index{0};
+std::atomic<u64> g_tg14_frame{0};
+std::atomic<u64> g_tg14_logged{0};
+
+[[nodiscard]] u32 GetTG14MaxDraws() {
+    static const u32 value = GetEnvU32("BORKED3DS_TG14_MAX_DRAWS", 0);
+    return value;
+}
+
+[[nodiscard]] bool IsTG14LogEnabled() {
+    static const bool enabled = IsEnvEnabled("BORKED3DS_TG14_LOG");
+    return enabled;
+}
+
+[[nodiscard]] u64 GetTG14LogMax() {
+    static const u64 value = static_cast<u64>(GetEnvU32("BORKED3DS_TG14_LOG_MAX", 2000));
+    return value;
+}
+
+[[nodiscard]] u64 GetTG14LogFrame() {
+    static const u64 value = static_cast<u64>(GetEnvU32("BORKED3DS_TG14_LOG_FRAME", 0));
+    return value;
+}
+
+[[nodiscard]] bool IsTG14Active() {
+    static const bool active = GetTG14MaxDraws() != 0 || IsTG14LogEnabled();
+    return active;
+}
+
 struct StrictPresentDisplayCache {
     bool valid = false;
     PAddr framebuffer_addr = 0;
@@ -2474,6 +2526,12 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 RasterizerVulkan::~RasterizerVulkan() = default;
 
 void RasterizerVulkan::TickFrame() {
+    // TG14 : la frontiere de frame remet l'index de draw a zero pour que MAX_DRAWS s'applique
+    // par frame et non sur toute la session. Independant du census A7Z12.
+    if (IsTG14Active()) {
+        g_tg14_frame.fetch_add(1, std::memory_order_relaxed);
+        g_tg14_draw_index.store(0, std::memory_order_relaxed);
+    }
     if (IsA7Z12FrameCensusEnabled()) {
         const u64 frame = g_a7z12_frame_index.fetch_add(1, std::memory_order_relaxed) + 1;
         const u32 entered = g_a7z12_draws_entered.exchange(0, std::memory_order_relaxed);
@@ -7491,6 +7549,41 @@ void RasterizerVulkan::DrawTriangles() {
 
 bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     BORKED3DS_PROFILE("Vulkan", "Drawing");
+    // TG14 : recensement par draw et isolation. Voir le commentaire au-dessus de
+    // GetTG14MaxDraws(). Inerte hors BORKED3DS_TG14_*.
+    if (IsTG14Active()) {
+        const u32 tg14_index = g_tg14_draw_index.fetch_add(1, std::memory_order_relaxed);
+        if (IsTG14LogEnabled()) {
+            const u64 tg14_frame = g_tg14_frame.load(std::memory_order_relaxed);
+            const u64 tg14_only_frame = GetTG14LogFrame();
+            if ((tg14_only_frame == 0 || tg14_frame == tg14_only_frame) &&
+                g_tg14_logged.fetch_add(1, std::memory_order_relaxed) < GetTG14LogMax()) {
+                const auto& tg14_light = fs_uniform_block_data.data.light_src[0];
+                const auto& tg14_ambient = fs_uniform_block_data.data.lighting_global_ambient;
+                LOG_INFO(Render_Vulkan,
+                         "TG14_DRAW frame={} idx={} accel={} indexed={} nverts={} "
+                         "light_disable={} light_config={} nlights={} "
+                         "l0_diff=({:.4f},{:.4f},{:.4f}) l0_spec0=({:.4f},{:.4f},{:.4f}) "
+                         "l0_amb=({:.4f},{:.4f},{:.4f}) global_amb=({:.4f},{:.4f},{:.4f})",
+                         tg14_frame, tg14_index, static_cast<u32>(accelerate),
+                         static_cast<u32>(is_indexed),
+                         static_cast<u32>(regs.pipeline.num_vertices),
+                         static_cast<u32>(regs.lighting.disable.Value()),
+                         static_cast<u32>(regs.lighting.config0.config.Value()),
+                         static_cast<u32>(regs.lighting.max_light_index.Value()) + 1u,
+                         tg14_light.diffuse.x, tg14_light.diffuse.y, tg14_light.diffuse.z,
+                         tg14_light.specular_0.x, tg14_light.specular_0.y,
+                         tg14_light.specular_0.z, tg14_light.ambient.x, tg14_light.ambient.y,
+                         tg14_light.ambient.z, tg14_ambient.x, tg14_ambient.y, tg14_ambient.z);
+            }
+        }
+        const u32 tg14_max_draws = GetTG14MaxDraws();
+        if (tg14_max_draws != 0 && tg14_index >= tg14_max_draws) {
+            // Draw supprime : meme sortie propre que le chemin normal.
+            vertex_batch.clear();
+            return true;
+        }
+    }
     if (IsA7Z12FrameCensusEnabled()) {
         g_a7z12_draws_entered.fetch_add(1, std::memory_order_relaxed);
         // Repartition VS materiel / VS software : le chemin software execute le vertex
