@@ -9794,13 +9794,38 @@ void RasterizerVulkan::SyncAndUploadLUTsLF() {
         fs_uniform_block_data.lighting_lut_dirty_any = false;
     }
 
-    if (fs_uniform_block_data.fog_lut_dirty || invalidate) {
+    // vLUT169-b : la LUT de brouillard partage LE MEME anneau que les LUT d'eclairage
+    // (texture_lf_buffer) et porte exactement le meme defaut -- son offset n'etait ecrit que
+    // dans la branche gardee par le cache de contenu. Le brouillard etant typiquement pose une
+    // fois par le jeu puis jamais reecrit, son offset se fige et pointe sur une zone recyclee,
+    // exactement comme D1, DA et RR.
+    //
+    // MESURE A L'APPUI (28/08/2026, sonde TG09, scene du vaisseau, correctif d'eclairage
+    // DESACTIVE) : pendant que le curseur d'ecriture etait a map_off=1 672 192, D1 pointait
+    // encore sur l'octet 2 048 et DA sur 6 144 -- plus de 1,6 Mo en arriere. Avec le correctif
+    // d'eclairage actif, tous les offsets retombent a map_off + k*2048, a l'octet pres. Le
+    // brouillard, non traite, reste dans le premier cas.
+    //
+    // Il faut le traiter EN MEME TEMPS que l'eclairage, et non plus tard : le refresh
+    // d'eclairage ci-dessus multiplie le trafic dans cet anneau (jusqu'a 8 LUT par draw eclaire
+    // au lieu de la seule Fresnel), donc il le fait tourner ~4x plus vite et perime l'offset de
+    // brouillard PLUS TOT qu'avant. Corriger l'eclairage seul deplace le probleme.
+    //
+    // Garde de cout symetrique a celle de l'eclairage : le fragment shader n'echantillonne la
+    // LUT de brouillard que si fog_mode == Fog. Sinon un offset perime y est inoffensif et le
+    // re-televersement serait du gaspillage. Gate INDEPENDANTE de lighting.disable : un draw
+    // peut avoir du brouillard sans eclairage, et inversement.
+    const bool fog_refresh =
+        !IsLutOffsetRefreshDisabled() &&
+        regs.texturing.fog_mode == Pica::TexturingRegs::FogMode::Fog;
+
+    if (fs_uniform_block_data.fog_lut_dirty || invalidate || fog_refresh) {
         std::array<Common::Vec2f, 128> new_data;
         std::transform(pica.fog.lut.begin(), pica.fog.lut.end(), new_data.begin(),
                        [](const auto& entry) {
                            return Common::Vec2f{entry.ToFloat(), entry.DiffToFloat()};
                        });
-        if (new_data != fog_lut_data || invalidate) {
+        if (new_data != fog_lut_data || invalidate || fog_refresh) {
             fog_lut_data = new_data;
             std::memcpy(buffer + bytes_used, new_data.data(),
                         new_data.size() * sizeof(Common::Vec2f));
