@@ -745,6 +745,58 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return cached;
 }
 
+/// vLUT169 -- ECHAPPATOIRE du correctif d'offset de LUT d'eclairage (SyncAndUploadLUTsLF).
+///
+/// LE DEFAUT CORRIGE. `texture_lf_buffer` est un buffer EN FLOT : StreamBuffer::Map() rend le
+/// curseur d'ecriture courant et Commit() l'avance. Chaque appel de SyncAndUploadLUTsLF() ecrit
+/// donc a un endroit DIFFERENT, et quand le curseur atteint la fin il repart a zero
+/// (`invalidate`), recyclant tout ce qui precede.
+///
+/// Or `fs_uniform_block_data.data.lighting_lut_offset[index]` n'etait ecrit QUE dans la branche
+/// de televersement, elle-meme gardee par un cache de CONTENU :
+///
+///     if (new_data != lighting_lut_data[index] || invalidate) { ... ecrit l'offset ... }
+///
+/// Un cache de contenu ne peut pas garder une donnee de LOCALISATION. Une LUT dont le contenu ne
+/// change plus n'est jamais re-televersee, donc son offset reste fige sur une position ecrite
+/// des dizaines de milliers d'appels plus tot -- position depuis longtemps recyclee. Le fragment
+/// shader y fait quand meme son texelFetch et lit des donnees etrangeres.
+///
+/// Mesure a l'appui (TG12) : le jeu ecrit 256 zeros dans ReflectRed/Green/Blue une seule fois et
+/// n'y revient jamais, tandis que Fresnel recoit ~1 000 000 d'ecritures. FR est donc re-televersee
+/// a presque chaque draw -- ce qui fait avancer le curseur ~2 Ko par draw et recycle l'anneau en
+/// permanence -- pendant que RR/RG/RB gardent un offset perime.
+///
+/// POURQUOI CELA PRODUIT LES FACETTES, et pas seulement un faux reflet. L'index de lecture d'une
+/// LUT d'eclairage derive de la NORMALE (N.H, N.V ...), donc de `normquat` interpole. Sur un
+/// triangle la normale varie continument, l'index balaie une plage, et le shader lit une plage
+/// contigue de donnees recyclees -- sans aucune continuite, et decalee differemment d'un triangle
+/// a l'autre. D'ou des discontinuites d'ombrage calees sur les aretes, qui SUIVENT LA CAMERA
+/// puisque N.H depend du vecteur de vue. C'est exactement la signature relevee depuis le v163.
+///
+/// Cela explique aussi la VARIABILITE ENTRE LANCEMENTS mesuree le 28/08/2026 (deux demarrages,
+/// configuration identique, ~50 % de facettes puis ~100 %) : ce que contient la zone recyclee
+/// depend de l'historique d'allocation du processus, donc du lancement.
+///
+/// LE CORRECTIF. On n'entre toujours dans la fonction que si quelque chose est sale -- si le
+/// curseur ne bouge pas, aucun offset ne peut perimer, et le cout reste nul. Mais des lors qu'on
+/// entre, donc que le curseur VA bouger, on re-televerse et on re-adresse toutes les LUT que la
+/// LightingConfig courante echantillonne reellement (TG11ComputeRelevantLuts). Aucun offset ne
+/// peut plus pointer derriere le curseur.
+///
+/// C'est le comportement que la sonde TG11 evaluait ; il est ici ADOPTE PAR DEFAUT, conformement
+/// a la regle du projet (un correctif ne doit jamais dependre d'une variable pour etre ACTIVE).
+/// Poser BORKED3DS_V3DV_DISABLE_LUT_OFFSET_REFRESH=1 restaure a l'identique l'ancien
+/// comportement, sans rebuild, pour A/B ou en cas de regression sur un titre non teste.
+///
+/// NON TRAITE ICI, VOLONTAIREMENT : la LUT de brouillard (`fog_lut_offset`, plus bas) porte
+/// exactement le meme defaut. Aucun symptome ne lui a jamais ete attribue et l'elargissement
+/// augmenterait la surface de risque de cette premiere adoption. A reprendre separement.
+[[nodiscard]] bool IsLutOffsetRefreshDisabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_LUT_OFFSET_REFRESH");
+    return cached;
+}
+
 [[nodiscard]] bool IsSoftwareClearProbeEnabled() {
     // v82: the v82 descriptorless clear bridge proved that the Pi5/V3DV render target
     // and final present path are alive, but it also creates the green moving rectangles
@@ -9679,11 +9731,27 @@ void RasterizerVulkan::SyncAndUploadLUTsLF() {
     // conditions ci-dessous reprennent alors exactement leur forme d'origine.
     const u32 tg10_force = TG10ForceLutUploadLevel();
 
-    // TG11 : correctif candidat. Voir le commentaire au-dessus de TG11RefreshEnabled() dans
-    // rasterizer_accelerated.h. Chaque Map() est le moment ou les emplacements precedents
-    // commencent a vieillir : on y reecrit les LUT reellement selectionnees par la configuration
-    // courante ET leurs offsets, pour qu'aucun offset ne pointe sur une zone recyclee.
-    const bool tg11_refresh = TG11RefreshEnabled();
+    // vLUT169 : CORRECTIF ADOPTE PAR DEFAUT. Voir le bloc explicatif complet au-dessus de
+    // IsLutOffsetRefreshDisabled(), dans le namespace anonyme en tete de ce fichier.
+    //
+    // Chaque Map() est le moment ou les emplacements precedents commencent a vieillir : on y
+    // reecrit les LUT reellement selectionnees par la configuration courante ET leurs offsets,
+    // pour qu'aucun offset ne pointe sur une zone recyclee du buffer en flot.
+    //
+    // Anciennement gouverne par la sonde TG11 (BORKED3DS_TG11_LUT_REFRESH), qui reste en place
+    // pour le backend OpenGL. Cote Vulkan la variable n'est plus necessaire : le comportement
+    // est desormais le defaut, et l'echappatoire BORKED3DS_V3DV_DISABLE_LUT_OFFSET_REFRESH=1
+    // fait autorite pour restaurer l'ancien comportement a l'identique (A/B sans ambiguite).
+    //
+    // GARDE DE COUT : si l'unite d'eclairage PICA est desactivee pour ce draw, le fragment
+    // shader ne lit AUCUNE LUT d'eclairage -- un offset perime y est donc inoffensif, et un
+    // re-televersement serait du gaspillage pur. Mesure v162 (sonde TG03) : Sonic Lost World
+    // fait 4096 draws sur 4096 avec lighting.disable=1, et Kid Icarus 103 962 sur 110 592.
+    // Cette garde laisse donc ces deux titres temoins strictement au comportement d'origine,
+    // et concentre le correctif sur les draws qui echantillonnent reellement les LUT.
+    // Aucune peremption ne peut fuir entre draws : si l'eclairage se rallume au draw suivant,
+    // ce draw-la refait le refresh avant de lire quoi que ce soit.
+    const bool tg11_refresh = !IsLutOffsetRefreshDisabled() && !regs.lighting.disable;
     std::array<bool, Pica::LightingRegs::NumLightingSampler> tg11_relevant{};
 
     if (tg10_force < 2 && !fs_uniform_block_data.lighting_lut_dirty_any &&
