@@ -7612,9 +7612,67 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                 g_tg14_logged.fetch_add(1, std::memory_order_relaxed) < GetTG14LogMax()) {
                 const auto& tg14_light = fs_uniform_block_data.data.light_src[0];
                 const auto& tg14_ambient = fs_uniform_block_data.data.lighting_global_ambient;
+
+                // vQUAT (v171) -- configuration de NORMALE du draw courant, ajoutee a la ligne
+                // TG14_DRAW.
+                //
+                // MOTIF. La sonde TG05 mesure ces champs par CONFIGURATION DE SHADER, en
+                // dedoublonnant ; elle ne les rattache donc a aucun draw. Mesure du 29/08/2026 sur
+                // la scene du vaisseau : quatre configurations eclairees, dont DEUX sans aucun
+                // quaternion mappe (quat_attr=(16,16,16,16), la valeur de remplissage). Or trois
+                // de ces quatre configurations partagent la signature d'eclairage du vaisseau
+                // (config=0, lights=1, light_disable=0) : les champs deja journalises par TG14 ne
+                // permettent pas de savoir dans laquelle il tombe.
+                //
+                // Ce que ces champs ajoutent, et pourquoi c'est decisif : avec bump_mode=0,
+                // surface_normal est figee a (0,0,1), donc TOUTE la normale du fragment vient de
+                // normquat. Si le draw n'a aucun quaternion mappe, le geometry shader emet une
+                // constante -- et le flip q/-q, dont TG02 a confirme le 29/08 qu'il s'execute sur
+                // 100 % des draws, s'applique alors a une constante : il tourne a vide.
+                //
+                // Le calcul reproduit exactement celui de TG05 (shader_gen.cpp,
+                // PicaGSConfigState::Init) : semantic map reconstruite depuis les registres, puis
+                // quat_ok = les quatre composantes du quaternion pointent dans les attributs
+                // reellement emis. Aucune allocation, aucun verrou, et le bloc entier est deja
+                // sous IsTG14Active() donc inerte hors sonde.
+                u32 tg14_gs_out = 0;
+                for (u32 bit = 0; bit < 16; ++bit) {
+                    if ((static_cast<u32>(regs.vs.output_mask.Value()) >> bit) & 1u) {
+                        ++tg14_gs_out;
+                    }
+                }
+                const u32 tg14_vs_total = static_cast<u32>(regs.rasterizer.vs_output_total);
+                std::array<u32, 24> tg14_sem_attr;
+                tg14_sem_attr.fill(16u);
+                for (u32 attrib = 0; attrib < tg14_vs_total && attrib < 7; ++attrib) {
+                    const std::array<u32, 4> tg14_semantics{
+                        static_cast<u32>(regs.rasterizer.vs_output_attributes[attrib].map_x.Value()),
+                        static_cast<u32>(regs.rasterizer.vs_output_attributes[attrib].map_y.Value()),
+                        static_cast<u32>(regs.rasterizer.vs_output_attributes[attrib].map_z.Value()),
+                        static_cast<u32>(regs.rasterizer.vs_output_attributes[attrib].map_w.Value()),
+                    };
+                    for (u32 comp = 0; comp < 4; ++comp) {
+                        if (tg14_semantics[comp] < 24u) {
+                            tg14_sem_attr[tg14_semantics[comp]] = attrib;
+                        }
+                    }
+                }
+                // QUATERNION_X = 4 dans RasterizerRegs::VSOutputAttributes::Semantic ; les
+                // composantes Y, Z, W suivent immediatement (5, 6, 7).
+                const u32 tg14_qx = tg14_sem_attr[4];
+                const u32 tg14_qy = tg14_sem_attr[5];
+                const u32 tg14_qz = tg14_sem_attr[6];
+                const u32 tg14_qw = tg14_sem_attr[7];
+                const u32 tg14_quat_ok =
+                    (tg14_qx < tg14_gs_out && tg14_qy < tg14_gs_out && tg14_qz < tg14_gs_out &&
+                     tg14_qw < tg14_gs_out)
+                        ? 1u
+                        : 0u;
+
                 LOG_INFO(Render_Vulkan,
                          "TG14_DRAW frame={} idx={} accel={} indexed={} nverts={} "
                          "light_disable={} light_config={} nlights={} "
+                         "vs_total={} gs_out={} quat_attr=({},{},{},{}) quat_ok={} "
                          "l0_diff=({:.4f},{:.4f},{:.4f}) l0_spec0=({:.4f},{:.4f},{:.4f}) "
                          "l0_amb=({:.4f},{:.4f},{:.4f}) global_amb=({:.4f},{:.4f},{:.4f})",
                          tg14_frame, tg14_index, static_cast<u32>(accelerate),
@@ -7623,6 +7681,8 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                          static_cast<u32>(regs.lighting.disable.Value()),
                          static_cast<u32>(regs.lighting.config0.config.Value()),
                          static_cast<u32>(regs.lighting.max_light_index.Value()) + 1u,
+                         tg14_vs_total, tg14_gs_out, tg14_qx, tg14_qy, tg14_qz, tg14_qw,
+                         tg14_quat_ok,
                          tg14_light.diffuse.x, tg14_light.diffuse.y, tg14_light.diffuse.z,
                          tg14_light.specular_0.x, tg14_light.specular_0.y,
                          tg14_light.specular_0.z, tg14_light.ambient.x, tg14_light.ambient.y,
