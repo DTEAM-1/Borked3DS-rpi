@@ -1807,7 +1807,10 @@ std::array<std::atomic<u64>, 6> g_a7z12_sw_vert_hist{};
 //                                ou le vaisseau apparait. Combine a une sonde FS, plus aucun
 //                                draw posterieur ne peut ecraser le resultat.
 //   BORKED3DS_TG14_LOG=1         une ligne par draw : index, sommets, chemin materiel/software,
-//                                etat d'eclairage et couleurs reelles de la lumiere 0.
+//                                etat d'eclairage et couleurs reelles de la lumiere 0, la
+//                                configuration de normale (vQUAT, v171) et le reste de la
+//                                semantic map -- couleur de sommet, coordonnees de texture et
+//                                vecteur de vue (vSEM, v173).
 //   BORKED3DS_TG14_LOG_MAX=N     plafond de lignes journalisees (defaut 2000).
 //   BORKED3DS_TG14_LOG_FRAME=N   ne journaliser que la frame N (0 = toutes les frames).
 //
@@ -7669,12 +7672,78 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                         ? 1u
                         : 0u;
 
+                // vSEM (v173) -- le RESTE de la semantic map, ajoute a la meme ligne TG14_DRAW.
+                //
+                // MOTIF. La mesure vQUAT du 31/08/2026 a ferme l'axe eclairage pour le vaisseau :
+                // vs_total=3, quat_attr=(16,16,16,16), et les quatre couleurs de l'unite
+                // d'eclairage PICA a zero, ambiante globale comprise. La normale ne peut donc rien
+                // changer a l'image de cet objet, et le quaternion manquant y est inoffensif.
+                //
+                // Il reste alors une seule question ouverte sur les facettes : avec 3 attributs de
+                // sortie, soit 12 composantes, dont 4 prises par la position, DE QUOI est faite la
+                // couleur du vaisseau ? Les candidats sont la couleur de sommet (COLOR_R..A) et les
+                // coordonnees de texture (TEXCOORD*). Et la presence ou l'absence de VIEW_X/Y/Z
+                // decide de ce que le TEV peut calculer par fragment.
+                //
+                // vQUAT ne journalise que les indices 4..7 du tableau, alors que celui-ci est deja
+                // rempli pour les 24 semantiques. Ces champs ne coutent donc AUCUN calcul
+                // supplementaire : ce sont des lectures du tableau tg14_sem_attr deja construit.
+                // Valeur 16 = semantique jamais mappee, exactement comme pour quat_attr.
+                //
+                // Les indices proviennent de RasterizerRegs::VSOutputAttributes::Semantic
+                // (regs_rasterizer.h:68-99) : COLOR_R..A = 8..11, TEXCOORD0_U/V = 12/13,
+                // TEXCOORD1_U/V = 14/15, TEXCOORD0_W = 16, VIEW_X/Y/Z = 18..20,
+                // TEXCOORD2_U/V = 22/23. Les indices 17 et 21 n'existent pas dans l'enum.
+                //
+                // Les drapeaux _ok reproduisent le test de quat_ok : une semantique n'est
+                // reellement disponible que si son attribut est INFERIEUR au nombre d'attributs
+                // emis (gs_out). Un indice mappe mais >= gs_out pointe dans le vide.
+                const u32 tg14_cr = tg14_sem_attr[8];
+                const u32 tg14_cg = tg14_sem_attr[9];
+                const u32 tg14_cb = tg14_sem_attr[10];
+                const u32 tg14_ca = tg14_sem_attr[11];
+                const u32 tg14_color_ok =
+                    (tg14_cr < tg14_gs_out && tg14_cg < tg14_gs_out && tg14_cb < tg14_gs_out &&
+                     tg14_ca < tg14_gs_out)
+                        ? 1u
+                        : 0u;
+                const u32 tg14_t0u = tg14_sem_attr[12];
+                const u32 tg14_t0v = tg14_sem_attr[13];
+                const u32 tg14_t0w = tg14_sem_attr[16];
+                const u32 tg14_tc0_ok =
+                    (tg14_t0u < tg14_gs_out && tg14_t0v < tg14_gs_out) ? 1u : 0u;
+                const u32 tg14_t1u = tg14_sem_attr[14];
+                const u32 tg14_t1v = tg14_sem_attr[15];
+                const u32 tg14_t2u = tg14_sem_attr[22];
+                const u32 tg14_t2v = tg14_sem_attr[23];
+                const u32 tg14_vx = tg14_sem_attr[18];
+                const u32 tg14_vy = tg14_sem_attr[19];
+                const u32 tg14_vz = tg14_sem_attr[20];
+                const u32 tg14_view_ok =
+                    (tg14_vx < tg14_gs_out && tg14_vy < tg14_gs_out && tg14_vz < tg14_gs_out)
+                        ? 1u
+                        : 0u;
+                // Nombre de composantes reellement adressees par la semantic map, toutes
+                // semantiques confondues. Sert de garde-fou de lecture : il doit rester coherent
+                // avec vs_total x 4. S'il est tres inferieur, des composantes sont mappees sur
+                // INVALID (31) et ne portent rien.
+                u32 tg14_sem_used = 0;
+                for (u32 sem = 0; sem < 24u; ++sem) {
+                    if (tg14_sem_attr[sem] != 16u) {
+                        ++tg14_sem_used;
+                    }
+                }
+
                 LOG_INFO(Render_Vulkan,
                          "TG14_DRAW frame={} idx={} accel={} indexed={} nverts={} "
                          "light_disable={} light_config={} nlights={} "
                          "vs_total={} gs_out={} quat_attr=({},{},{},{}) quat_ok={} "
                          "l0_diff=({:.4f},{:.4f},{:.4f}) l0_spec0=({:.4f},{:.4f},{:.4f}) "
-                         "l0_amb=({:.4f},{:.4f},{:.4f}) global_amb=({:.4f},{:.4f},{:.4f})",
+                         "l0_amb=({:.4f},{:.4f},{:.4f}) global_amb=({:.4f},{:.4f},{:.4f}) "
+                         "color_attr=({},{},{},{}) color_ok={} "
+                         "tc0_attr=({},{}) tc0_ok={} tc0w_attr={} "
+                         "tc1_attr=({},{}) tc2_attr=({},{}) "
+                         "view_attr=({},{},{}) view_ok={} sem_used={}",
                          tg14_frame, tg14_index, static_cast<u32>(accelerate),
                          static_cast<u32>(is_indexed),
                          static_cast<u32>(regs.pipeline.num_vertices),
@@ -7686,7 +7755,11 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                          tg14_light.diffuse.x, tg14_light.diffuse.y, tg14_light.diffuse.z,
                          tg14_light.specular_0.x, tg14_light.specular_0.y,
                          tg14_light.specular_0.z, tg14_light.ambient.x, tg14_light.ambient.y,
-                         tg14_light.ambient.z, tg14_ambient.x, tg14_ambient.y, tg14_ambient.z);
+                         tg14_light.ambient.z, tg14_ambient.x, tg14_ambient.y, tg14_ambient.z,
+                         tg14_cr, tg14_cg, tg14_cb, tg14_ca, tg14_color_ok,
+                         tg14_t0u, tg14_t0v, tg14_tc0_ok, tg14_t0w,
+                         tg14_t1u, tg14_t1v, tg14_t2u, tg14_t2v,
+                         tg14_vx, tg14_vy, tg14_vz, tg14_view_ok, tg14_sem_used);
             }
         }
         const u32 tg14_max_draws = GetTG14MaxDraws();
