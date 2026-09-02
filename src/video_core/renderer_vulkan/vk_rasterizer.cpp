@@ -7734,6 +7734,37 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                     }
                 }
 
+                // vDEPTH (v174) -- second terme speculaire, LUT actives, regime de profondeur
+                // et cible de rendu. Trois angles morts mesures le 02/09/2026, tous au meme site.
+                //
+                // 1. specular_1 n'a JAMAIS ete journalise. TG14 sort l0_diff, l0_spec0, l0_amb et
+                //    global_amb, et c'est sur ce jeu de champs que v172 §5 a conclu "l'eclairage
+                //    PICA ne contribue RIEN". Or les LUT de REFLEXION (RR/RG/RB) multiplient
+                //    specular_1, pas specular_0 : le terme en cause n'etait pas dans la mesure.
+                //    lut_dis donne quelles LUT sont actives par draw -- convention PICA et TG05 :
+                //    0 = LUT ACTIVE.
+                //
+                // 2. Le correctif de convention de clip v146/v150b (ClipZFixupLine,
+                //    glsl_shader_gen.cpp:274-315) deplace le Z de tout sommet tombant dans une
+                //    bande de 1e-3*|w| autour de zero. Introduit pour le texte 2D, il s'applique a
+                //    TOUS les draws. Deux surfaces proches dont le vainqueur du test de profondeur
+                //    se decide a la precision pres produisent des plaques calees sur les triangles
+                //    -- la signature exacte des facettes. Ces champs disent, par draw, dans quel
+                //    regime de profondeur il se trouve.
+                //
+                // 3. caddr/daddr identifient la CIBLE. La mesure du 02/09 a montre que la scene
+                //    ecrit dans DEUX tampons de couleur distants de 384000 octets exactement --
+                //    les deux yeux de la stereoscopie, 90 draws chacun, alors que render_3d=0.
+                //    Sans cette adresse, impossible de savoir quel draw vise quel oeil.
+                //
+                // Les valeurs de profondeur sont journalisees en BRUT (float24 non converti) :
+                // aucun en-tete supplementaire, la conversion se fait a l'analyse. Cout nul hors
+                // sonde : le bloc entier est deja sous IsTG14Active().
+                const auto& tg14_om = regs.framebuffer.output_merger;
+                const auto& tg14_lcfg1 = regs.lighting.config1;
+                const u32 tg14_caddr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
+                const u32 tg14_daddr = regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress();
+
                 LOG_INFO(Render_Vulkan,
                          "TG14_DRAW frame={} idx={} accel={} indexed={} nverts={} "
                          "light_disable={} light_config={} nlights={} "
@@ -7743,7 +7774,12 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                          "color_attr=({},{},{},{}) color_ok={} "
                          "tc0_attr=({},{}) tc0_ok={} tc0w_attr={} "
                          "tc1_attr=({},{}) tc2_attr=({},{}) "
-                         "view_attr=({},{},{}) view_ok={} sem_used={}",
+                         "view_attr=({},{},{}) view_ok={} sem_used={} "
+                         "l0_spec1=({:.4f},{:.4f},{:.4f}) "
+                         "lut_dis=(d0:{} d1:{} fr:{} rr:{} rg:{} rb:{}) "
+                         "depthmap={} dtest={} dfunc={} dwrite={} "
+                         "drange_raw=0x{:06x} dnear_raw=0x{:06x} "
+                         "caddr=0x{:08x} daddr=0x{:08x}",
                          tg14_frame, tg14_index, static_cast<u32>(accelerate),
                          static_cast<u32>(is_indexed),
                          static_cast<u32>(regs.pipeline.num_vertices),
@@ -7759,7 +7795,22 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                          tg14_cr, tg14_cg, tg14_cb, tg14_ca, tg14_color_ok,
                          tg14_t0u, tg14_t0v, tg14_tc0_ok, tg14_t0w,
                          tg14_t1u, tg14_t1v, tg14_t2u, tg14_t2v,
-                         tg14_vx, tg14_vy, tg14_vz, tg14_view_ok, tg14_sem_used);
+                         tg14_vx, tg14_vy, tg14_vz, tg14_view_ok, tg14_sem_used,
+                         tg14_light.specular_1.x, tg14_light.specular_1.y,
+                         tg14_light.specular_1.z,
+                         static_cast<u32>(tg14_lcfg1.disable_lut_d0.Value()),
+                         static_cast<u32>(tg14_lcfg1.disable_lut_d1.Value()),
+                         static_cast<u32>(tg14_lcfg1.disable_lut_fr.Value()),
+                         static_cast<u32>(tg14_lcfg1.disable_lut_rr.Value()),
+                         static_cast<u32>(tg14_lcfg1.disable_lut_rg.Value()),
+                         static_cast<u32>(tg14_lcfg1.disable_lut_rb.Value()),
+                         static_cast<u32>(regs.rasterizer.depthmap_enable.Value()),
+                         static_cast<u32>(tg14_om.depth_test_enable.Value()),
+                         static_cast<u32>(tg14_om.depth_test_func.Value()),
+                         static_cast<u32>(tg14_om.depth_write_enable.Value()),
+                         static_cast<u32>(regs.rasterizer.viewport_depth_range.Value()),
+                         static_cast<u32>(regs.rasterizer.viewport_depth_near_plane.Value()),
+                         tg14_caddr, tg14_daddr);
             }
         }
         const u32 tg14_max_draws = GetTG14MaxDraws();
