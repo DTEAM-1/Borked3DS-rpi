@@ -1794,6 +1794,23 @@ std::array<std::atomic<u64>, 6> g_a7z12_sw_vert_hist{};
 }
 
 // ---------------------------------------------------------------------------------------------
+// SONDE POISON_VTX (session du 03/09/2026) -- diagnostic uniquement, INERTE par defaut.
+// Objet : la revue de code de SetupVertexArray()/StreamBuffer a montre que le stream buffer
+// Vulkan (memoire mappee en permanence, JAMAIS mise a zero par vkAllocateMemory/vkMapMemory)
+// recoit ses donnees par un memcpy par attribut dont le stride est realigne sur
+// instance.GetMinVertexStrideAlignment(). Quand cet alignement depasse loader.byte_count, les
+// octets de bourrage en fin de bloc ne sont jamais ecrits et gardent le contenu physique
+// precedent -- un candidat concret pour un artefact qui varie d'un lancement a l'autre sans
+// exister cote OpenGL (qui n'a pas cette contrainte d'alignement). Cette sonde ne corrige rien :
+// elle remplit la region avant les memcpy reels pour reveler, par un motif reconnaissable, si
+// le shader lit un jour ces octets jamais ecrits. Aucun effet sur les shaders generes, donc
+// aucun rechauffage de cache necessaire pour ce test.
+[[nodiscard]] bool IsV3DVPoisonVtxEnabled() {
+    static const bool enabled = IsEnvEnabled("BORKED3DS_V3DV_POISON_VTX");
+    return enabled;
+}
+
+// ---------------------------------------------------------------------------------------------
 // TG14 (v168) -- recensement PAR DRAW et isolation de draw. Sonde de MESURE, inerte hors
 // variables d'environnement.
 //
@@ -2785,6 +2802,19 @@ void RasterizerVulkan::SyncFixedState() {
 void RasterizerVulkan::SetupVertexArray() {
     const auto [vs_input_index_min, vs_input_index_max, vs_input_size] = vertex_info;
     auto [array_ptr, array_offset, invalidate] = stream_buffer.Map(vs_input_size, 16);
+
+    // SONDE POISON_VTX (BORKED3DS_V3DV_POISON_VTX=1) -- voir le commentaire de
+    // IsV3DVPoisonVtxEnabled() plus haut. Remplit TOUTE la region mappee pour ce draw avec un
+    // motif reconnaissable (0xDC repete) AVANT les memcpy par attribut ci-dessous. Ces memcpy
+    // ecrasent normalement chaque octet reellement fourni par PICA ; seuls les octets JAMAIS
+    // ecrits par aucun loader (bourrage d'alignement de fin de sommet quand aligned_stride >
+    // loader.byte_count, et bourrage de fin de binding) restent au motif. Si le facettage ou
+    // l'image changent avec cette sonde active alors qu'ils sont identiques sans elle, ces
+    // octets sont bien lus quelque part -- la mesure d'origine (sans la sonde) n'est jamais
+    // affectee : le memset est integralement ecrase par les memcpy legitimes qui suivent.
+    if (IsV3DVPoisonVtxEnabled()) {
+        std::memset(array_ptr, 0xDC, vs_input_size);
+    }
 
     const auto& vertex_attributes = regs.pipeline.vertex_attributes;
     const PAddr base_address = vertex_attributes.GetPhysicalBaseAddress();
