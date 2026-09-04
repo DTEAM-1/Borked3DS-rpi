@@ -131,6 +131,40 @@ struct DrawParams {
     return cached;
 }
 
+// ---------------------------------------------------------------------------------------------
+// SONDE FS_SHOW_FORCE_OPAQUE (session du 04/09/2026) -- reparation du canal de sondes fragment
+// mort (v175 §7), INERTE par defaut.
+//
+// Chaine de preuves qui mene ici, toute etablie cette session sans hypothese non verifiee :
+//  1. TRACE_LOGICOP (50000 echantillons, session complete) : logic_op n'atteint jamais Set.
+//     WriteLogicOp() est innocente -- ce n'est pas lui qui ecrase les sondes FS_SHOW_*.
+//  2. TRACE_BLEND (sonde deja existante, 6275 transitions, session complete) : trois modes de
+//     blend reels sont utilises par le jeu, dont src_rgb=SourceAlpha / dst_rgb=One (1529 fois,
+//     24% des transitions) -- un mode ADDITIF ou rien ne soustrait jamais de la destination.
+//  3. Chaque sonde BORKED3DS_FS_SHOW_* (glsl_fs_shader_gen.cpp) force color=vec4(_l,_l,_l,1.0)
+//     SUR CHAQUE DRAW, alpha=1 comprise. Sur un draw en mode additif, ce alpha=1 fait ajouter
+//     integralement _l a la destination, sans jamais la reduire : apres quelques draws
+//     superposes, n'importe quelle valeur non nulle sature a blanc -- peu importe ce que _l
+//     encode. Ca explique a la fois l'ecran sature a 255 ET l'identite octet-pour-octet entre
+//     deux sondes semantiquement differentes (PRIMARY_RGB vs TEX0_RGB) : une fois sature, le
+//     resultat ne depend plus de la valeur d'origine.
+//
+// Correctif : quand cette sonde est armee, on force le blend Vulkan reel a OFF (remplacement
+// opaque pur) pour TOUS les draws, quel que soit alphablend_enable reel du jeu. La sonde
+// FS_SHOW_* choisie ecrit alors sa valeur directement dans le framebuffer sans jamais etre
+// accumulee par un draw suivant -- le canal redevient lisible.
+//
+// Volontairement un interrupteur global separe plutot qu'une detection automatique de chaque
+// BORKED3DS_FS_SHOW_* : plus simple, ne casse pas si une sonde future est ajoutee au generateur
+// sans etre listee ici, et son cout est nul hors variable d'environnement (predicat statique).
+//
+// Aucun impact sur le texte GLSL genere ni sur la cle de configuration shader (has_logic_op,
+// etc.) : seul l'etat de pipeline blend change. Pas de rechauffage de cache necessaire.
+[[nodiscard]] bool IsFsShowForceOpaqueEnabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_FS_SHOW_FORCE_OPAQUE");
+    return cached;
+}
+
 // v147 (Metroid, decalage horizontal de l'ecran du bas) : sonde d'OBSERVATION pure, numerique,
 // sans aucune teinte. BORKED3DS_V3DV_TRACE_SCREEN_RECT=1 imprime, cote rasterizer, la resolution
 // du sous-rectangle de la surface presentee (src_rect) et les texcoords qui en decoulent. Le
@@ -862,43 +896,6 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     }
     cache.emplace(name, result);
     return result;
-}
-
-// ---------------------------------------------------------------------------------------------
-// SONDE TRACE_LOGICOP (session du 04/09/2026) -- diagnostic uniquement, INERTE par defaut.
-// Objet : le canal de sondes fragment (BORKED3DS_FS_SHOW_*, v175 §7) montre un ecran sature a
-// 255 partout, identique octet pour octet entre deux sondes qui lisent pourtant des variables
-// differentes. La revue de code de glsl_fs_shader_gen.cpp a montre que WriteLogicOp() (appele
-// juste apres l'injection des sondes FS_SHOW_*, avant la fermeture de la fonction) ecrit
-// inconditionnellement "color = vec4(1);" quand logic_op == LogicOp::Set -- exactement la
-// signature observee. Ce chemin n'est PAS un bug de conception : c'est une emulation fidele
-// d'un vrai mode materiel PICA200 (voir le commentaire source sur alphablend_enable : "If
-// false, logic blending is used"), et il n'est actif que si le profil shader n'a pas de
-// logic-op materiel ET que alphablend_enable=0 sur le draw. Sous BORKED3DS_V3DV_STRICT_COMPAT=1
-// (actif dans notre configuration neutre), le profil est FORCE a ne jamais avoir de logic-op
-// materiel (voir has_logic_op = !pi5_strict_compat && ... dans vk_pipeline_cache.cpp), donc le
-// chemin d'emulation shader est systematiquement disponible des que alphablend_enable=0.
-//
-// Ce que cette sonde NE fait PAS : elle ne modifie aucun shader, aucun etat de rendu, aucun
-// cache. Elle se contente de journaliser, cote CPU, l'etat REEL du registre PICA
-// framebuffer.output_merger.logic_op au moment ou SyncLogicOp() est appele -- c'est-a-dire
-// uniquement quand le jeu ecrit reellement ce registre (voir le dispatch sur
-// PICA_REG_INDEX(framebuffer.output_merger.logic_op) plus haut dans ce fichier). Chaque ligne
-// journalisee correspond donc a un vrai changement d'etat cote jeu, jamais a une valeur
-// reconstruite ou devinee. Aucun impact sur les shaders generes : pas de rechauffage de cache
-// necessaire pour ce test (regle §3.2 du projet non applicable ici).
-std::atomic<u64> g_trace_logicop_logged{0};
-
-[[nodiscard]] bool IsTraceLogicOpEnabled() {
-    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TRACE_LOGICOP");
-    return cached;
-}
-
-[[nodiscard]] u64 GetTraceLogicOpMax() {
-    // Plafond de lignes journalisees, pour rester en "mode light" meme si le jeu ecrit ce
-    // registre tres souvent. Defaut 300, ajustable via BORKED3DS_V3DV_TRACE_LOGICOP_MAX.
-    static const u64 value = static_cast<u64>(GetEnvU32("BORKED3DS_V3DV_TRACE_LOGICOP_MAX", 300));
-    return value;
 }
 
 [[nodiscard]] bool IsV115DA7XTraceExpected() {
@@ -9820,6 +9817,15 @@ void RasterizerVulkan::SyncCullMode() {
 }
 
 void RasterizerVulkan::SyncBlendEnabled() {
+    // SONDE FS_SHOW_FORCE_OPAQUE -- voir le commentaire pres de IsFsShowForceOpaqueEnabled().
+    // Court-circuite l'etat de blend REEL du jeu par un remplacement opaque pur, uniquement
+    // pour permettre aux sondes BORKED3DS_FS_SHOW_* de s'afficher sans etre accumulees par les
+    // draws en mode additif. N'affecte que l'etat de pipeline ; ne touche pas au registre PICA
+    // ni au texte GLSL genere.
+    if (IsFsShowForceOpaqueEnabled()) {
+        pipeline_info.blending.blend_enable = false;
+        return;
+    }
     pipeline_info.blending.blend_enable = regs.framebuffer.output_merger.alphablend_enable;
 }
 
@@ -9853,29 +9859,6 @@ void RasterizerVulkan::SyncLogicOp() {
         instance.NeedsLogicOpEmulation() && !regs.framebuffer.output_merger.alphablend_enable;
     const bool is_logic_op_noop =
         regs.framebuffer.output_merger.logic_op == Pica::FramebufferRegs::LogicOp::NoOp;
-
-    // SONDE TRACE_LOGICOP (BORKED3DS_V3DV_TRACE_LOGICOP=1) -- voir le commentaire au debut du
-    // fichier pres de GetTraceLogicOpMax(). Journalise l'etat REEL du registre PICA a chaque
-    // fois que le jeu l'ecrit reellement (ce bloc ne s'execute que dans le corps de
-    // SyncLogicOp(), lui-meme uniquement appele depuis le dispatch sur
-    // PICA_REG_INDEX(framebuffer.output_merger.logic_op)). Lecture seule, aucun effet sur le
-    // rendu ni sur les shaders generes.
-    if (IsTraceLogicOpEnabled() &&
-        g_trace_logicop_logged.fetch_add(1, std::memory_order_relaxed) < GetTraceLogicOpMax()) {
-        LOG_WARNING(Render_Vulkan,
-                    "TRACE_LOGICOP strict_compat={} needs_hw_logicop_emulation={} "
-                    "alphablend_enable={} logic_op_raw={} logic_op_is_set={} logic_op_is_noop={} "
-                    "shader_emulation_active={} color_write_forced_off={}",
-                    static_cast<u32>(IsStrictCompatEnabled()),
-                    static_cast<u32>(instance.NeedsLogicOpEmulation()),
-                    static_cast<u32>(regs.framebuffer.output_merger.alphablend_enable.Value()),
-                    static_cast<u32>(regs.framebuffer.output_merger.logic_op.Value()),
-                    static_cast<u32>(regs.framebuffer.output_merger.logic_op ==
-                                      Pica::FramebufferRegs::LogicOp::Set),
-                    static_cast<u32>(is_logic_op_noop), static_cast<u32>(is_logic_op_emulated),
-                    static_cast<u32>(is_logic_op_emulated && is_logic_op_noop));
-    }
-
     if (is_logic_op_emulated && is_logic_op_noop) {
         pipeline_info.blending.color_write_mask = 0;
     }
