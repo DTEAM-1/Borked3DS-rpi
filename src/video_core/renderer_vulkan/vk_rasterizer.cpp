@@ -864,6 +864,43 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return result;
 }
 
+// ---------------------------------------------------------------------------------------------
+// SONDE TRACE_LOGICOP (session du 04/09/2026) -- diagnostic uniquement, INERTE par defaut.
+// Objet : le canal de sondes fragment (BORKED3DS_FS_SHOW_*, v175 §7) montre un ecran sature a
+// 255 partout, identique octet pour octet entre deux sondes qui lisent pourtant des variables
+// differentes. La revue de code de glsl_fs_shader_gen.cpp a montre que WriteLogicOp() (appele
+// juste apres l'injection des sondes FS_SHOW_*, avant la fermeture de la fonction) ecrit
+// inconditionnellement "color = vec4(1);" quand logic_op == LogicOp::Set -- exactement la
+// signature observee. Ce chemin n'est PAS un bug de conception : c'est une emulation fidele
+// d'un vrai mode materiel PICA200 (voir le commentaire source sur alphablend_enable : "If
+// false, logic blending is used"), et il n'est actif que si le profil shader n'a pas de
+// logic-op materiel ET que alphablend_enable=0 sur le draw. Sous BORKED3DS_V3DV_STRICT_COMPAT=1
+// (actif dans notre configuration neutre), le profil est FORCE a ne jamais avoir de logic-op
+// materiel (voir has_logic_op = !pi5_strict_compat && ... dans vk_pipeline_cache.cpp), donc le
+// chemin d'emulation shader est systematiquement disponible des que alphablend_enable=0.
+//
+// Ce que cette sonde NE fait PAS : elle ne modifie aucun shader, aucun etat de rendu, aucun
+// cache. Elle se contente de journaliser, cote CPU, l'etat REEL du registre PICA
+// framebuffer.output_merger.logic_op au moment ou SyncLogicOp() est appele -- c'est-a-dire
+// uniquement quand le jeu ecrit reellement ce registre (voir le dispatch sur
+// PICA_REG_INDEX(framebuffer.output_merger.logic_op) plus haut dans ce fichier). Chaque ligne
+// journalisee correspond donc a un vrai changement d'etat cote jeu, jamais a une valeur
+// reconstruite ou devinee. Aucun impact sur les shaders generes : pas de rechauffage de cache
+// necessaire pour ce test (regle §3.2 du projet non applicable ici).
+std::atomic<u64> g_trace_logicop_logged{0};
+
+[[nodiscard]] bool IsTraceLogicOpEnabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_TRACE_LOGICOP");
+    return cached;
+}
+
+[[nodiscard]] u64 GetTraceLogicOpMax() {
+    // Plafond de lignes journalisees, pour rester en "mode light" meme si le jeu ecrit ce
+    // registre tres souvent. Defaut 300, ajustable via BORKED3DS_V3DV_TRACE_LOGICOP_MAX.
+    static const u64 value = static_cast<u64>(GetEnvU32("BORKED3DS_V3DV_TRACE_LOGICOP_MAX", 300));
+    return value;
+}
+
 [[nodiscard]] bool IsV115DA7XTraceExpected() {
     static const bool cached = IsStrictCompatEnabled() &&
            IsEnvEnabled("BORKED3DS_V3DV_PROBE_V115_D_A_REAL_VERTEX_BIND_DRAWCMD_ZEROCOUNT") &&
@@ -1790,23 +1827,6 @@ std::array<std::atomic<u64>, 6> g_a7z12_sw_vert_hist{};
 [[nodiscard]] bool IsA7Z12FrameCensusEnabled() {
     // static const : le predicat est evalue une seule fois (pas de mutex par draw).
     static const bool enabled = IsEnvEnabled("BORKED3DS_V3DV_A7Z12_FRAME_CENSUS");
-    return enabled;
-}
-
-// ---------------------------------------------------------------------------------------------
-// SONDE POISON_VTX (session du 03/09/2026) -- diagnostic uniquement, INERTE par defaut.
-// Objet : la revue de code de SetupVertexArray()/StreamBuffer a montre que le stream buffer
-// Vulkan (memoire mappee en permanence, JAMAIS mise a zero par vkAllocateMemory/vkMapMemory)
-// recoit ses donnees par un memcpy par attribut dont le stride est realigne sur
-// instance.GetMinVertexStrideAlignment(). Quand cet alignement depasse loader.byte_count, les
-// octets de bourrage en fin de bloc ne sont jamais ecrits et gardent le contenu physique
-// precedent -- un candidat concret pour un artefact qui varie d'un lancement a l'autre sans
-// exister cote OpenGL (qui n'a pas cette contrainte d'alignement). Cette sonde ne corrige rien :
-// elle remplit la region avant les memcpy reels pour reveler, par un motif reconnaissable, si
-// le shader lit un jour ces octets jamais ecrits. Aucun effet sur les shaders generes, donc
-// aucun rechauffage de cache necessaire pour ce test.
-[[nodiscard]] bool IsV3DVPoisonVtxEnabled() {
-    static const bool enabled = IsEnvEnabled("BORKED3DS_V3DV_POISON_VTX");
     return enabled;
 }
 
@@ -2802,19 +2822,6 @@ void RasterizerVulkan::SyncFixedState() {
 void RasterizerVulkan::SetupVertexArray() {
     const auto [vs_input_index_min, vs_input_index_max, vs_input_size] = vertex_info;
     auto [array_ptr, array_offset, invalidate] = stream_buffer.Map(vs_input_size, 16);
-
-    // SONDE POISON_VTX (BORKED3DS_V3DV_POISON_VTX=1) -- voir le commentaire de
-    // IsV3DVPoisonVtxEnabled() plus haut. Remplit TOUTE la region mappee pour ce draw avec un
-    // motif reconnaissable (0xDC repete) AVANT les memcpy par attribut ci-dessous. Ces memcpy
-    // ecrasent normalement chaque octet reellement fourni par PICA ; seuls les octets JAMAIS
-    // ecrits par aucun loader (bourrage d'alignement de fin de sommet quand aligned_stride >
-    // loader.byte_count, et bourrage de fin de binding) restent au motif. Si le facettage ou
-    // l'image changent avec cette sonde active alors qu'ils sont identiques sans elle, ces
-    // octets sont bien lus quelque part -- la mesure d'origine (sans la sonde) n'est jamais
-    // affectee : le memset est integralement ecrase par les memcpy legitimes qui suivent.
-    if (IsV3DVPoisonVtxEnabled()) {
-        std::memset(array_ptr, 0xDC, vs_input_size);
-    }
 
     const auto& vertex_attributes = regs.pipeline.vertex_attributes;
     const PAddr base_address = vertex_attributes.GetPhysicalBaseAddress();
@@ -9846,6 +9853,29 @@ void RasterizerVulkan::SyncLogicOp() {
         instance.NeedsLogicOpEmulation() && !regs.framebuffer.output_merger.alphablend_enable;
     const bool is_logic_op_noop =
         regs.framebuffer.output_merger.logic_op == Pica::FramebufferRegs::LogicOp::NoOp;
+
+    // SONDE TRACE_LOGICOP (BORKED3DS_V3DV_TRACE_LOGICOP=1) -- voir le commentaire au debut du
+    // fichier pres de GetTraceLogicOpMax(). Journalise l'etat REEL du registre PICA a chaque
+    // fois que le jeu l'ecrit reellement (ce bloc ne s'execute que dans le corps de
+    // SyncLogicOp(), lui-meme uniquement appele depuis le dispatch sur
+    // PICA_REG_INDEX(framebuffer.output_merger.logic_op)). Lecture seule, aucun effet sur le
+    // rendu ni sur les shaders generes.
+    if (IsTraceLogicOpEnabled() &&
+        g_trace_logicop_logged.fetch_add(1, std::memory_order_relaxed) < GetTraceLogicOpMax()) {
+        LOG_WARNING(Render_Vulkan,
+                    "TRACE_LOGICOP strict_compat={} needs_hw_logicop_emulation={} "
+                    "alphablend_enable={} logic_op_raw={} logic_op_is_set={} logic_op_is_noop={} "
+                    "shader_emulation_active={} color_write_forced_off={}",
+                    static_cast<u32>(IsStrictCompatEnabled()),
+                    static_cast<u32>(instance.NeedsLogicOpEmulation()),
+                    static_cast<u32>(regs.framebuffer.output_merger.alphablend_enable.Value()),
+                    static_cast<u32>(regs.framebuffer.output_merger.logic_op.Value()),
+                    static_cast<u32>(regs.framebuffer.output_merger.logic_op ==
+                                      Pica::FramebufferRegs::LogicOp::Set),
+                    static_cast<u32>(is_logic_op_noop), static_cast<u32>(is_logic_op_emulated),
+                    static_cast<u32>(is_logic_op_emulated && is_logic_op_noop));
+    }
+
     if (is_logic_op_emulated && is_logic_op_noop) {
         pipeline_info.blending.color_write_mask = 0;
     }
