@@ -214,6 +214,57 @@ void RasterizerAccelerated::AddTriangle(const Pica::OutputVertex& v0, const Pica
                      static_cast<double>(mixed) / static_cast<double>(t));
         }
     }
+    // v180 TG_COLORDISC : mesure la discontinuite de couleur de sommet primaire (primary_color)
+    // A L'INTERIEUR de chaque triangle, et accumule un hash de reproductibilite sur l'ensemble
+    // des valeurs lues. Objectif : v172 §5 (« les facettes sont un artefact de couleur de sommet
+    // ou de texture », piste directe jamais refaite proprement depuis le bug de masquage des
+    // sondes de v168/v177) + v176 §6.2 (rappel crucial : le vrai defaut cherche est ALEATOIRE
+    // entre deux lancements identiques a partir de la meme sauvegarde d'etat -- le test des
+    // "panneaux du dome", 0 pixel de difference sur 384000 entre deux lancements, a deja ferme
+    // une fausse piste geometrique statique). Ce compteur repond aux deux questions a la fois :
+    // (1) tri_discontinu/tri_total -- la couleur primaire est-elle deja discontinue par triangle
+    // AVANT toute combinaison TEV (coherent avec FS_SHOW_PRIMARY_RGB, arme aujourd'hui pour la
+    // premiere fois proprement depuis v167 etape 17/v172 §5) ; et (2) color_hash -- un cumul
+    // insensible a l'ordre d'arrivee (XOR, pas concatenation) des valeurs quantifiees lues sur
+    // les 3 sommets de chaque triangle. Comparer color_hash final entre deux lancements avec LA
+    // MEME sauvegarde d'etat et LE MEME BORKED3DS_TG14_MAX_DRAWS : hash identique = donnee stable
+    // (pas la signature cherchee, meme si le motif visuel semble facette) ; hash different =
+    // signature aleatoire enfin capturee dans la donnee de couleur elle-meme, pas seulement a
+    // l'ecran.
+    static const bool s_trace_colordisc = (std::getenv("BORKED3DS_TG_COLORDISC") != nullptr);
+    if (s_trace_colordisc) {
+        auto luminance = [](const Pica::OutputVertex& v) {
+            const auto c = v.color();
+            return 0.299f * c.x.ToFloat32() + 0.587f * c.y.ToFloat32() + 0.114f * c.z.ToFloat32();
+        };
+        const float l0 = luminance(v0);
+        const float l1 = luminance(v1);
+        const float l2 = luminance(v2);
+        const float max_delta =
+            std::max({std::fabs(l0 - l1), std::fabs(l1 - l2), std::fabs(l0 - l2)});
+
+        static std::atomic<u64> tri_total{0}, tri_discontinu{0};
+        static std::atomic<u64> color_hash{0};
+        const u64 t = ++tri_total;
+        if (max_delta > 0.3f) {
+            ++tri_discontinu;
+        }
+        auto quantize = [](float f) -> u64 {
+            return static_cast<u64>(std::llround(std::clamp(f, 0.0f, 1.0f) * 65535.0f));
+        };
+        color_hash.fetch_xor((quantize(l0) << 32) ^ (quantize(l1) << 16) ^ quantize(l2));
+
+        if ((t % 2000) == 0) {
+            const u64 disc = tri_discontinu.load();
+            LOG_INFO(Render,
+                     "TG_COLORDISC_CENSUS tri_total={} tri_discontinu={} frac_discontinu={:.5f} "
+                     "color_hash={:016x} (tri_discontinu = ecart de luminance primary_color > 0.3 "
+                     "entre sommets d'un meme triangle ; color_hash cumule = signature de "
+                     "reproductibilite, a comparer entre deux lancements identiques)",
+                     t, disc, static_cast<double>(disc) / static_cast<double>(t),
+                     color_hash.load());
+        }
+    }
     vertex_batch.emplace_back(v0, false);
     vertex_batch.emplace_back(v1, AreQuaternionsOpposite(v0, v1));
     vertex_batch.emplace_back(v2, AreQuaternionsOpposite(v0, v2));
