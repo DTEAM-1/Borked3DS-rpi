@@ -173,6 +173,47 @@ void RasterizerAccelerated::AddTriangle(const Pica::OutputVertex& v0, const Pica
             }
         }
     }
+    // v178 TG_CLIPZ : compte, par triangle, combien de sommets sur 3 tombent dans la bande
+    // etroite |z| <= 1e-3*|w| que ClipZFixupLine (glsl_shader_gen.cpp:274-315) repousse a
+    // z=-1e-3*|w|. Objectif : v175 §6.2/6.3 / v177 §10-B / v178 §5, jamais chiffre jusqu'ici.
+    // Le nombre qui compte n'est pas le total de sommets touches, mais les triangles ou
+    // SEULEMENT 1 ou 2 sommets sur 3 sont touches ("mixte") : c'est ce cas precis qui cree une
+    // discontinuite de profondeur interpolee A L'INTERIEUR d'un seul triangle -- la signature
+    // attendue pour le facettage. Un triangle avec 0 ou 3 sommets touches reste interne
+    // coherent (rien, ou juste deplace en bloc). Comparer tri_mixed/tri_total entre une passe
+    // BORKED3DS_TG14_MAX_DRAWS=98 (decor seul, v175/v176 : aucune facette) et une passe =104
+    // (vaisseau complet et facette) : si le vaisseau est bien la source, frac_mixed doit monter
+    // nettement entre les deux passes.
+    static const bool s_trace_clipz = (std::getenv("BORKED3DS_TG_CLIPZ") != nullptr);
+    if (s_trace_clipz) {
+        auto affected = [](const Pica::OutputVertex& v) {
+            const auto p = v.pos();
+            const float z = p.z.ToFloat32();
+            const float w = p.w.ToFloat32();
+            return std::abs(z) <= 1e-3f * std::abs(w);
+        };
+        const int n = static_cast<int>(affected(v0)) + static_cast<int>(affected(v1)) +
+                      static_cast<int>(affected(v2));
+
+        static std::atomic<u64> tri_total{0}, tri_none{0}, tri_mixed{0}, tri_all{0};
+        const u64 t = ++tri_total;
+        if (n == 0) {
+            ++tri_none;
+        } else if (n == 3) {
+            ++tri_all;
+        } else {
+            ++tri_mixed;
+        }
+        if ((t % 2000) == 0) {
+            const u64 none = tri_none.load(), mixed = tri_mixed.load(), all = tri_all.load();
+            LOG_INFO(Render,
+                     "TG_CLIPZ_CENSUS tri_total={} tri_none={} tri_mixed={} tri_all={} "
+                     "frac_mixed={:.5f} (tri_mixed = triangles ou 1 ou 2 sommets sur 3 sont "
+                     "repousses par ClipZFixupLine -- la signature attendue pour le facettage)",
+                     t, none, mixed, all,
+                     static_cast<double>(mixed) / static_cast<double>(t));
+        }
+    }
     vertex_batch.emplace_back(v0, false);
     vertex_batch.emplace_back(v1, AreQuaternionsOpposite(v0, v1));
     vertex_batch.emplace_back(v2, AreQuaternionsOpposite(v0, v2));
