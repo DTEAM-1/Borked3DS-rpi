@@ -8462,8 +8462,39 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     if (shader_dirty) {
         Pica::Shader::UserConfig user_config{};
         const bool lighting_disabled = static_cast<bool>(regs.lighting.disable.Value());
+        // v181 : sonde inerte BORKED3DS_V3DV_NO_CUSTOM_NORMAL=1.
+        //
+        // Mesure du 09/09/2026 (dump BORKED3DS_DUMP_FS=1, meme sauvegarde d'etat, meme scene) :
+        // 28 shaders fragment sur 28 echantillonnent "texture(tex_normal, texcoord0)" cote Vulkan,
+        // 0 sur 25 cote OpenGL -- qui utilisent tous "surface_normal = vec3(0.0, 0.0, 1.0)".
+        // Separation totale. L'ecart vient du drapeau ci-dessous, et les deux backends ne
+        // l'alimentent pas de la meme facon :
+        //
+        //   OpenGL (gl_rasterizer.cpp:826-840) le conditionne a l'existence REELLE d'une normal
+        //   map -- "if (!surface.IsCustom()) return;" puis "if (surface.HasNormalMap())" -- et lie
+        //   la vraie texture avant de poser le drapeau. Un jeu sans pack de textures ne l'active
+        //   donc jamais.
+        //
+        //   Ici, le drapeau est mis a vrai des que l'eclairage est actif ET que
+        //   VK_KHR_fragment_shader_barycentric est absente. Aucune des deux conditions n'a de
+        //   rapport avec une texture personnalisee, et aucune texture n'est liee au passage. Or
+        //   V3DV n'expose pas cette extension (mesure v162 §3.9) : la seconde condition est vraie
+        //   en permanence sur ce materiel, donc le drapeau vaut 1 pour CHAQUE draw eclaire.
+        //
+        // Le shader perturbe alors la normale a partir d'un echantillonneur auquel rien de
+        // pertinent n'est lie, puis la fait tourner par le quaternion interpole par sommet
+        // (glsl_fs_shader_gen.cpp:1148). Hypothese : c'est ce qui produit a la fois le reflet
+        // mobile absent d'OpenGL et le facettage par triangle du vaisseau Metroid.
+        //
+        // Cette sonde ne change rien par defaut. Armee, elle force le drapeau a faux, ce qui doit
+        // ramener le shader Vulkan a "surface_normal = vec3(0.0, 0.0, 1.0)" comme en OpenGL.
+        // Verdict binaire : la ligne est dans le shader dumpe, ou elle n'y est pas.
+        // Voir CAUSE_RACINE_CUSTOM_NORMAL_v181.md.
+        static const bool s_no_custom_normal =
+            (std::getenv("BORKED3DS_V3DV_NO_CUSTOM_NORMAL") != nullptr);
         const bool use_custom_normal =
-            (!lighting_disabled) && !instance.IsFragmentShaderBarycentricSupported();
+            !s_no_custom_normal && (!lighting_disabled) &&
+            !instance.IsFragmentShaderBarycentricSupported();
         user_config.use_custom_normal.Assign(use_custom_normal);
         if (IsDrawTraceEnabled()) {
             LOG_INFO(Render_Vulkan,
