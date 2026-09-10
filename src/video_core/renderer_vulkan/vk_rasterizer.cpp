@@ -9917,6 +9917,31 @@ void RasterizerVulkan::SyncColorWriteMask() {
     if (IsTraceBlendEnabled()) {
         static u32 last_sig = 0xFFFFFFFFu;
         const auto& bl = regs.framebuffer.output_merger.alpha_blending;
+        // v182 : les DEUX EQUATIONS entrent dans la signature de deduplication.
+        //
+        // Le defaut corrige. La signature ne retenait que blend_enable, le masque d'ecriture,
+        // les quatre facteurs et allow_color_write. Les equations etaient IMPRIMEES mais pas
+        // CLEFEES : un etat en Min ou Max partageant ses quatre facteurs avec un etat en Add
+        // deja journalise etait dedupe, donc jamais imprime. Une sonde dont la clef omet
+        // precisement le champ qu'on veut lire ne peut pas conclure -- meme famille de defaut
+        // que TG09ShouldLog(), dont la clef de signature ignore l'offset qu'il s'agit de
+        // mesurer.
+        //
+        // Le point compte ici : has_blend_minmax_factor vaut false cote Vulkan
+        // (vk_pipeline_cache.cpp:257), ce qui rend FSConfig::EmulateBlend() vrai, mais
+        // FragmentModule::WriteBlending() (glsl_fs_shader_gen.cpp:1640) sort immediatement sur
+        // "profile.is_vulkan" : l'emulation n'a donc jamais lieu. Et pica_to_vk.h:61-68 traduit
+        // Min/Max en vk::BlendOp::eMin/eMax natifs, qui IGNORENT les facteurs de blend par
+        // specification Vulkan. Le pipeline calcule alors min(src, dst) sur les couleurs brutes
+        // la ou PICA veut min(src x facteur_src, dst x facteur_dst). OpenGL, lui, emule
+        // correctement (gl_rasterizer.cpp:1055-1074 : FUNC_ADD / ONE / ZERO, le shader fait le
+        // travail).
+        //
+        // Savoir si les draws du vaisseau Metroid utilisent reellement Min ou Max est donc la
+        // question qui decide si ce defaut est actif ou purement theorique. v176 §6.5 avait
+        // mesure les FACTEURS (6/7, 1/0, 6/1) sans jamais conclure sur l'EQUATION.
+        //
+        // Bits 26-31, libres jusqu'ici ; les champs d'equation PICA tiennent sur 3 bits.
         const u32 sig =
             (static_cast<u32>(regs.framebuffer.output_merger.alphablend_enable) << 0) |
             (static_cast<u32>(color_mask & 0xF) << 1) |
@@ -9924,12 +9949,15 @@ void RasterizerVulkan::SyncColorWriteMask() {
             (static_cast<u32>(bl.factor_dest_rgb.Value()) << 10) |
             (static_cast<u32>(bl.factor_source_a.Value()) << 15) |
             (static_cast<u32>(bl.factor_dest_a.Value()) << 20) |
-            (static_cast<u32>(regs.framebuffer.framebuffer.allow_color_write != 0) << 25);
+            (static_cast<u32>(regs.framebuffer.framebuffer.allow_color_write != 0) << 25) |
+            ((static_cast<u32>(bl.blend_equation_rgb.Value()) & 0x7u) << 26) |
+            ((static_cast<u32>(bl.blend_equation_a.Value()) & 0x7u) << 29);
         if (sig != last_sig) {
             last_sig = sig;
             LOG_INFO(Render_Vulkan,
                      "TRACE_BLEND blend_enable={} allow_color_write={} color_write_mask={:#x} "
-                     "src_rgb={} dst_rgb={} src_a={} dst_a={} eq_rgb={} eq_a={}",
+                     "src_rgb={} dst_rgb={} src_a={} dst_a={} eq_rgb={} eq_a={} "
+                     "minmax_rgb={} minmax_a={}",
                      static_cast<u32>(regs.framebuffer.output_merger.alphablend_enable),
                      static_cast<u32>(regs.framebuffer.framebuffer.allow_color_write != 0),
                      color_mask,
@@ -9938,7 +9966,20 @@ void RasterizerVulkan::SyncColorWriteMask() {
                      static_cast<u32>(bl.factor_source_a.Value()),
                      static_cast<u32>(bl.factor_dest_a.Value()),
                      static_cast<u32>(bl.blend_equation_rgb.Value()),
-                     static_cast<u32>(bl.blend_equation_a.Value()));
+                     static_cast<u32>(bl.blend_equation_a.Value()),
+                     // Verdict direct, pour ne pas avoir a retraduire les codes PICA a la main :
+                     // 1 si l'equation est Min ou Max, cas ou le pipeline Vulkan ignore les
+                     // facteurs et ou l'emulation du shader est court-circuitee.
+                     static_cast<u32>(
+                         bl.blend_equation_rgb.Value() ==
+                             Pica::FramebufferRegs::BlendEquation::Min ||
+                         bl.blend_equation_rgb.Value() ==
+                             Pica::FramebufferRegs::BlendEquation::Max),
+                     static_cast<u32>(
+                         bl.blend_equation_a.Value() ==
+                             Pica::FramebufferRegs::BlendEquation::Min ||
+                         bl.blend_equation_a.Value() ==
+                             Pica::FramebufferRegs::BlendEquation::Max));
         }
     }
 }
