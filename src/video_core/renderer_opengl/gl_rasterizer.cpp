@@ -1567,7 +1567,27 @@ void RasterizerOpenGL::UploadUniforms(bool accelerate_draw) {
     }
 
     if (sync_vs_pica) {
-        VSPicaUniformData vs_uniforms;
+        // v182-FIX : portage du correctif v152, jusqu'ici applique au SEUL backend Vulkan
+        // (vk_rasterizer.cpp, "v152-FIX : initialisation a zero OBLIGATOIRE").
+        //
+        // Cette structure est copiee INTEGRALEMENT vers le GPU par le memcpy ci-dessous
+        // (sizeof(vs_uniforms), et non la taille de ce que SetFromRegs a reellement ecrit).
+        // Declaree sans initialiseur, tout ce que SetFromRegs ne renseigne pas -- emplacements
+        // f[] que le jeu n'a jamais charges, octets de remplissage de la structure -- partait
+        // vers le shader sous forme de RESIDUS DE PILE, differents a chaque execution.
+        //
+        // Symptome mesure cote Vulkan avant v152 (Sonic, boule) : rendu different a CHAQUE
+        // lancement avec des reglages strictement identiques.
+        //
+        // POURQUOI ICI ET MAINTENANT : le backend OpenGL sert de REFERENCE DE MESURE a tout le
+        // projet (ratios de canaux G/R et B/R, v176 a v181). Une reference qui peut varier d'un
+        // lancement a l'autre n'est pas une reference. Deux captures GL a 13 jours d'ecart
+        // donnent 0,7055 et 0,7036 en G/R, soit 0,3 % d'ecart : en pratique les residus semblent
+        // stables sur ce jeu, mais rien ne le garantit par construction.
+        //
+        // Adopte par defaut et sans echappatoire, exactement comme cote Vulkan : ce n'est pas
+        // une hypothese a tester, c'est la suppression d'un comportement indefini.
+        VSPicaUniformData vs_uniforms{};
         vs_uniforms.uniforms.SetFromRegs(regs.vs, pica.vs_setup);
         std::memcpy(uniforms + used_bytes, &vs_uniforms, sizeof(vs_uniforms));
         glBindBufferRange(GL_UNIFORM_BUFFER, UniformBindings::VSPicaData,
