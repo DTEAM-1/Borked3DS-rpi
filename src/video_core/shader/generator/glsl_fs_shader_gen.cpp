@@ -1039,10 +1039,19 @@ void FragmentModule::WriteTevStage(u32 index) {
         }
 
         if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
+            // CORRECTIF v192 -- cette branche GLES appliquait GetColorMultiplier() a l'alpha.
+            // Le PICA a DEUX facteurs d'echelle distincts par etage TEV, un pour la couleur et un
+            // pour l'alpha (regs_texturing.h, GetColorMultiplier / GetAlphaMultiplier). Le dump
+            // TG13 du 11/09 l'a confirme a l'execution : sur Pi 5 en GLES, toutes les lignes
+            // combiner_output sortaient avec le MEME facteur des deux cotes (1/1, 2/2, 4/4),
+            // alors que le meme etat PICA donne sous Vulkan des paires distinctes (4/1, 2/1,
+            // 1/4). Sur l'etage 1 du materiau de la coque Metroid, cmul=4 et amul=1 : l'alpha
+            // etait donc multiplie par 4 et sature a 1,0. La branche du dessous, elle, etait
+            // correcte depuis toujours.
             out += fmt::format("combiner_output = vec4(clamp(color_output_{0} * vec3({1}.0), "
                                "vec3(0.0), vec3(1.0)), "
-                               "clamp(alpha_output_{0} * float({1}.0), 0.0, 1.0));\n",
-                               index, stage.GetColorMultiplier());
+                               "clamp(alpha_output_{0} * float({2}.0), 0.0, 1.0));\n",
+                               index, stage.GetColorMultiplier(), stage.GetAlphaMultiplier());
         } else {
             out +=
                 fmt::format("combiner_output = vec4("
