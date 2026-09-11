@@ -38,6 +38,37 @@ constexpr std::size_t INDEX_BUFFER_SIZE = 2_MiB;
 constexpr std::size_t UNIFORM_BUFFER_SIZE = 2_MiB;
 constexpr std::size_t TEXTURE_BUFFER_SIZE = 2_MiB;
 
+// TG14 (v185) -- isolation de draw cote OpenGL. Sonde de MESURE, strictement inerte hors
+// BORKED3DS_TG14_MAX_DRAWS.
+//
+// Miroir exact du bloc deja present dans vk_rasterizer.cpp (voir GetTG14MaxDraws() la-bas).
+// Raison d'etre : sans coupe de frame, les dernieres passes recouvrent l'ecran du haut, et
+// toute sonde BORKED3DS_FS_SHOW_* ne mesure plus que ce calque. La coupe existait cote
+// Vulkan seulement, ce qui rendait impossible toute comparaison chiffree entre les deux
+// backends sur un objet precis. Ce bloc retablit la symetrie.
+//
+//   BORKED3DS_TG14_MAX_DRAWS=N   ne dessine que les N premiers draws de chaque frame.
+//
+// Non definie ou nulle, IsTG14Active() est faux et le bloc est court-circuite des le premier
+// draw : aucun cout, aucun changement de comportement.
+std::atomic<u32> g_tg14_draw_index{0};
+
+[[nodiscard]] u32 GetTG14MaxDraws() {
+    static const u32 value = []() -> u32 {
+        const char* const raw = std::getenv("BORKED3DS_TG14_MAX_DRAWS");
+        if (raw == nullptr || raw[0] == '\0') {
+            return 0u;
+        }
+        return static_cast<u32>(std::strtoul(raw, nullptr, 10));
+    }();
+    return value;
+}
+
+[[nodiscard]] bool IsTG14Active() {
+    static const bool active = GetTG14MaxDraws() != 0;
+    return active;
+}
+
 GLenum MakePrimitiveMode(Pica::PipelineRegs::TriangleTopology topology) {
     switch (topology) {
     case Pica::PipelineRegs::TriangleTopology::Shader:
@@ -267,6 +298,11 @@ RasterizerOpenGL::RasterizerOpenGL(Memory::MemorySystem& memory, Pica::PicaCore&
 RasterizerOpenGL::~RasterizerOpenGL() = default;
 
 void RasterizerOpenGL::TickFrame() {
+    // TG14 : la frontiere de frame remet l'index de draw a zero pour que MAX_DRAWS s'applique
+    // par frame et non sur toute la session. Identique au comportement Vulkan.
+    if (IsTG14Active()) {
+        g_tg14_draw_index.store(0, std::memory_order_relaxed);
+    }
     res_cache.TickFrame();
 }
 
@@ -547,6 +583,17 @@ void RasterizerOpenGL::DrawTriangles() {
 bool RasterizerOpenGL::Draw(bool accelerate, bool is_indexed) {
 
     BORKED3DS_PROFILE("OpenGL", "Drawing");
+
+    // TG14 : isolation de draw. Voir le commentaire au-dessus de GetTG14MaxDraws().
+    // Inerte hors BORKED3DS_TG14_MAX_DRAWS.
+    if (IsTG14Active()) {
+        const u32 tg14_index = g_tg14_draw_index.fetch_add(1, std::memory_order_relaxed);
+        if (tg14_index >= GetTG14MaxDraws()) {
+            // Draw supprime : meme sortie propre que le chemin normal.
+            vertex_batch.clear();
+            return true;
+        }
+    }
     const bool shadow_rendering = regs.framebuffer.IsShadowRendering();
     const bool has_stencil = regs.framebuffer.HasStencil();
 
