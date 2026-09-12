@@ -8490,10 +8490,32 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         // ramener le shader Vulkan a "surface_normal = vec3(0.0, 0.0, 1.0)" comme en OpenGL.
         // Verdict binaire : la ligne est dans le shader dumpe, ou elle n'y est pas.
         // Voir CAUSE_RACINE_CUSTOM_NORMAL_v181.md.
+        // CORRECTIF v194 -- la condition ci-dessus etait fausse, et la mesure du 11/09 l'a
+        // confirmee a l'execution : 15 shaders Vulkan sur 15 contenaient
+        // "surface_normal = 2.0 * (texture(tex_normal, texcoord0)).rgb - 1.0", et 0 shader
+        // OpenGL sur 12.
+        //
+        // Verification decisive : "HasNormalMap()" n'est appele NULLE PART dans
+        // src/video_core/renderer_vulkan/. Le backend Vulkan ne lie aucune normal map et n'en
+        // cherche meme pas. Le descripteur tex_normal existe dans la mise en page
+        // (vk_pipeline_cache.cpp:209) mais rien ne le remplit. Le shader perturbait donc la
+        // normale de surface a partir d'un echantillonneur arbitraire.
+        //
+        // L'amont (azahar d204921d) ne pose "use_custom_normal" que depuis
+        // "surface.HasNormalMap()", cote OpenGL uniquement. La condition
+        // "!IsFragmentShaderBarycentricSupported()" est une invention de ce fork, sans rapport
+        // avec l'existence d'une texture personnalisee, et toujours vraie sur V3DV qui n'expose
+        // pas cette extension.
+        //
+        // Tant que le backend Vulkan ne sait pas lier de normal map, le drapeau doit valoir faux.
+        // Conforme a la regle du projet, le correctif est ACTIF par defaut ;
+        // BORKED3DS_V3DV_FORCE_CUSTOM_NORMAL=1 restaure l'ancien comportement pour comparaison.
+        static const bool s_force_custom_normal =
+            (std::getenv("BORKED3DS_V3DV_FORCE_CUSTOM_NORMAL") != nullptr);
         static const bool s_no_custom_normal =
             (std::getenv("BORKED3DS_V3DV_NO_CUSTOM_NORMAL") != nullptr);
         const bool use_custom_normal =
-            !s_no_custom_normal && (!lighting_disabled) &&
+            s_force_custom_normal && !s_no_custom_normal && (!lighting_disabled) &&
             !instance.IsFragmentShaderBarycentricSupported();
         user_config.use_custom_normal.Assign(use_custom_normal);
         if (IsDrawTraceEnabled()) {
