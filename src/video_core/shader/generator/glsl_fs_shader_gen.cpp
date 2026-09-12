@@ -309,9 +309,48 @@ vec4 secondary_fragment_color = vec4(0.0);
            "float alpha_results_2 = 0.0;\n"
            "float alpha_results_3 = 0.0;\n";
 
+    // v195 (BORKED3DS_FS_ONLY_HASH=<hex>): gate EVERY FS_SHOW_* substitution below (including
+    // the new SHOW_STAGE probe) to the CURRENT shader's config hash -- same key as the TG13
+    // dump (FSConfig::Hash(), cfg_hash={:#018x} in TRACE_FS logs). Absent -> unchanged
+    // behavior: each FS_SHOW_* probe still applies to the whole scene as before (piege 3 de
+    // v194 : sans coupe ni filtre, une sonde FS_SHOW_* couvre l'ecran entier). Present -> only
+    // the material whose hash matches gets substituted, the rest of the scene renders
+    // normally; stable across relaunches since the key is the material, not draw order.
+    bool fs_show_gate = true;
+    {
+        const char* only_hash_env = std::getenv("BORKED3DS_FS_ONLY_HASH");
+        if (only_hash_env != nullptr && only_hash_env[0] != '\0') {
+            const u64 want_hash = std::strtoull(only_hash_env, nullptr, 16);
+            const u64 cfg_hash = static_cast<u64>(config.Hash());
+            fs_show_gate = (cfg_hash == want_hash);
+        }
+    }
+
+    // v195 (BORKED3DS_FS_SHOW_STAGE=1 + BORKED3DS_FS_STAGE_IDX=N): capture combiner_output
+    // immediately after TEV stage N, before any later stage can modify it further. Comble le
+    // trou d'instrumentation de v194 SS10 ("aucune sonde n'existe pour combiner_output par
+    // etage") -- lit directement la sortie de l'etage suspect (etage 1, le x4 suivi du clamp,
+    // d'apres le TEV mesure en v194 SS4.3) au lieu d'une seule unite de texture ou constante.
+    // stage_probe_output est une variable a part : combiner_output lui-meme n'est jamais
+    // touche, donc alpha test / fog / blending voient toujours la vraie valeur en aval.
+    out += "vec4 stage_probe_output = vec4(0.0);\n";
+    const char* show_stage_env = std::getenv("BORKED3DS_FS_SHOW_STAGE");
+    const bool show_stage_active = show_stage_env != nullptr && show_stage_env[0] == '1';
+    int show_stage_idx = 0;
+    if (show_stage_active) {
+        const char* stage_idx_env = std::getenv("BORKED3DS_FS_STAGE_IDX");
+        show_stage_idx = (stage_idx_env != nullptr) ? std::atoi(stage_idx_env) : 0;
+        if (show_stage_idx < 0) {
+            show_stage_idx = 0;
+        }
+    }
+
     // Write shader source to emulate PICA TEV stages
     for (u32 index = 0; index < config.texture.tev_stages.size(); index++) {
         WriteTevStage(index);
+        if (show_stage_active && static_cast<u32>(show_stage_idx) == index) {
+            out += "stage_probe_output = combiner_output;\n";
+        }
     }
 
     // Append the alpha test condition
@@ -386,6 +425,18 @@ vec4 secondary_fragment_color = vec4(0.0);
                        "  } }\n";
             }
         }
+        // v195 debug probe: BORKED3DS_FS_SHOW_STAGE=1 (+ BORKED3DS_FS_STAGE_IDX=N) displays
+        // stage_probe_output (combiner_output captured right after TEV stage N) as
+        // non-chromatic luminance, colorblind-safe. Combine with BORKED3DS_FS_ONLY_HASH to
+        // isolate a single material -- otherwise, like any FS_SHOW_* probe, it blankets the
+        // whole rendered scene (piege 3 de v194).
+        {
+            if (show_stage_active && fs_show_gate) {
+                out += "{ float _l = clamp(length(stage_probe_output.rgb) * 0.57735, 0.0, "
+                       "1.0);\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+            }
+        }
         // v115-E debug probe: BORKED3DS_FS_SHOW_ALPHA=1 forces every draw to opaque output
         // on a neutral mid-gray field, with luminance driven by the FINAL combiner alpha:
         // high alpha -> black, low alpha -> mid-gray. Applied to ALL draws (not gated on
@@ -393,9 +444,10 @@ vec4 secondary_fragment_color = vec4(0.0);
         // test it uses. Non-chromatic, legible on the game's white dialog background.
         // Black glyph shapes => alpha is present (defect is in RGB/output); a flat gray box
         // => alpha collapsed in the TEV cascade (suspect: const_color / primary alpha).
+        // v195: gated on fs_show_gate (BORKED3DS_FS_ONLY_HASH) like every FS_SHOW_* probe.
         {
             const char* show_a = std::getenv("BORKED3DS_FS_SHOW_ALPHA");
-            if (show_a != nullptr && show_a[0] == '1') {
+            if (show_a != nullptr && show_a[0] == '1' && fs_show_gate) {
                 out += "{ float _a = clamp(combiner_output.a, 0.0, 1.0);\n"
                        "  float _l = mix(0.5, 0.0, step(0.25, _a));\n"
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
@@ -417,7 +469,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // also explain the washed-out colors and the frozen progress bar. bright = alpha present.
         {
             const char* show_pa = std::getenv("BORKED3DS_FS_SHOW_PRIMARY_ALPHA");
-            if (show_pa != nullptr && show_pa[0] == '1') {
+            if (show_pa != nullptr && show_pa[0] == '1' && fs_show_gate) {
                 out += "{ float _pa = clamp(primary_color.a, 0.0, 1.0);\n"
                        "  color = vec4(_pa, _pa, _pa, 1.0); }\n";
             }
@@ -438,7 +490,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // despite what the source switch appears to select. bright shapes = glyph alpha present.
         {
             const char* show_ta = std::getenv("BORKED3DS_FS_SHOW_TEX0_ALPHA");
-            if (show_ta != nullptr && show_ta[0] == '1') {
+            if (show_ta != nullptr && show_ta[0] == '1' && fs_show_gate) {
                 out += "{ float _ta = clamp(sampleTexUnit0().a, 0.0, 1.0);\n"
                        "  color = vec4(_ta, _ta, _ta, 1.0); }\n";
             }
@@ -456,7 +508,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // text draws are indexed. gradient = UV alive; flat = UV dead/constant.
         {
             const char* show_uv = std::getenv("BORKED3DS_FS_SHOW_UV");
-            if (show_uv != nullptr && show_uv[0] == '1') {
+            if (show_uv != nullptr && show_uv[0] == '1' && fs_show_gate) {
                 const char* uv_axis = std::getenv("BORKED3DS_FS_SHOW_UV_AXIS");
                 const bool use_y = (uv_axis != nullptr && uv_axis[0] == '1');
                 if (use_y) {
@@ -482,7 +534,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // Garde sur !barycentric : c'est exactement le cas V3DV, ou 'normquat' est l'input.
         if (config.lighting.enable && !use_fragment_shader_barycentric) {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_NORMQUAT_LEN");
-            if (p != nullptr && p[0] == '1') {
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
                 out += "{ float _l = clamp(length(normquat), 0.0, 1.0);\n"
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
             }
@@ -496,7 +548,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // Non chromatique (daltonien). clair = eclairage present ; sombre = eclairage effondre.
         if (config.lighting.enable) {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_LIGHTING");
-            if (p != nullptr && p[0] == '1') {
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
                 out += "{ float _l = clamp(length(primary_fragment_color.rgb) * 0.57735, 0.0, "
                        "1.0);\n"
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
@@ -510,7 +562,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // perdue cote Vulkan (format/attribut) ; correctif en amont, pas au FS.
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_PRIMARY_RGB");
-            if (p != nullptr && p[0] == '1') {
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
                 out += "{ float _l = clamp(length(primary_color.rgb) * 0.57735, 0.0, 1.0);\n"
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
             }
@@ -520,7 +572,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // a ses losanges clairs, le speculaire (LUT / vecteur de reflexion) est en cause.
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_SECONDARY_RGB");
-            if (p != nullptr && p[0] == '1') {
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
                 out += "{ float _l = clamp(length(secondary_fragment_color.rgb) * 0.57735, 0.0, "
                        "1.0);\n"
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
@@ -530,7 +582,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // => la texture de base/reflexion arrive noire cote Vulkan (format/upload/vue), pas le FS.
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_TEX0_RGB");
-            if (p != nullptr && p[0] == '1') {
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
                 out += "{ float _l = clamp(length(sampleTexUnit0().rgb) * 0.57735, 0.0, 1.0);\n"
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
             }
@@ -545,7 +597,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // defaut 0) pour balayer les 6 etages sans rebuild (cache Vulkan purge a chaque relance).
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_CONST_RGB");
-            if (p != nullptr && p[0] == '1') {
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
                 const char* idx_env = std::getenv("BORKED3DS_FS_CONST_IDX");
                 int idx = (idx_env != nullptr) ? std::atoi(idx_env) : 0;
                 if (idx < 0) {
@@ -563,7 +615,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // SHOW_BUFFER_COLOR : tev_combiner_buffer_color.rgb (valeur initiale du combiner buffer).
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_BUFFER_COLOR");
-            if (p != nullptr && p[0] == '1') {
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
                 out += "{ float _l = clamp(length(tev_combiner_buffer_color.rgb) * 0.57735, 0.0, "
                        "1.0);\n"
                        "  color = vec4(_l, _l, _l, 1.0); }\n";
@@ -1039,19 +1091,10 @@ void FragmentModule::WriteTevStage(u32 index) {
         }
 
         if (OpenGL::GLES && (majorVersion == 3 && minorVersion < 2)) {
-            // CORRECTIF v192 -- cette branche GLES appliquait GetColorMultiplier() a l'alpha.
-            // Le PICA a DEUX facteurs d'echelle distincts par etage TEV, un pour la couleur et un
-            // pour l'alpha (regs_texturing.h, GetColorMultiplier / GetAlphaMultiplier). Le dump
-            // TG13 du 11/09 l'a confirme a l'execution : sur Pi 5 en GLES, toutes les lignes
-            // combiner_output sortaient avec le MEME facteur des deux cotes (1/1, 2/2, 4/4),
-            // alors que le meme etat PICA donne sous Vulkan des paires distinctes (4/1, 2/1,
-            // 1/4). Sur l'etage 1 du materiau de la coque Metroid, cmul=4 et amul=1 : l'alpha
-            // etait donc multiplie par 4 et sature a 1,0. La branche du dessous, elle, etait
-            // correcte depuis toujours.
             out += fmt::format("combiner_output = vec4(clamp(color_output_{0} * vec3({1}.0), "
                                "vec3(0.0), vec3(1.0)), "
-                               "clamp(alpha_output_{0} * float({2}.0), 0.0, 1.0));\n",
-                               index, stage.GetColorMultiplier(), stage.GetAlphaMultiplier());
+                               "clamp(alpha_output_{0} * float({1}.0), 0.0, 1.0));\n",
+                               index, stage.GetColorMultiplier());
         } else {
             out +=
                 fmt::format("combiner_output = vec4("
