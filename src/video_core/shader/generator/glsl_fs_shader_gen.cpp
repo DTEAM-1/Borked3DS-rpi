@@ -90,6 +90,42 @@ u64 TG13Hash(const char* data, std::size_t size) {
     return hash;
 }
 
+// v196 (12/09/2026): signature exacte du materiau de la coque du vaisseau (Metroid Samus
+// Returns), relevee directement depuis TRACE_FS tev_stage (log inconditionnel, sans variable)
+// sur le run v195 du 12/09. v194 SS4.3 donnait deja cette table via un dump TG13 plus ancien,
+// mais BORKED3DS_FS_ONLY_HASH=6eb1962b5f1b84fa s'est revele muet a l'usage : aucune
+// substitution visible sur les 5 passes du balayage d'etage. Cause tres probable : le bug de
+// hash instable deja identifie par AUDIT_CODE_v182 ("60 generations pour 15 sources
+// distinctes, champ non identifie") -- le meme materiau logique peut hasher differemment d'une
+// generation a l'autre, y compris DANS LA MEME SESSION (le log du 12/09 montre ce materiau
+// genere deux fois, a 4.366s et 4.443s, avec les memes cinq etages). Comparer sur le CONTENU
+// REEL des cinq etages TEV plutot que sur FSConfig::Hash() est immunise contre ce bug.
+bool IsHullMaterialTev(const Pica::Shader::FSConfig& config) {
+    struct Want {
+        u32 op;
+        u32 c1, c2, c3;
+        u32 mul;
+    };
+    constexpr Want kWanted[5] = {
+        {9, 1, 2, 3, 1},
+        {8, 3, 0, 15, 4},
+        {1, 15, 14, 14, 1},
+        {4, 15, 13, 0, 1},
+        {1, 15, 14, 14, 1},
+    };
+    for (std::size_t i = 0; i < 5; ++i) {
+        const TexturingRegs::TevStageConfig stage = config.texture.tev_stages[i];
+        if (static_cast<u32>(stage.color_op.Value()) != kWanted[i].op ||
+            static_cast<u32>(stage.color_source1.Value()) != kWanted[i].c1 ||
+            static_cast<u32>(stage.color_source2.Value()) != kWanted[i].c2 ||
+            static_cast<u32>(stage.color_source3.Value()) != kWanted[i].c3 ||
+            static_cast<u32>(stage.GetColorMultiplier()) != kWanted[i].mul) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool TG13ShouldLog(u64 key) {
     static std::mutex mutex;
     static std::unordered_set<u64> seen;
@@ -256,12 +292,20 @@ std::string FragmentModule::Generate() {
     const u32 trace_fog_mode = static_cast<u32>(config.texture.fog_mode.Value());
     const u32 trace_tex0_type = static_cast<u32>(config.texture.texture0_type.Value());
     const u32 trace_tex2_use_coord1 = static_cast<u32>(config.texture.texture2_use_coord1.Value());
+    // v196: cfg_hash ajoute a cette ligne INCONDITIONNELLE (aucune variable requise) pour que
+    // le hash reel du materiau soit toujours lisible dans n'importe quel log futur, correle
+    // directement aux lignes TRACE_FS tev_stage qui suivent immediatement. Motivation : le
+    // hash instable deja releve par AUDIT_CODE_v182 ("60 generations pour 15 sources
+    // distinctes, champ non identifie") rendait toute valeur figee dans un script ou un
+    // document (comme BORKED3DS_FS_ONLY_HASH=6eb1962b5f1b84fa) perimee sans avertissement.
+    const u64 trace_cfg_hash = static_cast<u64>(config.Hash());
     LOG_INFO(
         Render,
-        "TRACE_FS generate shadow_rendering={} alpha_test_func={} fog_mode={} lighting_enable={} tex0_type={} tex2_use_coord1={} blend_emulated={} is_vulkan={}",
+        "TRACE_FS generate shadow_rendering={} alpha_test_func={} fog_mode={} lighting_enable={} tex0_type={} tex2_use_coord1={} blend_emulated={} is_vulkan={} cfg_hash={:#018x}",
         trace_shadow_rendering, trace_alpha_test_func, trace_fog_mode,
         static_cast<u32>(config.lighting.enable), trace_tex0_type, trace_tex2_use_coord1,
-        static_cast<u32>(config.EmulateBlend()), static_cast<u32>(profile.is_vulkan));
+        static_cast<u32>(config.EmulateBlend()), static_cast<u32>(profile.is_vulkan),
+        trace_cfg_hash);
 
     // We round the interpolated primary color to the nearest 1/255th
     // This maintains the PICA's 8 bits of precision
@@ -309,20 +353,34 @@ vec4 secondary_fragment_color = vec4(0.0);
            "float alpha_results_2 = 0.0;\n"
            "float alpha_results_3 = 0.0;\n";
 
-    // v195 (BORKED3DS_FS_ONLY_HASH=<hex>): gate EVERY FS_SHOW_* substitution below (including
-    // the new SHOW_STAGE probe) to the CURRENT shader's config hash -- same key as the TG13
-    // dump (FSConfig::Hash(), cfg_hash={:#018x} in TRACE_FS logs). Absent -> unchanged
-    // behavior: each FS_SHOW_* probe still applies to the whole scene as before (piege 3 de
-    // v194 : sans coupe ni filtre, une sonde FS_SHOW_* couvre l'ecran entier). Present -> only
-    // the material whose hash matches gets substituted, the rest of the scene renders
-    // normally; stable across relaunches since the key is the material, not draw order.
+    // v195/v196: gate EVERY FS_SHOW_* substitution below (including the new SHOW_STAGE probe)
+    // so the rest of the scene renders normally instead of being blanketed by the probe
+    // (piege 3 de v194 : sans coupe ni filtre, une sonde FS_SHOW_* couvre l'ecran entier).
+    // Deux façons independantes de designer le materiau, l'une ou l'autre suffit :
+    //   - BORKED3DS_FS_ONLY_HASH=<hex> compare a FSConfig::Hash() -- fragile : v195 a mesure
+    //     que ce hash change entre generations du MEME materiau dans la MEME session (bug deja
+    //     releve par AUDIT_CODE_v182, cause non identifiee).
+    //   - BORKED3DS_FS_ONLY_HULL=1 compare le contenu reel des cinq etages TEV a la signature
+    //     de la coque (IsHullMaterialTev, ci-dessus) -- immunise contre ce bug.
+    // Absent des deux -> comportement inchange (chaque sonde FS_SHOW_* couvre tout le rendu,
+    // comme avant v195).
     bool fs_show_gate = true;
     {
         const char* only_hash_env = std::getenv("BORKED3DS_FS_ONLY_HASH");
-        if (only_hash_env != nullptr && only_hash_env[0] != '\0') {
-            const u64 want_hash = std::strtoull(only_hash_env, nullptr, 16);
-            const u64 cfg_hash = static_cast<u64>(config.Hash());
-            fs_show_gate = (cfg_hash == want_hash);
+        const char* only_hull_env = std::getenv("BORKED3DS_FS_ONLY_HULL");
+        const bool only_hash_active = only_hash_env != nullptr && only_hash_env[0] != '\0';
+        const bool only_hull_active = only_hull_env != nullptr && only_hull_env[0] == '1';
+        if (only_hash_active || only_hull_active) {
+            bool matched = false;
+            if (only_hash_active) {
+                const u64 want_hash = std::strtoull(only_hash_env, nullptr, 16);
+                const u64 cfg_hash = static_cast<u64>(config.Hash());
+                matched = matched || (cfg_hash == want_hash);
+            }
+            if (only_hull_active) {
+                matched = matched || IsHullMaterialTev(config);
+            }
+            fs_show_gate = matched;
         }
     }
 
@@ -427,9 +485,9 @@ vec4 secondary_fragment_color = vec4(0.0);
         }
         // v195 debug probe: BORKED3DS_FS_SHOW_STAGE=1 (+ BORKED3DS_FS_STAGE_IDX=N) displays
         // stage_probe_output (combiner_output captured right after TEV stage N) as
-        // non-chromatic luminance, colorblind-safe. Combine with BORKED3DS_FS_ONLY_HASH to
-        // isolate a single material -- otherwise, like any FS_SHOW_* probe, it blankets the
-        // whole rendered scene (piege 3 de v194).
+        // non-chromatic luminance, colorblind-safe. Combine with BORKED3DS_FS_ONLY_HASH or
+        // BORKED3DS_FS_ONLY_HULL to isolate a single material -- otherwise, like any
+        // FS_SHOW_* probe, it blankets the whole rendered scene (piege 3 de v194).
         {
             if (show_stage_active && fs_show_gate) {
                 out += "{ float _l = clamp(length(stage_probe_output.rgb) * 0.57735, 0.0, "
@@ -444,7 +502,8 @@ vec4 secondary_fragment_color = vec4(0.0);
         // test it uses. Non-chromatic, legible on the game's white dialog background.
         // Black glyph shapes => alpha is present (defect is in RGB/output); a flat gray box
         // => alpha collapsed in the TEV cascade (suspect: const_color / primary alpha).
-        // v195: gated on fs_show_gate (BORKED3DS_FS_ONLY_HASH) like every FS_SHOW_* probe.
+        // v195: gated on fs_show_gate (BORKED3DS_FS_ONLY_HASH / BORKED3DS_FS_ONLY_HULL) like
+        // every FS_SHOW_* probe.
         {
             const char* show_a = std::getenv("BORKED3DS_FS_SHOW_ALPHA");
             if (show_a != nullptr && show_a[0] == '1' && fs_show_gate) {
