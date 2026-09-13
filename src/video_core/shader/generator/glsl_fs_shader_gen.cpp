@@ -281,6 +281,59 @@ FragmentModule::FragmentModule(const FSConfig& config_, const Profile& profile_)
     for (u32 i = 0; i < 4; i++) {
         DefineTexUnitSampler(i);
     }
+
+    // v201 (BORKED3DS_FS_SHOW_BORDER_HIT=1) : emet une fonction SUPPLEMENTAIRE qui reevalue les
+    // memes conditions de bordure que DefineTexUnitSampler ci-dessus, sans toucher a
+    // sampleTexUnit*(). La sonde ne peut donc PAS modifier le rendu : elle ne fait que lire.
+    //
+    // Elle lit les bits REELS de config.texture.texture_border_color[], pas l'etat emis : elle
+    // dit donc la verite meme quand BORKED3DS_FS_NO_BORDER_EMU=1 a supprime les branches.
+    //
+    // Lecture : luminance 1.0 (blanc) la ou le fragment aurait pris un retour anticipe de
+    // bordure, 0.0 (noir) ailleurs. Non chromatique. Un champ ENTIEREMENT NOIR sur la coque
+    // signifie que la coque n'emprunte pas ce chemin et que la piste bordure est fermee pour
+    // elle ; des plages blanches signifient l'inverse, et leur forme dit si la frontiere suit le
+    // champ de normales (aspect facettes) ou un simple bord de texture.
+    //
+    // A combiner avec BORKED3DS_FS_ONLY_HASH / BORKED3DS_FS_ONLY_HULL, sinon la substitution
+    // d'affichage couvre toute la scene (piege 3 de v194).
+    {
+        const char* const probe_env = std::getenv("BORKED3DS_FS_SHOW_BORDER_HIT");
+        if (probe_env != nullptr && probe_env[0] == '1') {
+            std::string condition;
+            for (u32 unit = 0; unit < 3; unit++) {
+                // Meme garde que DefineTexUnitSampler : l'unite 0 desactivee sort avant le bloc
+                // de bordure, ses bits ne sont donc jamais evalues a l'execution.
+                if (unit == 0 &&
+                    config.texture.texture0_type == TexturingRegs::TextureConfig::Disabled) {
+                    continue;
+                }
+                const u32 texcoord_num = unit == 2 && config.texture.texture2_use_coord1 ? 1 : unit;
+                if (config.texture.texture_border_color[unit].enable_s) {
+                    if (!condition.empty()) {
+                        condition += " || ";
+                    }
+                    condition +=
+                        fmt::format("(texcoord{0}.x < 0.0 || texcoord{0}.x > 1.0)", texcoord_num);
+                }
+                if (config.texture.texture_border_color[unit].enable_t) {
+                    if (!condition.empty()) {
+                        condition += " || ";
+                    }
+                    condition +=
+                        fmt::format("(texcoord{0}.y < 0.0 || texcoord{0}.y > 1.0)", texcoord_num);
+                }
+            }
+            out += "float BorderHitProbe() {\n";
+            if (condition.empty()) {
+                // Aucun bit de bordure arme pour ce materiau : la sonde repond noir, ce qui est
+                // une information utile et non une absence de mesure.
+                out += "    return 0.0;\n}\n";
+            } else {
+                out += fmt::format("    return ({}) ? 1.0 : 0.0;\n}}\n", condition);
+            }
+        }
+    }
 }
 
 FragmentModule::~FragmentModule() = default;
@@ -357,11 +410,30 @@ vec4 secondary_fragment_color = vec4(0.0);
     // so the rest of the scene renders normally instead of being blanketed by the probe
     // (piege 3 de v194 : sans coupe ni filtre, une sonde FS_SHOW_* couvre l'ecran entier).
     // Deux façons independantes de designer le materiau, l'une ou l'autre suffit :
-    //   - BORKED3DS_FS_ONLY_HASH=<hex> compare a FSConfig::Hash() -- fragile : v195 a mesure
-    //     que ce hash change entre generations du MEME materiau dans la MEME session (bug deja
-    //     releve par AUDIT_CODE_v182, cause non identifiee).
-    //   - BORKED3DS_FS_ONLY_HULL=1 compare le contenu reel des cinq etages TEV a la signature
-    //     de la coque (IsHullMaterialTev, ci-dessus) -- immunise contre ce bug.
+    //   - BORKED3DS_FS_ONLY_HASH=<hex>[,<hex>...] compare a FSConfig::Hash().
+    //
+    //     CORRECTION v201 (13/09/2026). Le commentaire v196 affirmait ici que ce hash est
+    //     "fragile" et "change entre generations du MEME materiau dans la MEME session". C'est
+    //     FAUX, et il faut le dire pour que personne ne rouvre ce faux probleme : l'appariement
+    //     des 27 dumps .frag du 11/09 montre que les deux hashes incrimines correspondent a deux
+    //     SOURCES REELLEMENT DIFFERENTES (6eb1962b5f1b84fa porte l'emulation de couleur de
+    //     bordure sur les unites 1 et 2, 998f4f82bf9a6230 non ; 55826a7eda34b0c2 et
+    //     9703427841f7a269 ne different que par depth /= gl_FragCoord.w). Le hash est stable et
+    //     il a raison. Ce qui perime un hash, c'est un rebuild touchant un champ de FSConfig :
+    //     v194 a remis user.use_custom_normal de 1 a 0, renumerotant d'un coup tous les
+    //     materiaux eclaires cote Vulkan. Regle : un hash reste valide AU SEIN d'un binaire,
+    //     jamais AU TRAVERS d'un rebuild qui touche FSConfig.
+    //
+    //     v201 accepte une LISTE separee par des virgules (espaces toleres), ce qui transforme
+    //     l'identification du shader de la coque en recherche dichotomique : 4 lancements au
+    //     lieu de 15. Exemple : BORKED3DS_FS_ONLY_HASH=6eb1962b5f1b84fa,998f4f82bf9a6230
+    //   - BORKED3DS_FS_ONLY_HULL=1 compare le contenu reel des cinq etages TEV a une signature
+    //     relevee sur le log du 12/09 (IsHullMaterialTev, ci-dessus).
+    //
+    //     AVERTISSEMENT v201 : cette signature est celle des ROCHERS du decor, pas de la coque.
+    //     Observation directe du 12/09 : avec ONLY_HULL=1, ce sont les rochers qui passent en
+    //     gris. Le matcher fonctionne, son nom ment. A renommer, ou a rearmer des que la vraie
+    //     signature de la coque sera connue.
     // Absent des deux -> comportement inchange (chaque sonde FS_SHOW_* couvre tout le rendu,
     // comme avant v195).
     bool fs_show_gate = true;
@@ -373,9 +445,26 @@ vec4 secondary_fragment_color = vec4(0.0);
         if (only_hash_active || only_hull_active) {
             bool matched = false;
             if (only_hash_active) {
-                const u64 want_hash = std::strtoull(only_hash_env, nullptr, 16);
+                // v201 : liste de hashes hexadecimaux separes par des virgules. Un seul jeton
+                // reste evidemment valide (comportement v196 inchange).
                 const u64 cfg_hash = static_cast<u64>(config.Hash());
-                matched = matched || (cfg_hash == want_hash);
+                const char* cursor = only_hash_env;
+                while (*cursor != '\0') {
+                    while (*cursor == ',' || *cursor == ' ' || *cursor == '\t') {
+                        ++cursor;
+                    }
+                    if (*cursor == '\0') {
+                        break;
+                    }
+                    char* end = nullptr;
+                    const u64 want_hash = std::strtoull(cursor, &end, 16);
+                    if (end == cursor) {
+                        // Jeton illisible : on s'arrete plutot que de boucler indefiniment.
+                        break;
+                    }
+                    matched = matched || (cfg_hash == want_hash);
+                    cursor = end;
+                }
             }
             if (only_hull_active) {
                 matched = matched || IsHullMaterialTev(config);
@@ -669,6 +758,16 @@ vec4 secondary_fragment_color = vec4(0.0);
                     "{{ float _l = clamp(length(const_color[{}].rgb) * 0.57735, 0.0, 1.0);\n"
                     "  color = vec4(_l, _l, _l, 1.0); }}\n",
                     idx);
+            }
+        }
+        // v201 SHOW_BORDER_HIT : affiche la sortie de BorderHitProbe() (emise par le
+        // constructeur sous la meme variable d'environnement). Blanc = ce fragment aurait pris
+        // un retour anticipe de couleur de bordure ; noir = non. Non chromatique.
+        {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_BORDER_HIT");
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
+                out += "{ float _l = BorderHitProbe();\n"
+                       "  color = vec4(_l, _l, _l, 1.0); }\n";
             }
         }
         // SHOW_BUFFER_COLOR : tev_combiner_buffer_color.rgb (valeur initiale du combiner buffer).
@@ -3168,7 +3267,27 @@ void FragmentModule::DefineTexUnitSampler(u32 texture_unit) {
         return;
     }
 
-    if (texture_unit < 3) {
+    // v201 (BORKED3DS_FS_NO_BORDER_EMU=1) : supprime l'emulation LOGICIELLE de la couleur de
+    // bordure. Contexte mesure le 13/09/2026 (AUDIT_DIFF_BACKEND_v201) : sur V3DV,
+    // vk_instance.cpp ecrase custom_border_color avec customBorderColorWithoutFormat (false sur
+    // ce pilote, true sur tout GPU de bureau), donc profile.has_custom_border_color est faux et
+    // le constructeur FSConfig arme texture_border_color[].enable_s/t -- 10 des 15 shaders
+    // Vulkan portent ces branches, AUCUN des 12 shaders OpenGL. Le test porte sur la coordonnee
+    // INTERPOLEE, AVANT filtrage : la transition devient une marche dure au lieu de la rampe
+    // d'un texel que fait le materiel en ClampToBorder.
+    //
+    // Cette variable est un A/B DIAGNOSTIQUE, pas un correctif : sans les branches, la couleur
+    // de bordure PICA est perdue (le sampler Vulkan retombe sur eIntOpaqueBlack, voir
+    // vk_texture_runtime.cpp l. 2054). A comparer a la passe temoin sur la bande x 311-598,
+    // metriques G/R et fraction d'ecretage.
+    //
+    // Lecture unique (function-local static) : la valeur ne change pas en cours de session.
+    static const bool no_border_emu = [] {
+        const char* const e = std::getenv("BORKED3DS_FS_NO_BORDER_EMU");
+        return e != nullptr && e[0] == '1';
+    }();
+
+    if (texture_unit < 3 && !no_border_emu) {
         const u32 texcoord_num =
             texture_unit == 2 && config.texture.texture2_use_coord1 ? 1 : texture_unit;
         if (config.texture.texture_border_color[texture_unit].enable_s) {
