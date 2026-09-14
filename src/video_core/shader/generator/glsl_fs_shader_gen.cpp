@@ -510,6 +510,32 @@ vec4 secondary_fragment_color = vec4(0.0);
         }
     };
 
+    // v234 -- GAIN OPTIONNEL DES SONDES SCALAIRES.
+    //
+    // BORKED3DS_FS_PFC_GAIN=<float> (defaut 1.0) multiplie la grandeur AVANT le clamp final des
+    // sondes scalaires v234 (SHOW_PFC_ALPHA, SHOW_LUT_ARG). Une grandeur tassee autour de 0,3
+    // n'utilise que 77 des 256 niveaux disponibles : un gain de 3.0 la restitue sur toute la
+    // plage et rend mesurable une difference de quelques centiemes. Le gain est ANNONCE dans le
+    // protocole et retire a la lecture (valeur reelle = octet_lu / 255 / gain) tant que le canal
+    // n'est pas ecrete a 255. Un gain de 1.0 reste la reference : toute mesure comparative entre
+    // les deux backends doit utiliser LE MEME gain des deux cotes.
+    static const float probe_gain = [] {
+        const char* const e = std::getenv("BORKED3DS_FS_PFC_GAIN");
+        if (e == nullptr || e[0] == '\0') {
+            return 1.0f;
+        }
+        const double v = std::strtod(e, nullptr);
+        if (!(v > 0.0) || v > 64.0) {
+            return 1.0f;
+        }
+        return static_cast<float>(v);
+    }();
+    const auto emit_scalar_probe = [&](const std::string& scalar_expr) {
+        out += fmt::format("{{ float _f = clamp(({}) * {:.6f}, 0.0, 1.0);\n"
+                           "  color = vec4(_f, _f, _f, 1.0); }}\n",
+                           scalar_expr, probe_gain);
+    };
+
     // v195 (BORKED3DS_FS_SHOW_STAGE=1 + BORKED3DS_FS_STAGE_IDX=N): capture combiner_output
     // immediately after TEV stage N, before any later stage can modify it further. Comble le
     // trou d'instrumentation de v194 SS10 ("aucune sonde n'existe pour combiner_output par
@@ -733,6 +759,51 @@ vec4 secondary_fragment_color = vec4(0.0);
             const char* p = std::getenv("BORKED3DS_FS_SHOW_LIGHTING");
             if (p != nullptr && p[0] == '1' && fs_show_gate) {
                 emit_color_probe("primary_fragment_color.rgb");
+            }
+        }
+        // v234 sonde de luminance (BORKED3DS_FS_SHOW_PFC_ALPHA=1) : luminance =
+        // primary_fragment_color.a, c'est-a-dire le terme de Fresnel
+        //   diffuse_sum.a = 1. * LookupLightingLUTUnsigned(3, max(dot(normal, normalize(view)), 0.))
+        // tel qu'il ressort du clamp "primary_fragment_color = clamp(diffuse_sum, 0.0, 1.0)".
+        //
+        // POURQUOI CETTE SONDE EXISTE. L'etage 2 du materiau de coque 64de9475a19cdf78 vaut
+        //   min(primary_fragment_color.aaa + const_color[2].rgb, 1.0) * sortie_etage_1
+        // et la bissection v225..v230 a montre que l'ecart Vulkan/OpenGL NAIT a cet etage.
+        // v231/v232 ont mesure const_color[2] IDENTIQUE des deux cotes (255, 169, 49), ecart-type
+        // < 0,5 niveau : l'uniforme est sain. Le SEUL terme restant de cet etage est donc .a.
+        //
+        // CE QUE CETTE SONDE N'EST PAS UN DOUBLON DE. F15 du registre a ferme
+        // "primary_fragment_color porte la structure", mais sur son .rgb (diffuse_sum.rgb, somme
+        // diffuse des lumieres) et sur la population de la coupe 100. Le .a vient d'une LUT
+        // DIFFERENTE -- LUT 3, terme de Fresnel -- par un chemin de code distinct, et n'a jamais
+        // ete mesure sur aucun materiau. F15 reste ferme ; ceci l'etend a un autre canal.
+        //
+        // Non chromatique (daltonien). clair = Fresnel eleve ; sombre = Fresnel nul.
+        // Lecture : carte FACETTEE cote Vulkan et LISSE cote OpenGL => le defaut est bien ici.
+        // Carte identique des deux cotes => .a est sain et l'ecart d'etage 2 vient d'ailleurs
+        // (byteround, ou la sortie d'etage 1 elle-meme, a re-sonder).
+        if (config.lighting.enable) {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_PFC_ALPHA");
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
+                emit_scalar_probe("primary_fragment_color.a");
+            }
+        }
+        // v234 sonde de luminance (BORKED3DS_FS_SHOW_LUT_ARG=1) : luminance = l'ARGUMENT de la LUT
+        // de Fresnel, max(dot(normal, normalize(view)), 0.0), avant tout acces a la LUT.
+        //
+        // Elle dissocie les deux causes possibles d'un .a fautif :
+        //   - argument FACETTE cote Vulkan => la normale interpolee est en cause (normquat /
+        //     attribut de sommet / qualificatif d'interpolation V3DV), la LUT est innocente ;
+        //   - argument LISSE des deux cotes mais .a different => c'est le CONTENU ou l'OFFSET de
+        //     la LUT 3 qui differe, ce qui rejoint vLUT169 et CAUSE_RACINE_LUT_OFFSET_v165.
+        // F11 avait ferme NORMQUAT_LEN, mais une longueur de quaternion correcte ne garantit pas
+        // une DIRECTION correcte : cette sonde mesure la direction, pas la longueur.
+        //
+        // Non chromatique (daltonien). Meme gain BORKED3DS_FS_PFC_GAIN que SHOW_PFC_ALPHA.
+        if (config.lighting.enable) {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_LUT_ARG");
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
+                emit_scalar_probe("max(dot(normal, normalize(view)), 0.0)");
             }
         }
         // vBALL intrants du combineur TEV. Normales (P1) et eclairage diffus (P2) sont saufs, donc
