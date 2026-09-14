@@ -268,6 +268,54 @@ void RasterizerAccelerated::AddTriangle(const Pica::OutputVertex& v0, const Pica
     vertex_batch.emplace_back(v0, false);
     vertex_batch.emplace_back(v1, AreQuaternionsOpposite(v0, v1));
     vertex_batch.emplace_back(v2, AreQuaternionsOpposite(v0, v2));
+
+    // v267 DUMP_NORMQUAT (BORKED3DS_DUMP_NORMQUAT=1) : imprime les quaternions de normale des
+    // trois sommets d'un triangle APRES le flip d'hemisphere, c'est-a-dire tels qu'ils partent
+    // vers le GPU dans HardwareVertex.normquat.
+    //
+    // POURQUOI ICI ET PAS DANS UN RASTERIZER. Ce fichier est du code PARTAGE entre Vulkan et
+    // OpenGL. La mesure est donc symetrique par construction : elle ne peut pas introduire
+    // d'asymetrie entre backends, contrairement a toutes les sondes FS_SHOW_* dont les valeurs
+    // ont du etre invalidees (v259-v264 : les 8 draws du vaisseau se composent dans le
+    // framebuffer, et l'interrupteur prevu pour l'annuler casse la presentation).
+    //
+    // CE QUE CA TRANCHE. Le chemin CPU est partage, l'upload est un memcpy contigu et les
+    // decalages du layout concordent (normquat = float 15 = octet 60, verifie par deux routes
+    // independantes). Si les quaternions imprimes sont IDENTIQUES sur les deux backends, la
+    // donnee CPU est definitivement exoneree et l'ecart ne peut venir que du traitement GPU --
+    // interpolation du varying ou etat de pipeline. S'ils DIFFERENT, la cause est en amont et
+    // toute la lecture depuis v239 est a revoir.
+    //
+    // ATTENTION : AddTriangle n'est appele que sur le chemin LOGICIEL de sommets. Cote Vulkan le
+    // vaisseau y est deja (accel=0 sur ses 8 draws, mesure v242) ; cote OpenGL il faut forcer
+    // use_hw_shader=false, ce qui laisse la coque lisse (v245) et rend donc la comparaison
+    // valable : meme code, meme entree, un rendu lisse et un rendu facette.
+    //
+    // Echantillonnage : un triangle sur 2048, pour garder le log exploitable sur ~5 M triangles.
+    // Cout nul si la variable d'environnement est absente.
+    {
+        static const bool s_dump_nq = (std::getenv("BORKED3DS_DUMP_NORMQUAT") != nullptr);
+        if (s_dump_nq) {
+            static std::atomic<u64> s_nq_tri{0};
+            const u64 t = ++s_nq_tri;
+            const std::size_t n = vertex_batch.size();
+            if (n >= 3 && (t % 2048u) == 1u) {
+                const auto& a0 = vertex_batch[n - 3];
+                const auto& a1 = vertex_batch[n - 2];
+                const auto& a2 = vertex_batch[n - 1];
+                LOG_INFO(Render,
+                         "DUMP_NQ tri={} batch={} lit={} "
+                         "q0=({:.6f},{:.6f},{:.6f},{:.6f}) "
+                         "q1=({:.6f},{:.6f},{:.6f},{:.6f}) "
+                         "q2=({:.6f},{:.6f},{:.6f},{:.6f})",
+                         t, static_cast<u64>(n),
+                         static_cast<u32>(regs.lighting.disable == 0), a0.normquat.x,
+                         a0.normquat.y, a0.normquat.z, a0.normquat.w, a1.normquat.x,
+                         a1.normquat.y, a1.normquat.z, a1.normquat.w, a2.normquat.x,
+                         a2.normquat.y, a2.normquat.z, a2.normquat.w);
+            }
+        }
+    }
 }
 
 RasterizerAccelerated::VertexArrayInfo RasterizerAccelerated::AnalyzeVertexArray(
