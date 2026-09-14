@@ -806,6 +806,48 @@ vec4 secondary_fragment_color = vec4(0.0);
                 emit_scalar_probe("max(dot(normal, normalize(view)), 0.0)");
             }
         }
+        // v248 sonde de luminance SIGNEE (BORKED3DS_FS_SHOW_NORMQUAT_COMP=1, composante choisie
+        // par BORKED3DS_FS_NORMQUAT_IDX=0..3, defaut 2) : luminance = 0.5 + 0.5 * une composante
+        // de normalize(normquat), c'est-a-dire EXACTEMENT le quaternion tel que le lit
+        //   vec4 normalized_normquat = normalize(normquat);
+        //   vec3 normal = quaternion_rotate(normalized_normquat, surface_normal);
+        //
+        // POURQUOI ELLE EXISTE. Toutes les sondes disponibles jusqu'ici sont des MAGNITUDES :
+        // SHOW_NORMQUAT_LEN (length), SHOW_LIGHTING (magnitude RGB), les sondes de couleur. Or
+        // q et -q representent la MEME rotation et ont la MEME longueur : un retournement
+        // d'hemisphere par triangle -- le seul mode de panne encore compatible avec l'ensemble
+        // des mesures v235..v247 -- est INVISIBLE a toute sonde de magnitude, par construction.
+        // v246/v247 l'ont confirme de la pire facon : length(normquat) sature a 1.0 sur 100 %
+        // de la coque des DEUX cotes, sans discriminer quoi que ce soit. F11 etait tombee dans
+        // le meme piege quatre passes plus tot.
+        //
+        // ENCODAGE. Gris moyen (128) = composante nulle ; blanc = +1 ; noir = -1. Un objet lisse
+        // doit donner un degrade doux gardant le meme signe sur toute une region. Un
+        // retournement d'hemisphere apparait comme une INVERSION FRANCHE entre triangles
+        // voisins -- un damier clair/sombre impossible a confondre avec un degrade.
+        // Non chromatique (daltonien). Gain optionnel BORKED3DS_FS_PFC_GAIN applique AVANT le
+        // recentrage, pour etaler une composante tassee ; valeur reelle = (octet/255 - 0.5) * 2
+        // / gain tant que le canal n'est pas ecrete.
+        //
+        // Lecture : damier cote Vulkan + degrade cote OpenGL => le SIGNE du quaternion est la
+        // cause, et le correctif se situe dans ce qui decide du signe a l'assemblage des
+        // triangles cote Vulkan. Degrade doux des deux cotes => le quaternion arrive intact
+        // jusqu'au fragment shader et le defaut est en aval, dans quaternion_rotate compile.
+        if (config.lighting.enable && !use_fragment_shader_barycentric) {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_NORMQUAT_COMP");
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
+                u32 comp_idx = 2u;
+                const char* const idx_env = std::getenv("BORKED3DS_FS_NORMQUAT_IDX");
+                if (idx_env != nullptr && idx_env[0] >= '0' && idx_env[0] <= '3' &&
+                    idx_env[1] == '\0') {
+                    comp_idx = static_cast<u32>(idx_env[0] - '0');
+                }
+                out += fmt::format("{{ float _s = clamp(0.5 + 0.5 * normalize(normquat).{} * {:.6f},"
+                                   " 0.0, 1.0);\n"
+                                   "  color = vec4(_s, _s, _s, 1.0); }}\n",
+                                   "xyzw"[comp_idx], probe_gain);
+            }
+        }
         // vBALL intrants du combineur TEV. Normales (P1) et eclairage diffus (P2) sont saufs, donc
         // la boule sombre vient d'un AUTRE intrant. Les trois sondes ci-dessous isolent chacun en
         // luminance (1/sqrt(3) pour ramener un blanc plein a 1.0). Non chromatique (daltonien).
