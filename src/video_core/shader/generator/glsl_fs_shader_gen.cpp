@@ -473,6 +473,43 @@ vec4 secondary_fragment_color = vec4(0.0);
         }
     }
 
+    // v214 (BORKED3DS_FS_PROBE_RGB=1) -- MODE RGB BRUT POUR LES SONDES DE COULEUR.
+    //
+    // Motif, registre v197 SS4.2(a) puis confirme par les passes v202-v210 : toutes les sondes
+    // FS_SHOW_* dont la grandeur est un RGB ecrivent color = vec4(_l,_l,_l,1.0) avec
+    // _l = clamp(length(x) * 0.57735, 0, 1). Deux consequences mesurees :
+    //   1. R = G = B par construction, donc G/R vaut 1,0 sur toute image de sonde -- or G/R et
+    //      la fraction d'ecretage du rouge sont les DEUX seules grandeurs que le dossier
+    //      reconnait comme robustes (la variance de quick load noie le contraste) ;
+    //   2. 0.57735 = 1/sqrt(3) ramene un blanc plein a exactement 1,0, donc toute entree claire
+    //      SATURE. Bilan des sept lancements v202-v210 sur une scene claire : quatre sorties
+    //      exactement (0,0,0) et deux saturees a blanc.
+    //
+    // Avec cette variable, les sept sondes dont la grandeur est un vec3 de couleur ecrivent
+    // color = vec4(clamp(x.rgb, 0, 1), 1.0). G/R et l'ecretage redeviennent mesurables, et la
+    // dynamique n'est plus compressee par length().
+    //
+    // La LUMINANCE RESTE LE DEFAUT : sans la variable, comportement strictement inchange. Les
+    // sondes scalaires (SHOW_ALPHA, SHOW_PRIMARY_ALPHA, SHOW_TEX0_ALPHA, SHOW_UV,
+    // SHOW_NORMQUAT_LEN, SHOW_BORDER_HIT) ne sont PAS touchees : la luminance y est la bonne
+    // representation et elles ne souffrent pas du probleme ci-dessus.
+    //
+    // Ce n'est pas un indicateur code par couleur : c'est la grandeur mesuree elle-meme, restituee
+    // sans compression, pour que les metriques du protocole redeviennent calculables.
+    static const bool probe_rgb = [] {
+        const char* const e = std::getenv("BORKED3DS_FS_PROBE_RGB");
+        return e != nullptr && e[0] == '1';
+    }();
+    const auto emit_color_probe = [&](const std::string& rgb_expr) {
+        if (probe_rgb) {
+            out += fmt::format("color = vec4(clamp({}, vec3(0.0), vec3(1.0)), 1.0);\n", rgb_expr);
+        } else {
+            out += fmt::format("{{ float _l = clamp(length({}) * 0.57735, 0.0, 1.0);\n"
+                               "  color = vec4(_l, _l, _l, 1.0); }}\n",
+                               rgb_expr);
+        }
+    };
+
     // v195 (BORKED3DS_FS_SHOW_STAGE=1 + BORKED3DS_FS_STAGE_IDX=N): capture combiner_output
     // immediately after TEV stage N, before any later stage can modify it further. Comble le
     // trou d'instrumentation de v194 SS10 ("aucune sonde n'existe pour combiner_output par
@@ -579,9 +616,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         // FS_SHOW_* probe, it blankets the whole rendered scene (piege 3 de v194).
         {
             if (show_stage_active && fs_show_gate) {
-                out += "{ float _l = clamp(length(stage_probe_output.rgb) * 0.57735, 0.0, "
-                       "1.0);\n"
-                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+                emit_color_probe("stage_probe_output.rgb");
             }
         }
         // v115-E debug probe: BORKED3DS_FS_SHOW_ALPHA=1 forces every draw to opaque output
@@ -697,9 +732,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         if (config.lighting.enable) {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_LIGHTING");
             if (p != nullptr && p[0] == '1' && fs_show_gate) {
-                out += "{ float _l = clamp(length(primary_fragment_color.rgb) * 0.57735, 0.0, "
-                       "1.0);\n"
-                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+                emit_color_probe("primary_fragment_color.rgb");
             }
         }
         // vBALL intrants du combineur TEV. Normales (P1) et eclairage diffus (P2) sont saufs, donc
@@ -711,8 +744,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_PRIMARY_RGB");
             if (p != nullptr && p[0] == '1' && fs_show_gate) {
-                out += "{ float _l = clamp(length(primary_color.rgb) * 0.57735, 0.0, 1.0);\n"
-                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+                emit_color_probe("primary_color.rgb");
             }
         }
         // SHOW_SECONDARY_RGB : somme speculaire (secondary_fragment_color.rgb). Teste l'hypothese
@@ -721,9 +753,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_SECONDARY_RGB");
             if (p != nullptr && p[0] == '1' && fs_show_gate) {
-                out += "{ float _l = clamp(length(secondary_fragment_color.rgb) * 0.57735, 0.0, "
-                       "1.0);\n"
-                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+                emit_color_probe("secondary_fragment_color.rgb");
             }
         }
         // SHOW_TEX0_RGB : echantillon texture unite 0 (sampleTexUnit0().rgb), isole du TEV. Sombre
@@ -731,8 +761,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_TEX0_RGB");
             if (p != nullptr && p[0] == '1' && fs_show_gate) {
-                out += "{ float _l = clamp(length(sampleTexUnit0().rgb) * 0.57735, 0.0, 1.0);\n"
-                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+                emit_color_probe("sampleTexUnit0().rgb");
             }
         }
         // vBALL uniformes du combineur. Tous les intrants "vivants" (sommet/diffus/texture) sont
@@ -754,10 +783,7 @@ vec4 secondary_fragment_color = vec4(0.0);
                 if (idx > 5) {
                     idx = 5;
                 }
-                out += fmt::format(
-                    "{{ float _l = clamp(length(const_color[{}].rgb) * 0.57735, 0.0, 1.0);\n"
-                    "  color = vec4(_l, _l, _l, 1.0); }}\n",
-                    idx);
+                emit_color_probe(fmt::format("const_color[{}].rgb", idx));
             }
         }
         // v201 SHOW_BORDER_HIT : affiche la sortie de BorderHitProbe() (emise par le
@@ -774,9 +800,7 @@ vec4 secondary_fragment_color = vec4(0.0);
         {
             const char* p = std::getenv("BORKED3DS_FS_SHOW_BUFFER_COLOR");
             if (p != nullptr && p[0] == '1' && fs_show_gate) {
-                out += "{ float _l = clamp(length(tev_combiner_buffer_color.rgb) * 0.57735, 0.0, "
-                       "1.0);\n"
-                       "  color = vec4(_l, _l, _l, 1.0); }\n";
+                emit_color_probe("tev_combiner_buffer_color.rgb");
             }
         }
     }
