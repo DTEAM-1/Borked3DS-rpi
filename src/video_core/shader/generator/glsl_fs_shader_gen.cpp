@@ -848,6 +848,41 @@ vec4 secondary_fragment_color = vec4(0.0);
                                    "xyzw"[comp_idx], probe_gain);
             }
         }
+        // v258 sonde SIMULTANEE (BORKED3DS_FS_SHOW_NORMQUAT_RGB=1) : les TROIS composantes x, y, z
+        // de normalize(normquat) ecrites en meme temps dans les trois canaux, avec le meme
+        // recentrage signe que SHOW_NORMQUAT_COMP : 128 = 0, 255 = +1, 0 = -1.
+        //
+        // POURQUOI ELLE REMPLACE SHOW_NORMQUAT_COMP POUR LA MESURE. La lecture composante par
+        // composante impose QUATRE lancements distincts, dont rien dans l'image ni dans le log ne
+        // prouve l'indice reellement arme. Deux passes consecutives (v251-v253 puis v255-v257) ont
+        // echoue exactement la-dessus : des captures censees porter des composantes differentes se
+        // sont revelees identiques a 88 % des pixels, et la somme des carres des quatre
+        // composantes valait 1,239 au lieu de 1,000 -- une impossibilite, puisque normalize()
+        // garantit la norme unitaire. Le defaut n'etait pas dans la donnee mesuree mais dans
+        // l'appariement capture <-> indice, c'est-a-dire dans la conception du protocole.
+        //
+        // Ici l'appariement n'existe plus : un lancement, une image, trois grandeurs. La
+        // quatrieme se deduit sans mesure, w^2 = 1 - x^2 - y^2 - z^2, ce qui transforme le
+        // controle de norme en verification EXACTE pixel par pixel au lieu d'un controle a
+        // posteriori sur quatre captures.
+        //
+        // Ce n'est pas un indicateur code par couleur : chaque canal EST la grandeur mesuree,
+        // exactement comme le mode BORKED3DS_FS_PROBE_RGB de v214. SHOW_NORMQUAT_COMP reste en
+        // place pour une relecture en luminance pure d'une composante isolee.
+        //
+        // Lecture : un objet lisse donne trois canaux variant doucement. Un retournement
+        // d'hemisphere inverse les trois canaux ENSEMBLE d'un triangle a l'autre. Une seule
+        // composante discontinue alors que les deux autres sont lisses designe au contraire un
+        // probleme d'interpolation ou de source sur cette composante precise.
+        if (config.lighting.enable && !use_fragment_shader_barycentric) {
+            const char* p = std::getenv("BORKED3DS_FS_SHOW_NORMQUAT_RGB");
+            if (p != nullptr && p[0] == '1' && fs_show_gate) {
+                out += fmt::format("{{ vec3 _q = normalize(normquat).xyz * {:.6f};\n"
+                                   "  color = vec4(clamp(0.5 + 0.5 * _q, vec3(0.0), vec3(1.0)),"
+                                   " 1.0); }}\n",
+                                   probe_gain);
+            }
+        }
         // vBALL intrants du combineur TEV. Normales (P1) et eclairage diffus (P2) sont saufs, donc
         // la boule sombre vient d'un AUTRE intrant. Les trois sondes ci-dessous isolent chacun en
         // luminance (1/sqrt(3) pour ramener un blanc plein a 1.0). Non chromatique (daltonien).
