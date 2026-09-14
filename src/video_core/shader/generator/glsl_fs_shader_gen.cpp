@@ -1777,6 +1777,65 @@ void FragmentModule::WriteLighting() {
     out += "diffuse_sum.rgb += lighting_global_ambient;\n"
            "primary_fragment_color = clamp(diffuse_sum, vec4(0.0), vec4(1.0));\n"
            "secondary_fragment_color = clamp(specular_sum, vec4(0.0), vec4(1.0));\n";
+
+    // v273 GEL DU TERME DE FRESNEL (BORKED3DS_FS_FREEZE_PFC_ALPHA=<0..1>).
+    //
+    // CE N'EST PAS UNE SONDE. Les sondes FS_SHOW_* sont inutilisables sur ce materiau : ses
+    // 8 draws se composent dans le framebuffer et leurs valeurs ne sont plus lisibles par
+    // fragment (v259-v264). Ici on ne LIT rien : on MODIFIE le rendu reel, minimalement, et on
+    // compare l'image obtenue a la video de reference console. C'est la seule methode qui ait
+    // resiste a tous les pieges de la session -- c'est ainsi que v266 et v271 ont ete mesures.
+    //
+    // MOTIF. La cascade TEV de la coque 64de9475a19cdf78 fait entrer la normale a l'etage 2, et
+    // par un seul terme :
+    //   min(primary_fragment_color.aaa + const_color[2].rgb, 1.0) * sortie_etage_1
+    // primary_fragment_color.a vaut 1. * LookupLightingLUTUnsigned(3, max(dot(normal,
+    // normalize(view)), 0.0)) -- le terme de Fresnel. C'est le SEUL chemin par lequel la normale
+    // atteint la couleur (les couleurs de lumiere sont toutes nulles, F14).
+    //
+    // Remplacer ce terme par une CONSTANTE supprime toute variation de normale sans rien toucher
+    // d'autre. Deux resultats possibles, tous deux utiles :
+    //   - facettes absentes => le terme de Fresnel est bien le porteur, confirme sur le rendu
+    //     reel et non plus par une sonde invalidee ; la valeur qui rapproche le plus de la
+    //     console dit ce que ce terme DEVRAIT valoir ;
+    //   - facettes presentes => la normale n'est pas le porteur et toute la lecture v233-v239
+    //     tombe, y compris ce qu'il en restait.
+    //
+    // La grille ONLY_HASH est refermee ici parce que fs_show_gate est local a Generate() et
+    // n'est pas visible depuis WriteLighting(). Sans ONLY_HASH, le gel s'applique a tous les
+    // materiaux eclairs -- utile pour un balayage large, a eviter pour une mesure propre.
+    {
+        const char* const freeze_env = std::getenv("BORKED3DS_FS_FREEZE_PFC_ALPHA");
+        if (freeze_env != nullptr && freeze_env[0] != '\0') {
+            bool gate = true;
+            const char* const only_hash_env = std::getenv("BORKED3DS_FS_ONLY_HASH");
+            if (only_hash_env != nullptr && only_hash_env[0] != '\0') {
+                gate = false;
+                const u64 cfg_hash = static_cast<u64>(config.Hash());
+                const char* cursor = only_hash_env;
+                while (*cursor != '\0') {
+                    while (*cursor == ',' || *cursor == ' ' || *cursor == '\t') {
+                        ++cursor;
+                    }
+                    if (*cursor == '\0') {
+                        break;
+                    }
+                    char* end = nullptr;
+                    const u64 want_hash = std::strtoull(cursor, &end, 16);
+                    if (end == cursor) {
+                        break;
+                    }
+                    gate = gate || (cfg_hash == want_hash);
+                    cursor = end;
+                }
+            }
+            if (gate) {
+                const double raw = std::strtod(freeze_env, nullptr);
+                const float value = (raw >= 0.0 && raw <= 1.0) ? static_cast<float>(raw) : 0.0f;
+                out += fmt::format("primary_fragment_color.a = {:.6f};\n", value);
+            }
+        }
+    }
 }
 
 void FragmentModule::WriteFog() {
