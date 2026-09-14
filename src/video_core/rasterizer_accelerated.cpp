@@ -73,6 +73,40 @@ RasterizerAccelerated::HardwareVertex::HardwareVertex(const Pica::OutputVertex& 
     if (flip_quaternion) {
         normquat = -normquat;
     }
+
+    // v270 NORMALISATION PAR SOMMET (BORKED3DS_NORMALIZE_NORMQUAT=1).
+    //
+    // MOTIF, mesure v268/v269 : les quaternions livres au GPU ne sont PAS unitaires. |q|^2
+    // median 0,932, p10 0,584 -- la longueur varie d'environ 30 % d'un sommet a l'autre, et
+    // ce sur LES DEUX backends (donnee identique a la troisieme decimale).
+    //
+    // Le fragment shader fait normalize(normquat) APRES l'interpolation :
+    //   vec4 normalized_normquat = normalize(normquat);
+    // Interpoler lineairement des quaternions de longueurs inegales puis normaliser n'equivaut
+    // pas a interpoler des quaternions unitaires : la direction resultante est tiree vers le
+    // sommet le plus long, et l'ecart est maximal AU CENTRE du triangle -- la signature exacte
+    // d'un facettage. Normaliser par sommet avant l'upload conditionne correctement
+    // l'interpolation sans rien changer a la rotation representee.
+    //
+    // Ce n'est pas une sonde : c'est un CORRECTIF CANDIDAT. Il est derriere une variable le
+    // temps de la validation ; s'il tient, il doit devenir inconditionnel, conformement a la
+    // regle « un correctif ne doit jamais dependre d'une variable pour etre active ».
+    //
+    // Code PARTAGE : le correctif s'applique identiquement aux deux backends, donc il ne peut
+    // pas introduire d'asymetrie. Un quaternion de longueur nulle est laisse tel quel.
+    {
+        static const bool s_normalize_nq =
+            (std::getenv("BORKED3DS_NORMALIZE_NORMQUAT") != nullptr);
+        if (s_normalize_nq) {
+            const float len2 = normquat.x * normquat.x + normquat.y * normquat.y +
+                               normquat.z * normquat.z + normquat.w * normquat.w;
+            if (len2 > 1.0e-12f) {
+                const float inv = 1.0f / std::sqrt(len2);
+                normquat = Common::Vec4f{normquat.x * inv, normquat.y * inv, normquat.z * inv,
+                                         normquat.w * inv};
+            }
+        }
+    }
 }
 
 RasterizerAccelerated::RasterizerAccelerated(Memory::MemorySystem& memory_, Pica::PicaCore& pica_)
