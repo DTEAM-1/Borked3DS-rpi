@@ -223,6 +223,13 @@ struct UniformReadScan {
     std::set<u32> low;  ///< f[<32] reads (static or dynamic): must be preserved by a mirror window
     std::set<u32> mid;  ///< f[32..63] (e.g. address-indexed position) and STATIC upper-bank reads
     std::set<u32> high; ///< f[64..95] reads via an address register: the pattern V3D miscompiles
+    /// v131-MIRROR : bases INFERIEURES A 64 lues a travers un registre d'adresse. Une telle
+    /// lecture balaie f[base + aL] : tous les slots AU-DESSUS de la base sont atteignables et ne
+    /// peuvent donc pas servir de destination au miroir. v130 ne retenait que les bases, ce qui
+    /// faisait passer pour libres des plages que le shader allait lire -- le miroir les ecrasait
+    /// et un sommet partait a une position absurde (tige traversant le personnage, mesuree sur
+    /// Sonic Lost World ET Metroid Samus Returns en v300).
+    std::set<u32> dyn;
 };
 
 UniformReadScan ScanVertexShaderUniformReads(const ProgramCode& program_code, u32 main_offset) {
@@ -245,6 +252,10 @@ UniformReadScan ScanVertexShaderUniformReads(const ProgramCode& program_code, u3
             return;
         }
         const u32 base = static_cast<u32>(reg.GetIndex());
+        if (addr_index != 0 && base < 64u) {
+            // v131-MIRROR : lecture indexee sous 64 -- portee inconnue vers le haut.
+            scan.dyn.insert(base);
+        }
         if (base < 32) {
             scan.low.insert(base);
         } else if (addr_index != 0 && base >= 64) {
@@ -296,8 +307,10 @@ UniformReadScan ScanVertexShaderUniformReads(const ProgramCode& program_code, u3
                 return out;
             };
             LOG_INFO(HW_GPU,
-                     "TRACE_MIRROR_MAP main_offset={} low=[ {}] mid=[ {}] high_indexed=[ {}]",
-                     main_offset, join_set(scan.low), join_set(scan.mid), join_set(scan.high));
+                     "TRACE_MIRROR_MAP main_offset={} low=[ {}] mid=[ {}] high_indexed=[ {}] "
+                     "dyn_below64=[ {}]",
+                     main_offset, join_set(scan.low), join_set(scan.mid), join_set(scan.high),
+                     join_set(scan.dyn));
         }
     }
 
@@ -352,7 +365,10 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
 
     // v118 a l'identique : VS dedie a la banque haute dont la fenetre commence a 64. Aucun autre
     // jeu ne change de comportement par ce patch.
-    if (scan.low.empty() && src_base == 64u) {
+    // v131-MIRROR : le cas v118 historique (VS dedie banque haute, fenetre f[0..31]) n'est
+    // conserve que s'il est SUR, c'est-a-dire si aucune lecture indexee sous 64 ne peut balayer
+    // f[0..31]. Sinon on retombe sur la recherche generale ci-dessous, qui refusera au besoin.
+    if (scan.low.empty() && src_base == 64u && (scan.dyn.empty() || *scan.dyn.begin() >= 32u)) {
         return LowMirrorPlan{true, 0u, 32u, 64u};
     }
 
@@ -371,6 +387,13 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
     }
 
     // Plus grande plage contigue libre dans f[0..63].
+    // v131-MIRROR : plafond de recherche. Une lecture indexee de base B balaie f[B + aL] vers le
+    // HAUT, sans borne connue a la compilation. Tout slot >= min(dyn) est donc potentiellement lu
+    // et ne peut pas servir de destination. v130 ignorait ce point : il annoncait free_len=36 sur
+    // Sonic et 42 sur Metroid alors que la zone etait balayee, et le miroir ecrasait des donnees
+    // de transformation -- d'ou la tige. Mieux vaut refuser un miroir que corrompre la geometrie.
+    const u32 dyn_ceiling = scan.dyn.empty() ? 64u : *scan.dyn.begin();
+
     std::array<bool, 64> used{};
     for (const u32 v : scan.low) {
         if (v < 64u) {
@@ -381,6 +404,9 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
         if (v < 64u) {
             used[v] = true;
         }
+    }
+    for (u32 i = dyn_ceiling; i < 64u; ++i) {
+        used[i] = true;
     }
     u32 best_base = 0u;
     u32 best_len = 0u;
@@ -410,9 +436,9 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
             static std::set<u32> seen_refused;
             if (seen_refused.insert(main_offset).second) {
                 LOG_INFO(HW_GPU,
-                         "v130 mirror REFUSED main_offset={} src_base={} src_span={} "
-                         "best_free_base={} best_free_len={}",
-                         main_offset, src_base, src_span, best_base, best_len);
+                         "v131 mirror REFUSED main_offset={} src_base={} src_span={} "
+                         "best_free_base={} best_free_len={} dyn_ceiling={}",
+                         main_offset, src_base, src_span, best_base, best_len, dyn_ceiling);
             }
         }
         return kNoMirror;
@@ -427,9 +453,9 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
         static std::set<u32> seen_plan;
         if (seen_plan.insert(main_offset).second) {
             LOG_INFO(HW_GPU,
-                     "v130 mirror plan main_offset={} src_base={} src_span={} dst_base={} "
-                     "count={} free_len={} hybrid={}",
-                     main_offset, src_base, src_span, best_base, count, best_len,
+                     "v131 mirror plan main_offset={} src_base={} src_span={} dst_base={} "
+                     "count={} free_len={} dyn_ceiling={} hybrid={}",
+                     main_offset, src_base, src_span, best_base, count, best_len, dyn_ceiling,
                      static_cast<u32>(!scan.low.empty()));
         }
     }
