@@ -10321,7 +10321,7 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
         const GLSL::LowMirrorPlan mirror_plan =
             low_mirror ? GLSL::VertexShaderLowMirrorPlan(pica.vs_setup.program_code,
                                                          regs.vs.main_offset)
-                       : GLSL::LowMirrorPlan{false, 0, 0};
+                       : GLSL::LowMirrorPlan{false, 0, 0, 64};
         if (mirror_plan.ok) {
             // v118-MIRROR (Plan A, per-VS base): copy only the needed upper-bank slots
             // f[64..64+count) into the conflict-free low window f[base..base+count) that the VS does
@@ -10330,8 +10330,13 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
             // unblocks hybrid glyph VSs (e.g. Sonic Lost World: low f[0..6] + high f[64..69]) without
             // clobbering their low constants. For a pure upper-bank VS, base=0/count=32 -> identical
             // to the previous f[0..31] <- f[64..95] mirror, so other games are unaffected.
-            for (u32 i = 0; i < mirror_plan.count; ++i) {
-                vs_uniforms.uniforms.f[mirror_plan.base + i] = vs_uniforms.uniforms.f[64 + i];
+            // v130-MIRROR : la source part de mirror_plan.src_base (plus basse lecture dynamique
+            // reellement observee dans ce VS) et non plus de 64. Mesure v298 : les VS de glyphes
+            // 457/463/468 de Sonic Lost World lisent f[79..84] ; recopier f[64..] livrait des
+            // uniformes faux aux six emplacements. La borne haute protege la fin de la banque.
+            for (u32 i = 0; i < mirror_plan.count && mirror_plan.src_base + i < 96u; ++i) {
+                vs_uniforms.uniforms.f[mirror_plan.base + i] =
+                    vs_uniforms.uniforms.f[mirror_plan.src_base + i];
             }
 
             static const bool trace_mirror = std::getenv("BORKED3DS_V3DV_TRACE_MIRROR") != nullptr;
@@ -10340,9 +10345,10 @@ void RasterizerVulkan::UploadUniforms(bool accelerate_draw) {
                 const u32 mo = static_cast<u32>(regs.vs.main_offset);
                 if (seen_offsets.insert(mo).second) {
                     LOG_INFO(Render_Vulkan,
-                             "v118 low-mirror applied to VS main_offset={} base={} count={} "
-                             "(distinct mirrored shaders so far={})",
-                             mo, mirror_plan.base, mirror_plan.count, seen_offsets.size());
+                             "v130 low-mirror applied to VS main_offset={} src_base={} "
+                             "dst_base={} count={} (distinct mirrored shaders so far={})",
+                             mo, mirror_plan.src_base, mirror_plan.base, mirror_plan.count,
+                             seen_offsets.size());
                 }
             }
         }
