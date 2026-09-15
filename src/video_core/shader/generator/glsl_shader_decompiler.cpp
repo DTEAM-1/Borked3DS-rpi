@@ -427,16 +427,34 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
         }
     }
 
-    // Refuser plutot que de livrer une fenetre trop courte : une fenetre tronquee est exactement
-    // ce qui produisait le texte faux de v298.
-    if (best_len < src_span) {
+    // v132-MIRROR : une fenetre plus COURTE que la portee demandee n'est pas fausse, elle est
+    // PARTIELLE -- et la distinction est decisive.
+    //
+    // Le shader lit uniforms.f[dst + clamp(index - src_base, 0, count-1)] et l'upload recopie
+    // f[dst + i] = f[src_base + i]. Pour tout index couvert par la fenetre, la valeur rendue est
+    // donc EXACTEMENT celle que le jeu demandait ; seuls les index au-dela sont ecrases par le
+    // clamp. Cinq glyphes justes sur six, et non six faux.
+    //
+    // C'est ce qui separe ce cas de v128 : v128 cumulait une fenetre courte ET une base source
+    // figee a 64, si bien que les six emplacements lisaient tous la meme valeur erronee. La base
+    // source etant desormais correcte, tronquer degrade proprement au lieu de corrompre.
+    //
+    // Mesure v302, apres application du plafond dyn_ceiling : Metroid VS 75 obtient 6 slots sur 7
+    // et Sonic VS 463 en obtient 5 sur 6 -- il manquait a chacun EXACTEMENT un slot. Refuser
+    // transformait "presque tout le texte" en "rien du tout".
+    //
+    // On ne refuse donc plus que sous deux slots : a un seul slot le miroir renvoie une constante,
+    // c'est-a-dire exactement le comportement gele qu'il est cense corriger, sans aucun gain.
+    // Le plafond dyn_ceiling reste entier : la fenetre ne deborde jamais sur une plage balayee par
+    // un registre d'adresse, donc aucune corruption de geometrie n'est reintroduite.
+    if (best_len < 2u) {
         static const bool trace_mirror_map =
             std::getenv("BORKED3DS_V3DV_TRACE_MIRROR_MAP") != nullptr;
         if (trace_mirror_map) {
             static std::set<u32> seen_refused;
             if (seen_refused.insert(main_offset).second) {
                 LOG_INFO(HW_GPU,
-                         "v131 mirror REFUSED main_offset={} src_base={} src_span={} "
+                         "v132 mirror REFUSED main_offset={} src_base={} src_span={} "
                          "best_free_base={} best_free_len={} dyn_ceiling={}",
                          main_offset, src_base, src_span, best_base, best_len, dyn_ceiling);
             }
@@ -453,10 +471,12 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
         static std::set<u32> seen_plan;
         if (seen_plan.insert(main_offset).second) {
             LOG_INFO(HW_GPU,
-                     "v131 mirror plan main_offset={} src_base={} src_span={} dst_base={} "
-                     "count={} free_len={} dyn_ceiling={} hybrid={}",
+                     "v132 mirror plan main_offset={} src_base={} src_span={} dst_base={} "
+                     "count={} free_len={} dyn_ceiling={} covered={} missing={} partial={} "
+                     "hybrid={}",
                      main_offset, src_base, src_span, best_base, count, best_len, dyn_ceiling,
-                     static_cast<u32>(!scan.low.empty()));
+                     std::min(count, src_span), src_span > count ? src_span - count : 0u,
+                     static_cast<u32>(count < src_span), static_cast<u32>(!scan.low.empty()));
         }
     }
     return LowMirrorPlan{true, best_base, count, src_base};
