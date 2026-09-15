@@ -38,6 +38,10 @@ struct LowMirrorPlan {
     bool ok;
     u32 base;
     u32 count;
+    /// v130-MIRROR : premier slot de la banque haute reellement recopie. Etait code en dur a 64
+    /// jusqu'a v128 ; la mesure v298 (Sonic Lost World, VS 457/463/468) montre des lectures
+    /// dynamiques a partir de f[79], que la source figee a 64 rendait inexploitables.
+    u32 src_base;
 };
 
 LowMirrorPlan VertexShaderLowMirrorPlan(const Pica::ProgramCode& program_code, u32 main_offset);

@@ -3,6 +3,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <exception>
 #include <map>
@@ -306,11 +308,32 @@ UniformReadScan ScanVertexShaderUniformReads(const ProgramCode& program_code, u3
 
 LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 main_offset) {
     // v118-MIRROR (Plan A, per-VS base): V3D miscompiles DYNAMIC indexed reads of the upper float
-    // uniform bank f[64..95] (used by the dialogue-glyph texcoord, f[64 + address_registers.y]),
-    // while it handles dynamic reads of the LOW bank correctly (the position already uses
-    // f[32 + aL.x]). The fix mirrors the needed upper-bank slots into a CONTIGUOUS low window the VS
-    // does not otherwise read, then re-fetches them through a dynamic LOW index.
-    const LowMirrorPlan kNoMirror{false, 0, 0};
+    // uniform bank f[64..95] (used by the dialogue-glyph texcoord), while it handles dynamic reads
+    // of the lower banks correctly (the position already uses f[32 + aL.x]). The fix mirrors the
+    // needed upper-bank slots into a CONTIGUOUS window the VS does not otherwise read, then
+    // re-fetches them through a dynamic index into that window.
+    //
+    // v130-MIRROR : deux corrections, toutes deux dictees par la mesure v298.
+    //
+    //   (1) FENETRE SOURCE. v128 recopiait f[64 + i] et le shader relisait
+    //       f[base + clamp(index - 64, 0, count-1)]. La base source etait codee en dur a 64.
+    //       Or TRACE_MIRROR_MAP sur Sonic Lost World donne, pour les VS main_offset 457, 463 et
+    //       468, high_indexed = { 79 80 81 82 83 84 }. Avec la source a 64, index - 64 vaut 15 a
+    //       20, que le clamp ecrase a count-1 : les six emplacements de glyphes lisaient tous le
+    //       MEME slot, et un slot faux. La base source devient donc min(scan.high).
+    //
+    //   (2) FENETRE DESTINATION. v128 la placait juste au-dessus de la plus haute lecture basse
+    //       (base = highest_low + 1), ce qui ne laissait que 4 slots pour les VS 457/463/468
+    //       (highest_low = 27) alors qu'il en faut 6. Mais la contrainte materielle porte sur
+    //       f[64..95] SEULEMENT : la lecture dynamique de la banque mediane f[32..63] est le
+    //       chemin que la position emprunte deja (f[32 + aL.x]) et que V3DV compile correctement.
+    //       La destination est donc cherchee dans f[0..63] entier, hors lectures basses et hors
+    //       lectures statiques inferieures a 64 : pour ces trois VS, mid = { 86..95 } uniquement,
+    //       donc f[32..63] est entierement libre -- 32 slots contigus au lieu de 4.
+    //
+    // Comportement inchange quand BORKED3DS_V3DV_LOW_MIRROR n'est pas arme, et identique a v118
+    // pour les VS purs texte dont la fenetre dynamique commence a 64.
+    const LowMirrorPlan kNoMirror{false, 0, 0, 64};
 
     const UniformReadScan scan = ScanVertexShaderUniformReads(program_code, main_offset);
     if (!scan.analyzed) {
@@ -321,62 +344,96 @@ LowMirrorPlan VertexShaderLowMirrorPlan(const ProgramCode& program_code, u32 mai
     if (scan.high.empty()) {
         return kNoMirror; // no dynamic upper-bank read -> nothing to mirror
     }
-    // A VS that also reads the low bank f[<32] cannot be safely mirrored: the generated
-    // get_offset_register_sw reads a FIXED low window for every draw of this VS, but such a VS is in
-    // practice SHARED between the dialogue glyphs and 3D geometry (observed: main_offset=0 drives both
-    // Sonic's text and his model). Any base/count that helps the text starves the 3D high reads (and
-    // vice-versa) -> corrupted geometry. Only mirror VSs dedicated to the upper-bank text path, i.e.
-    // those that never touch f[<32]; those have a free full f[0..31] window (base=0, count=32).
-    // Hybrid VSs (Sonic Lost World) are NOT mirrored -- since vDIRA they are instead routed to the
-    // per-draw software vertex shader fallback (see VertexShaderNeedsSoftwareVSFallback below).
+
+    // Fenetre source reellement necessaire, bornee a la banque haute.
+    const u32 src_base = *scan.high.begin();
+    const u32 src_span = *scan.high.rbegin() - src_base + 1u;
+    const u32 src_room = 96u - src_base;
+
+    // v118 a l'identique : VS dedie a la banque haute dont la fenetre commence a 64. Aucun autre
+    // jeu ne change de comportement par ce patch.
+    if (scan.low.empty() && src_base == 64u) {
+        return LowMirrorPlan{true, 0u, 32u, 64u};
+    }
+
+    // Un VS hybride (lectures basses ET hautes) reste derriere BORKED3DS_V3DV_HYBRID_MIRROR.
+    // Justification v128 : v127 a mesure samples=0 pour chaque draw software-A8, donc le repli
+    // logiciel ne sert pas ces draws ; le miroir est la seule voie qui reste pour le chemin
+    // accelere. Le risque nomme par v128 -- ecraser des slots bas utilises par la 3D du VS
+    // partage -- est fortement reduit ici puisque la destination evite desormais toute lecture
+    // connue, basse comme mediane.
     if (!scan.low.empty()) {
-        // vDIRA v128 (BORKED3DS_V3DV_HYBRID_MIRROR=1): try to mirror hybrid VSs into the free
-        // window ABOVE their known low reads. Justification: v127 proved samples=0 for every
-        // software-A8 draw -- the software Vulkan path is dead at the V3DV driver level, so the
-        // fallback for hybrid VSs (Sonic Lost World glyphs) actually delivers nothing. A mirror
-        // into f[max(low)+1 .. 31] is the only chance left for the ACCELERATED path to serve the
-        // glyphs; it reads the mirror via a dynamic LOW-bank index, the one uniform path V3DV
-        // compiles correctly (v118 baseline). The write also happens in the upload, so guest data
-        // in those slots is CLOBBERED for this VS -- if the 3D side of the shared VS reads
-        // f[base + aL] where base <= max(low) and aL is large enough to reach the mirror window,
-        // the 3D visual is expected to be corrupted. This is exactly the risk the v118 code
-        // refused to take; v128 takes it because the alternative (software fallback) is proven
-        // ineffective, and the outcome is now measurable in one shot: text visible + 3D intact ->
-        // ship; text visible + 3D broken -> the shared-VS conflict is real, dual-VS emission
-        // becomes the next step; nothing visible -> V3DV also miscompiles the low-bank read here,
-        // which closes the accelerated Vulkan path entirely for this class of shader.
         static const bool hybrid_mirror =
             std::getenv("BORKED3DS_V3DV_HYBRID_MIRROR") != nullptr;
         if (!hybrid_mirror) {
             return kNoMirror;
         }
-        // Highest low base index actually read by the VS. `scan.low` is a std::set of u32, so
-        // the last element is the maximum. base = highest_low + 1; count = 32 - base (so the
-        // mirror never leaves the low bank). Refuse if there is no room for at least one slot
-        // (i.e. the VS reads f[31] statically or through a low-classed dynamic index).
-        const u32 highest_low = *scan.low.rbegin();
-        if (highest_low >= 31u) {
-            return kNoMirror;
+    }
+
+    // Plus grande plage contigue libre dans f[0..63].
+    std::array<bool, 64> used{};
+    for (const u32 v : scan.low) {
+        if (v < 64u) {
+            used[v] = true;
         }
-        const u32 hybrid_base = highest_low + 1u;
-        const u32 hybrid_count = 32u - hybrid_base;
-        // One-shot log per distinct VS so the applied plan is visible in the field.
+    }
+    for (const u32 v : scan.mid) {
+        if (v < 64u) {
+            used[v] = true;
+        }
+    }
+    u32 best_base = 0u;
+    u32 best_len = 0u;
+    u32 cur_base = 0u;
+    u32 cur_len = 0u;
+    for (u32 i = 0; i < 64u; ++i) {
+        if (!used[i]) {
+            if (cur_len == 0u) {
+                cur_base = i;
+            }
+            ++cur_len;
+            if (cur_len > best_len) {
+                best_len = cur_len;
+                best_base = cur_base;
+            }
+        } else {
+            cur_len = 0u;
+        }
+    }
+
+    // Refuser plutot que de livrer une fenetre trop courte : une fenetre tronquee est exactement
+    // ce qui produisait le texte faux de v298.
+    if (best_len < src_span) {
         static const bool trace_mirror_map =
             std::getenv("BORKED3DS_V3DV_TRACE_MIRROR_MAP") != nullptr;
         if (trace_mirror_map) {
-            static std::set<u32> seen_hybrid;
-            if (seen_hybrid.insert(main_offset).second) {
+            static std::set<u32> seen_refused;
+            if (seen_refused.insert(main_offset).second) {
                 LOG_INFO(HW_GPU,
-                         "vDIRA v128 hybrid_mirror plan main_offset={} base={} count={} "
-                         "highest_low={}",
-                         main_offset, hybrid_base, hybrid_count, highest_low);
+                         "v130 mirror REFUSED main_offset={} src_base={} src_span={} "
+                         "best_free_base={} best_free_len={}",
+                         main_offset, src_base, src_span, best_base, best_len);
             }
         }
-        return LowMirrorPlan{true, hybrid_base, hybrid_count};
+        return kNoMirror;
     }
-    const u32 base = 0u;
-    const u32 count = 32u;
-    return LowMirrorPlan{true, base, count};
+
+    const u32 count = std::min(best_len, src_room);
+
+    // One-shot log per distinct VS so the applied plan is visible in the field.
+    static const bool trace_mirror_map =
+        std::getenv("BORKED3DS_V3DV_TRACE_MIRROR_MAP") != nullptr;
+    if (trace_mirror_map) {
+        static std::set<u32> seen_plan;
+        if (seen_plan.insert(main_offset).second) {
+            LOG_INFO(HW_GPU,
+                     "v130 mirror plan main_offset={} src_base={} src_span={} dst_base={} "
+                     "count={} free_len={} hybrid={}",
+                     main_offset, src_base, src_span, best_base, count, best_len,
+                     static_cast<u32>(!scan.low.empty()));
+        }
+    }
+    return LowMirrorPlan{true, best_base, count, src_base};
 }
 
 bool VertexShaderWantsLowMirror(const ProgramCode& program_code, u32 main_offset) {
@@ -1239,7 +1296,9 @@ private:
                     VertexShaderLowMirrorPlan(program_code, main_offset);
                 const u32 base = plan.ok ? plan.base : 0u;
                 const u32 count = plan.ok ? plan.count : 32u;
-                shader.AddLine("return uniforms.f[{} + clamp(index - 64, 0, {})];", base,
+                // v130-MIRROR : la relecture part de la base source reelle du plan, plus de 64.
+                const u32 src_base = plan.ok ? plan.src_base : 64u;
+                shader.AddLine("return uniforms.f[{} + clamp(index - {}, 0, {})];", base, src_base,
                                count - 1u);
             } else {
                 shader.AddLine("return texelFetch(vs_pica_f_tbo, int(f_texel_base) + index);");
