@@ -372,6 +372,15 @@ GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& ren
 
 GraphicsPipeline::~GraphicsPipeline() = default;
 
+namespace {
+// v342 : le correctif d'inversion de pool est ACTIF PAR DEFAUT. La variable ne sert qu'a le
+// desactiver pour bissection, jamais a l'activer.
+[[nodiscard]] bool IsPoolInversionFixDisabled() {
+    static const bool cached = std::getenv("BORKED3DS_V3DV_DISABLE_POOL_INVERSION_FIX") != nullptr;
+    return cached;
+}
+} // namespace
+
 bool GraphicsPipeline::TryBuild(bool wait_built) {
     const bool a7z61_ultra_quiet = IsV115DA7Z61GraphicsPipelineUltraQuietTryBuildEnabled();
     const bool a7z57_trace =
@@ -401,7 +410,7 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
         LogV115DA7Z57GraphicsPipeline("v115d_a7z57 trybuild_before_pending_branch");
     }
 
-    if (is_pending) {
+    if (is_pending.load(std::memory_order_acquire)) {
         // v331 : is_pending etait arme ligne 539 et n'etait remis a zero NULLE PART dans le
         // fichier ni dans son en-tete (verifie par grep). Un pipeline dont le build de fond
         // s'est termine restait donc pris dans cette branche, qui renvoie wait_built -- donc
@@ -410,7 +419,7 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
         // reste reel pour tout appelant qui n'a pas cette garde. On desarme ici, sur le thread
         // de rendu, sans introduire de course : IsDone() est la seule source de verite.
         if (IsDone()) {
-            is_pending = false;
+            is_pending.store(false, std::memory_order_release);
             if (a7z57_trace) {
                 LogV115DA7Z57GraphicsPipeline("v331 trybuild_pending_cleared_done");
             }
@@ -550,7 +559,7 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
         AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_before_queue_worker_build");
     }
     worker->QueueWork([this] { Build(); });
-    is_pending = true;
+    is_pending.store(true, std::memory_order_release);
     if (a7z57_trace) {
         LogV115DA7Z57GraphicsPipeline("v115d_a7z57 trybuild_after_queue_worker_build");
     }
@@ -792,6 +801,32 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         }
         if (a7z57_trace) {
             LogV115DA7Z57GraphicsPipeline("v115d_a7z57 build_before_shader_wait_done");
+        }
+        // v342 -- INVERSION DE POOL. Build() est mis en file sur le meme pool que la
+        // compilation des shaders (vk_pipeline_cache.cpp:982, 1019, 1044 pour les shaders,
+        // :542 puis vk_graphics_pipeline.cpp:538 pour les pipelines). Attendre ici un shader
+        // dont la tache de compilation est DERRIERE nous dans la meme file FIFO bloque un
+        // thread du pool definitivement : WaitDone() est un condition_variable sans delai.
+        // Avec trois threads, trois Build() bloques suffisent a figer tout le pool -- plus
+        // aucun shader ne compile, plus aucun pipeline ne se termine.
+        //
+        // Mesure v341, 15 s dans une zone lourde de Kid Icarus, 50 442 appels a TryBuild :
+        //   25 184 refus avec shaders_pending=1  (un module de shader jamais pret)
+        //   25 174 refus dans la branche is_pending (un Build() qui ne revient jamais)
+        //       84 pipelines seulement ont atteint la mise en file, et aucun n'a abouti
+        // Corrobore par v332a : porter le pool de 3 a 4 threads avait EMPIRE les choses, ce
+        // qu'un modele de debit ne predit pas mais qu'une inversion de pool predit exactement.
+        //
+        // On ne bloque donc plus. On libere le thread et on desarme is_pending pour que
+        // TryBuild reevalue proprement : il refusera tant que les shaders ne sont pas prets,
+        // puis remettra Build() en file. Aucun pipeline n'est perdu, aucun thread n'est retenu.
+        // Desactivable par BORKED3DS_V3DV_DISABLE_POOL_INVERSION_FIX=1.
+        if (!IsPoolInversionFixDisabled() && !shader->IsDone()) {
+            if (a7z57_trace) {
+                LogV115DA7Z57GraphicsPipeline("v342 build_yield_shader_not_done");
+            }
+            is_pending.store(false, std::memory_order_release);
+            return false;
         }
         if (PipelineBuildStats::Enabled()) {
             const auto sw_t0 = std::chrono::steady_clock::now();

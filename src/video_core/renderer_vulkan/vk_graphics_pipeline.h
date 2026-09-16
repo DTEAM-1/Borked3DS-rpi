@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
 #include "common/thread_worker.h"
 #include "video_core/pica/regs_pipeline.h"
 #include "video_core/pica/regs_rasterizer.h"
@@ -192,7 +193,9 @@ private:
 
     PipelineInfo info;
     std::array<Shader*, 3> stages;
-    bool is_pending{};
+    // v342 : ecrit par le thread du pool de compilation (fin de Build), lu par le thread de
+    // rendu (TryBuild). Doit etre atomique.
+    std::atomic<bool> is_pending{false};
 };
 
 } // namespace Vulkan
