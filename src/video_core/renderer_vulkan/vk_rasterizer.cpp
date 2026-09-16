@@ -729,6 +729,35 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     }
 }
 
+// v328 -- deux defauts de conception, mesures de v320 a v327, corriges ici.
+// Les deux correctifs sont ACTIFS PAR DEFAUT et ne peuvent qu'etre DESACTIVES par variable,
+// jamais actives : un correctif ne doit pas dependre d'une variable pour exister.
+//
+// Defaut 1 : l'attente inconditionnelle. Sous STRICT_COMPAT, wait_built etait force a true
+// pour TOUS les draws, ce qui ecrasait la regle amont (n'attendre que les draws <= 6 sommets).
+// Mesure v326 : UN seul shader neuf provoque un gel de 12 s, alors que la meme compilation
+// prend 45 a 75 ms quand le thread ne bloque pas (v321, 135 compilations en 11 s). Pendant le
+// gel le log est totalement silencieux, service IR compris : tout l'emulateur bloque, pas
+// seulement le thread de rendu. L'attente affame le compilateur qu'elle attend.
+[[nodiscard]] bool IsUpstreamWaitRuleDisabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_UPSTREAM_WAIT_RULE");
+    return cached;
+}
+
+// Defaut 2 : la bascule logicielle. Un pipeline non pret faisait return false, donc
+// PicaCore::DrawArrays retombait sur le chemin vertex logiciel -- mort dans ce fork depuis
+// v127 (samples=0) : geometrie fausse (la "tige") et 7 a 8 ms par draw. Mesure v324 :
+// 163 draws logiciels par image, 38 128 sommets, 335 ms, 10 % de vitesse. Mesure v325 :
+// 6 147 refus en 15 s, tous "pipeline_not_ready", ZERO refus structurel -- le chemin
+// accelere sait faire ces draws, il n'a que leur pipeline en retard.
+// On saute donc le draw pour cette image : ni attente, ni logiciel. C'est le comportement
+// standard de tout emulateur a compilation de shaders asynchrone, et c'est ce qui permet
+// de jouer sans cache chaud.
+[[nodiscard]] bool IsSkipNotReadyDrawDisabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_DISABLE_SKIP_NOT_READY_DRAW");
+    return cached;
+}
+
 [[nodiscard]] bool IsStrictAccelInternalDryRunEnabled() {
     // v114: plan de travail 1 does not advance beyond function entry. v100 reached the
     // PICA pre_call but no raw-enter marker appeared. The recommended v114 emulators.cfg keeps
@@ -1797,6 +1826,12 @@ std::atomic<u32> g_a7z12_draws_completed{0};
 std::atomic<u32> g_a7z12_draws_succeeded{0};
 std::atomic<u32> g_a7z12_draws_accel{0};      // draws avec accelerate=true (VS materiel)
 std::atomic<u32> g_a7z12_draws_software{0};   // draws avec accelerate=false (VS software CPU)
+// v328 : draws SAUTES pour cette image parce que leur pipeline n'etait pas encore compile.
+// Ni attente (gel de 8 a 14 s mesure en v326), ni bascule logicielle (geometrie fausse et
+// 7 a 8 ms par draw, mesure en v324). L'objet reapparait des que son pipeline est pret,
+// une a trois images plus tard. Doit tendre vers 0 en regime etabli ; s'il reste eleve en
+// permanence, c'est que la compilation ne converge pas et le diagnostic repart de la.
+std::atomic<u32> g_v328_draws_skipped{0};
 // Le NOMBRE de draws ne mesure pas le cout : un seul draw software de 3000 sommets coute
 // plus cher que 200 draws de 6 sommets (glyphes). On compte donc aussi les SOMMETS de
 // chaque cote, seule unite proportionnelle au travail du VS PICA execute sur CPU.
@@ -2628,6 +2663,7 @@ void RasterizerVulkan::TickFrame() {
         const u32 succeeded = g_a7z12_draws_succeeded.exchange(0, std::memory_order_relaxed);
         const u32 accel = g_a7z12_draws_accel.exchange(0, std::memory_order_relaxed);
         const u32 software = g_a7z12_draws_software.exchange(0, std::memory_order_relaxed);
+        const u32 skipped = g_v328_draws_skipped.exchange(0, std::memory_order_relaxed);
         const u64 vaccel = g_a7z12_verts_accel.exchange(0, std::memory_order_relaxed);
         const u64 vsoft = g_a7z12_verts_software.exchange(0, std::memory_order_relaxed);
         const u64 vtotal = vaccel + vsoft;
@@ -2749,7 +2785,7 @@ void RasterizerVulkan::TickFrame() {
             last_census_frame = frame;
             LOG_INFO(Render_Vulkan,
                      "A7Z12_FRAME_CENSUS frame={} frame_us={} entered={} completed={} "
-                     "succeeded={} absorbed={} starved={} accel={} software={} sw_pct={} "
+                     "succeeded={} absorbed={} starved={} accel={} software={} skipped={} sw_pct={} "
                      "verts_accel={} verts_sw={} sw_vert_pct={} sw_verts_per_draw={} "
                      "swhist_le8={} swhist_le32={} swhist_le128={} swhist_le512={} "
                      "swhist_le2048={} swhist_gt2048={} "
@@ -2760,7 +2796,7 @@ void RasterizerVulkan::TickFrame() {
                      "d_fb={} d_rp={} d_ar={} d_cl={} f_fb={} f_rp={} f_ar={} f_cl={} fbn={} "
                      "seq_count={} seq_draws={} fbh0={} fbh1={} fbh2={} fbh3={} fbh4={} fbh5={}",
                      frame, frame_us, entered, completed, succeeded, absorbed,
-                     static_cast<u32>(starved), accel, software,
+                     static_cast<u32>(starved), accel, software, skipped,
                      entered > 0 ? (software * 100 / entered) : 0,
                      vaccel, vsoft, vtotal > 0 ? (vsoft * 100 / vtotal) : 0,
                      software > 0 ? (vsoft / software) : 0,
@@ -7362,8 +7398,15 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
         return true;
     }
 
-    const bool wait_built = IsStrictCompatEnabled() ? true
-                                                    : (!async_shaders || regs.pipeline.num_vertices <= 6);
+    // v328 defaut 1 : la regle amont s'applique aussi sous STRICT_COMPAT. On n'attend que
+    // les draws minuscules (<= 6 sommets : les quads de glyphes, dont le pipeline se compile
+    // en quelques dizaines de ms et dont l'absence se verrait comme du texte manquant). Tout
+    // le reste n'attend jamais, ce qui supprime les gels de 8 a 14 s mesures en v326 sans
+    // toucher au texte, qui avait ete recupere en v318.
+    const bool upstream_wait_rule = !async_shaders || regs.pipeline.num_vertices <= 6;
+    const bool wait_built = IsUpstreamWaitRuleDisabled()
+                                ? (IsStrictCompatEnabled() ? true : upstream_wait_rule)
+                                : upstream_wait_rule;
 
     if (consume_if_stage_limited(14, "before_bind_pipeline")) {
         return true;
@@ -7374,6 +7417,17 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
             LOG_INFO(Render_Vulkan,
                      "TRACE_ACCEL_STAGE v114 pipeline_not_ready wait_built={} strict_compat={}",
                      wait_built, static_cast<u32>(IsStrictCompatEnabled()));
+        }
+        // v328 defaut 2 : le pipeline n'est pas encore compile. On SAUTE le draw pour cette
+        // image au lieu de renvoyer false, qui ferait retomber PicaCore::DrawArrays sur le
+        // chemin vertex logiciel. Rien n'a ete enregistre dans le command buffer a ce point :
+        // c'est exactement la meme sortie propre que la coupe TG14 ("Draw supprime : meme
+        // sortie propre que le chemin normal") et que le dry-run interne juste en dessous.
+        // BindPipeline() a deja appele TryBuild(), donc la compilation progresse en tache de
+        // fond et le draw passera dans une image ou deux, avec sa geometrie correcte.
+        if (!IsSkipNotReadyDrawDisabled()) {
+            g_v328_draws_skipped.fetch_add(1, std::memory_order_relaxed);
+            return true;
         }
         return false;
     }
