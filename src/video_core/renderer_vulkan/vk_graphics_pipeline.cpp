@@ -402,6 +402,20 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
     }
 
     if (is_pending) {
+        // v331 : is_pending etait arme ligne 539 et n'etait remis a zero NULLE PART dans le
+        // fichier ni dans son en-tete (verifie par grep). Un pipeline dont le build de fond
+        // s'est termine restait donc pris dans cette branche, qui renvoie wait_built -- donc
+        // false des qu'on n'attend plus. PipelineCache::BindPipeline garde IsDone() avant
+        // d'appeler TryBuild, ce qui masquait le defaut dans le cas nominal, mais le piege
+        // reste reel pour tout appelant qui n'a pas cette garde. On desarme ici, sur le thread
+        // de rendu, sans introduire de course : IsDone() est la seule source de verite.
+        if (IsDone()) {
+            is_pending = false;
+            if (a7z57_trace) {
+                LogV115DA7Z57GraphicsPipeline("v331 trybuild_pending_cleared_done");
+            }
+            return true;
+        }
         if (a7z51_trace) {
             AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z51 trybuild_pending_branch");
             AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z51 trybuild_pending_return", wait_built);

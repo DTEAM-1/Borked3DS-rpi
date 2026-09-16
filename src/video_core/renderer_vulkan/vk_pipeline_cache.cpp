@@ -117,6 +117,30 @@ namespace {
     return limited;
 }
 
+// v331 : taille du pool de compilation.
+// L'expression d'origine, std::max(std::thread::hardware_concurrency(), 2U) >> 1, donne
+// DEUX threads sur un Pi5 quatre coeurs. Et ce meme pool sert QUATRE sortes de travail :
+// compilation des vertex shaders, des geometry shaders, des fragment shaders, et
+// construction des pipelines.
+// Mesure v330, 15 s de jeu sur Kid Icarus : 10 671 appels a TryBuild, dont
+//     4 733 refuses parce qu'un shader n'est pas encore compile (shaders_pending),
+//     5 804 refuses parce qu'un build est deja en file (is_pending),
+//       134 seulement ont atteint la mise en file.
+// Soit 98 % de refus pour cause de compilation en retard, pendant que le thread de rendu
+// tourne a 24-30 % de CPU. Le plafond n'est donc ni le GPU ni le rendu : c'est ce pool.
+// Autre contrainte mesuree : trybuild_cache_control_supported=0 sur toutes les occurrences.
+// V3DV n'expose pas VK_EXT_pipeline_creation_cache_control, donc le chemin de build
+// synchrone rapide est inaccessible et la file asynchrone est la SEULE voie disponible.
+// Defaut porte a hardware_concurrency - 1 (3 sur Pi5), en laissant un coeur au reste.
+// BORKED3DS_V3DV_PIPELINE_WORKER_THREADS permet de revenir a 2, ou d'essayer 4, sans rebuild.
+[[nodiscard]] std::size_t V331PipelineWorkerThreadCount() {
+    const u32 hw = std::max(std::thread::hardware_concurrency(), 2u);
+    const u32 fallback = hw > 2u ? hw - 1u : 2u;
+    const u32 requested =
+        GetEnvU32Limited("BORKED3DS_V3DV_PIPELINE_WORKER_THREADS", fallback, 8u);
+    return static_cast<std::size_t>(std::max(requested, 1u));
+}
+
 void AppendV115DPipelineCacheTraceLine(const std::string& line) {
     static std::mutex trace_mutex;
     std::lock_guard<std::mutex> lock{trace_mutex};
@@ -238,7 +262,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              RenderManager& renderpass_cache_, DescriptorUpdateQueue& update_queue_)
     : instance{instance_}, scheduler{scheduler_}, renderpass_cache{renderpass_cache_},
       update_queue{update_queue_},
-      num_worker_threads{std::max(std::thread::hardware_concurrency(), 2U) >> 1},
+      num_worker_threads{V331PipelineWorkerThreadCount()},
       workers{num_worker_threads, "Pipeline workers"},
       descriptor_heaps{
           DescriptorHeap{instance, scheduler.GetMasterSemaphore(), BUFFER_BINDINGS, 32},
