@@ -375,10 +375,20 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
     glslang::SpvOptions options;
 
     if (Settings::values.optimize_spirv_output.GetValue() == Settings::OptimizeSpirv::Disabled) {
-        // Use built-in glslang to enable default optimizations on the generated SPIR-V code
-        options.disableOptimizer = false;
+        // Disabled must mean DISABLED. The previous code enabled glslang's built-in optimizer
+        // here (disableOptimizer = false, optimizeSize = true), which routes through
+        // glslang::SpirvToolsTransform -> spvtools::Optimizer with a fixed pass list that
+        // includes CreateInlineExhaustivePass and CreateScalarReplacementPass. On the large
+        // decompiled PICA vertex shaders (~26 700 SPIR-V words) that pass list grows the output
+        // vector without bound: the kernel logged four refused allocations of 12 GiB + a few
+        // pages from EmuThread (runs Q and R, byte-identical), after the preceding successful
+        // doubling had already eaten ~5.8 GB of the Pi's 8 GB. Result: system-wide memory
+        // famine, thrashing, and death of the emulator. There was therefore NO setting value
+        // that turned SPIR-V optimization off: 0 swapped glslang's optimizer in, 1 and 2 swapped
+        // the external SPIRV-Tools one in. Now 0 genuinely emits raw SPIR-V.
+        options.disableOptimizer = true;
         options.validate = false;
-        options.optimizeSize = true;
+        options.optimizeSize = false;
     } else {
         // Use external SPIRV-Tools to perform optimizations
         options.disableOptimizer = true;
