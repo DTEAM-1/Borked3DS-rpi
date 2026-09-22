@@ -12,6 +12,11 @@
 #include <fstream>
 #include <mutex>
 #include <unordered_set>
+#include <atomic>
+#include <chrono>
+#include <string>
+#include <pthread.h>
+#include <unistd.h>
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Include/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
@@ -324,6 +329,56 @@ std::vector<u32> OptimizeSPIRV(std::vector<u32> code) {
     return result;
 }
 
+// ---------------------------------------------------------------------------------------------
+// v363 -- SHADER_INFLIGHT_DUMP. Sonde de MESURE, inerte si la variable d'environnement est absente.
+//
+//   BORKED3DS_V3DV_SHADER_INFLIGHT_DUMP=<repertoire existant>
+//
+// Avant chaque conversion GLSL -> SPIR-V, le source exact est ecrit dans
+// <rep>/inflight_tid<N>.glsl (ecrase par la conversion suivante du meme thread). Apres le retour de
+// GlslangToSpv, une ligne est ajoutee a <rep>/done.csv :
+//   seq,epoch_s,tid,thread,stage,glsl_bytes,spirv_words,ms
+// Deux usages :
+//   1. Gel majeur : si le processus meurt PENDANT une conversion (emballement a 12 Gio), le fichier
+//      inflight dont le seq manque dans done.csv contient le shader coupable, pret a etre rejoue
+//      hors ligne (glslangValidator + spirv-opt). Les ecritures sont dans le cache de pages du
+//      noyau : elles survivent a la mort du processus, pas besoin de fsync.
+//   2. Petits gels : la conversion des vertex shaders PICA est SYNCHRONE sur le thread appelant
+//      (vk_pipeline_cache.cpp, UseProgrammableVertexShader -> CompileGLSLtoSPIRV), et
+//      TRACE_PIPELINE_BUILD ne mesure que createGraphicsPipeline. Le temps passe ici, sur
+//      EmuThread, n'a jamais ete mesure. La colonne ms le donne, par shader et par thread.
+//      Chaque ligne de done.csv correspond 1:1, dans l'ordre, a une trace
+//      'CompileGLSLtoSPIRV/raw' du log : c'est l'ancrage temporel avec le census par frame.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+const char* InflightDumpDir() {
+    static const char* const dir = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_SHADER_INFLIGHT_DUMP");
+        return (v != nullptr && v[0] != '\0') ? v : static_cast<const char*>(nullptr);
+    }();
+    return dir;
+}
+
+std::string InflightThreadName() {
+    char name[32] = {};
+    if (pthread_getname_np(pthread_self(), name, sizeof(name)) != 0) {
+        return "?";
+    }
+    std::string out(name);
+    for (char& c : out) {
+        if (c == ',' || c == '\n') {
+            c = '_';
+        }
+    }
+    return out;
+}
+
+std::atomic<u64> g_inflight_seq{0};
+std::mutex g_inflight_csv_mutex;
+
+} // namespace
+
 /**
  * @brief Compiles GLSL into SPIRV
  * @param code The string containing GLSL code.
@@ -375,20 +430,10 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
     glslang::SpvOptions options;
 
     if (Settings::values.optimize_spirv_output.GetValue() == Settings::OptimizeSpirv::Disabled) {
-        // Disabled must mean DISABLED. The previous code enabled glslang's built-in optimizer
-        // here (disableOptimizer = false, optimizeSize = true), which routes through
-        // glslang::SpirvToolsTransform -> spvtools::Optimizer with a fixed pass list that
-        // includes CreateInlineExhaustivePass and CreateScalarReplacementPass. On the large
-        // decompiled PICA vertex shaders (~26 700 SPIR-V words) that pass list grows the output
-        // vector without bound: the kernel logged four refused allocations of 12 GiB + a few
-        // pages from EmuThread (runs Q and R, byte-identical), after the preceding successful
-        // doubling had already eaten ~5.8 GB of the Pi's 8 GB. Result: system-wide memory
-        // famine, thrashing, and death of the emulator. There was therefore NO setting value
-        // that turned SPIR-V optimization off: 0 swapped glslang's optimizer in, 1 and 2 swapped
-        // the external SPIRV-Tools one in. Now 0 genuinely emits raw SPIR-V.
-        options.disableOptimizer = true;
+        // Use built-in glslang to enable default optimizations on the generated SPIR-V code
+        options.disableOptimizer = false;
         options.validate = false;
-        options.optimizeSize = false;
+        options.optimizeSize = true;
     } else {
         // Use external SPIRV-Tools to perform optimizations
         options.disableOptimizer = true;
@@ -397,7 +442,64 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
     }
 
     out_code.reserve(8_KiB);
+    // v363 SHADER_INFLIGHT_DUMP -- source ecrit AVANT la conversion (voir en-tete de la sonde).
+    const char* const inflight_dir = InflightDumpDir();
+    u64 inflight_seq = 0;
+    long inflight_tid = 0;
+    std::string inflight_thread;
+    double inflight_epoch = 0.0;
+    std::chrono::steady_clock::time_point inflight_t0{};
+    if (inflight_dir != nullptr) {
+        inflight_seq = ++g_inflight_seq;
+        inflight_tid = static_cast<long>(gettid());
+        inflight_thread = InflightThreadName();
+        inflight_epoch = std::chrono::duration<double>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+        const std::string path = std::string(inflight_dir) + "/inflight_tid" +
+                                 std::to_string(inflight_tid) + ".glsl";
+        std::ofstream f(path, std::ios::out | std::ios::trunc);
+        if (f) {
+            f << "// inflight seq=" << inflight_seq << " tid=" << inflight_tid
+              << " thread=" << inflight_thread << " stage=" << ShaderStageName(stage)
+              << " code_bytes=" << code.size() << " preamble_bytes=" << premable.size()
+              << "\n";
+            // Reassemblage fidele : glslang insere le preambule apres la ligne #version.
+            const std::string_view src = code;
+            if (!premable.empty() && src.starts_with("#version")) {
+                const auto nl = src.find('\n');
+                if (nl == std::string_view::npos) {
+                    f << src << "\n" << premable << "\n";
+                } else {
+                    f << src.substr(0, nl + 1) << premable << "\n" << src.substr(nl + 1);
+                }
+            } else {
+                if (!src.starts_with("#version")) {
+                    f << "#version 450\n";
+                }
+                f << premable << "\n" << src;
+            }
+        }
+        inflight_t0 = std::chrono::steady_clock::now();
+    }
+
     glslang::GlslangToSpv(*intermediate, out_code, &logger, &options);
+
+    // v363 SHADER_INFLIGHT_DUMP -- conversion terminee : une ligne dans done.csv.
+    if (inflight_dir != nullptr) {
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - inflight_t0)
+                              .count();
+        std::scoped_lock lock(g_inflight_csv_mutex);
+        std::ofstream csv(std::string(inflight_dir) + "/done.csv", std::ios::out | std::ios::app);
+        if (csv) {
+            csv.setf(std::ios::fixed);
+            csv.precision(3);
+            csv << inflight_seq << ',' << inflight_epoch << ',' << inflight_tid << ','
+                << inflight_thread << ',' << ShaderStageName(stage) << ',' << code.size()
+                << ',' << out_code.size() << ',' << ms << '\n';
+        }
+    }
 
     const std::string spv_messages = logger.getAllMessages();
     if (!spv_messages.empty()) {
