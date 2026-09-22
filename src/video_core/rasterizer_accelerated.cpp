@@ -299,6 +299,32 @@ void RasterizerAccelerated::AddTriangle(const Pica::OutputVertex& v0, const Pica
                      color_hash.load());
         }
     }
+    // v366 -- GARDE-FOU B : taille du lot de sommets logiciel.
+    //
+    // Complement du garde-fou A (pica_core.cpp, LoadVertices). A borne UN draw ; B borne le LOT,
+    // pour le cas ou des draws s'accumuleraient sans que vertex_batch soit jamais vide. C'est ici
+    // meme que gdb a pris l'emballement sur le fait (run W) : emplace_back -> mmap de 1,5 Gio,
+    // puis 3, 6 et 12 Gio. Au-dela du plafond, le triangle est abandonne et on le journalise.
+    // Plafond : BORKED3DS_V3DV_SOFTWARE_MAX_BATCH (defaut 2 097 152 sommets = ~176 Mo,
+    // 0 = illimite).
+    {
+        static const std::size_t v366_batch_cap = [] {
+            const char* v = std::getenv("BORKED3DS_V3DV_SOFTWARE_MAX_BATCH");
+            if (v == nullptr || v[0] == '\0') {
+                return std::size_t{1} << 21;
+            }
+            return static_cast<std::size_t>(std::strtoull(v, nullptr, 10));
+        }();
+        if (v366_batch_cap != 0 && vertex_batch.size() + 3 > v366_batch_cap) [[unlikely]] {
+            static std::atomic<u64> v366_dropped{0};
+            const u64 k = ++v366_dropped;
+            if (k <= 16 || (k % 65536) == 0) {
+                LOG_ERROR(Render, "V366_SW_BATCH_CAP triangle_abandonne#{} lot={} sommets plafond={}",
+                          k, vertex_batch.size(), v366_batch_cap);
+            }
+            return;
+        }
+    }
     vertex_batch.emplace_back(v0, false);
     vertex_batch.emplace_back(v1, AreQuaternionsOpposite(v0, v1));
     vertex_batch.emplace_back(v2, AreQuaternionsOpposite(v0, v2));
