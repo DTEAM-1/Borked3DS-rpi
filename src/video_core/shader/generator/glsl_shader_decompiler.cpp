@@ -35,6 +35,29 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+/// v364 -- plafonds des garde-fous, lus une seule fois. 0 = illimite (comportement d'origine).
+[[nodiscard]] u32 MaxSubroutines() {
+    static const u32 cap = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_MAX_SUBROUTINES");
+        if (v == nullptr || v[0] == '\0') {
+            return 1024u;
+        }
+        return static_cast<u32>(std::strtoul(v, nullptr, 10));
+    }();
+    return cap;
+}
+
+[[nodiscard]] std::size_t MaxShaderBytes() {
+    static const std::size_t cap = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_MAX_SHADER_BYTES");
+        if (v == nullptr || v[0] == '\0') {
+            return std::size_t{16} * 1024 * 1024;
+        }
+        return static_cast<std::size_t>(std::strtoull(v, nullptr, 10));
+    }();
+    return cap;
+}
+
 /// Describes the behaviour of code path of a given entry point and a return point.
 enum class ExitMethod {
     Undetermined, ///< Internal value. Only occur when analyzing JMP loop.
@@ -86,6 +109,29 @@ private:
         auto iter = subroutines.find(Subroutine{begin, end});
         if (iter != subroutines.end())
             return *iter;
+
+        // v364 -- GARDE-FOU 1 : plafond du nombre de sous-routines.
+        //
+        // Les sous-routines sont indexees par le couple (begin, end) sur un espace de
+        // MAX_PROGRAM_CODE_LENGTH^2 = 4096^2 = 16,7 MILLIONS de couples possibles, et chacune est
+        // ensuite emise comme une fonction GLSL couvrant sa plage d'instructions. Sans plafond, un
+        // programme PICA au flot de controle tres imbrique fait exploser l'enumeration : le source
+        // GLSL genere passe de ~40 Ko a plusieurs gigaoctets. Mesure sur Pi5 (runs O a U, Kid
+        // Icarus) : EmuThread a 4,4 Go residents et 10,9 Go virtuels, puis quatre demandes
+        // refusees de 12 Gio + quelques pages (identiques a l'octet entre les runs), famine
+        // memoire de toute la machine et mort de l'emulateur.
+        //
+        // Au-dela du plafond on leve DecompileFail : DecompileProgram le rattrape deja et renvoie
+        // une chaine vide, et UseProgrammableVertexShader retombe alors sur le chemin logiciel
+        // pour CETTE configuration uniquement. Tous les autres shaders restent inchanges.
+        // Plafond ajustable par BORKED3DS_V3DV_MAX_SUBROUTINES (0 = illimite, comportement
+        // d'origine). Les shaders sains en utilisent une poignee.
+        if (const u32 cap = MaxSubroutines(); cap != 0 && subroutines.size() >= cap) {
+            throw DecompileFail(
+                fmt::format("Subroutine cap reached: {} subroutines, {} exit-method entries, "
+                            "while adding range [{}, {}) -- runaway control-flow analysis",
+                            subroutines.size(), exit_method_map.size(), begin, end));
+        }
 
         Subroutine subroutine{begin, end};
         subroutine.exit_method = Scan(begin, end, subroutine.labels);
@@ -596,6 +642,16 @@ public:
     void AddNewLine() {
         DEBUG_ASSERT(scope >= 0);
         shader_source += '\n';
+        // v364 -- GARDE-FOU 2 : plafond de taille du source GLSL emis. Independant du garde-fou 1 :
+        // il attrape tout emballement de l'etage d'emission, meme avec peu de sous-routines. Un
+        // vertex shader PICA sain fait ~40 Ko ; le plafond par defaut est a 16 Mo, soit 400 fois
+        // plus. Ajustable par BORKED3DS_V3DV_MAX_SHADER_BYTES (0 = illimite).
+        if (const std::size_t cap = MaxShaderBytes();
+            cap != 0 && shader_source.size() > cap) [[unlikely]] {
+            throw DecompileFail(fmt::format(
+                "Emitted GLSL exceeded {} bytes ({} emitted) -- runaway shader emission", cap,
+                shader_source.size()));
+        }
     }
 
     std::string MoveResult() {
