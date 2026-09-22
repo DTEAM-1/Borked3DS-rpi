@@ -4,6 +4,10 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdlib>
+#include <string>
 #include <cmath>
 #include <numeric>
 #include <boost/circular_buffer.hpp>
@@ -115,9 +119,84 @@ static void RunInterpreter(const ShaderSetup& setup, ShaderUnit& state,
 
     u32 iteration = 0;
     bool should_stop = false;
+
+    // v367 -- SONDE-GARDE-FOU : passage de shader sans fin.
+    //
+    // Runs X et Y (Kid Icarus, savestate) : apres le correctif v366 la memoire ne s'emballe plus,
+    // mais EmuThread reste pris dans un seul draw qui produit des triangles sans fin (8,3 M/s en
+    // JIT, 1,9 M/s en interpreteur) et plus aucune frame ne se termine. Pile gdb du run Y
+    // (interpreteur, entierement symbolisee) : InterpreterEngine::Run <- PicaCore::LoadVertices
+    // <- DrawArrays. Le JIT et l'interpreteur bouclent tous deux : ce n'est pas un bug du JIT,
+    // c'est le programme PICA qui, avec l'etat que lui donne l'emulateur, ne rencontre jamais END.
+    // JMPC/JMPU peuvent sauter en arriere sans limite, et rien ne borne program_counter a
+    // MAX_PROGRAM_CODE_LENGTH.
+    //
+    // Au-dela de BORKED3DS_V3DV_SHADER_MAX_STEPS instructions (defaut 4 194 304 ; 0 = illimite)
+    // dans UN passage, on releve les 48 adresses suivantes, puis on journalise : point d'entree,
+    // nombre d'EMIT, adresses et instructions de la boucle, uniformes booleens et entiers,
+    // conditional_code, profondeur des piles -- et on arrete ce passage. Actif en interpreteur
+    // seulement (use_shader_jit=false) : c'est un instrument de diagnostic.
+    static const u64 v367_cap = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_SHADER_MAX_STEPS");
+        if (v == nullptr || v[0] == '\0') {
+            return u64{1} << 22;
+        }
+        return static_cast<u64>(std::strtoull(v, nullptr, 10));
+    }();
+    u64 v367_steps = 0;
+    u64 v367_emits = 0;
+    std::array<u32, 48> v367_trace{};
+    std::size_t v367_trace_n = 0;
+
     while (!should_stop) {
         bool is_break = false;
         const u32 old_program_counter = program_counter;
+
+        if (program_counter >= MAX_PROGRAM_CODE_LENGTH) [[unlikely]] {
+            static std::atomic<u64> v367_oob{0};
+            const u64 k = ++v367_oob;
+            if (k <= 8 || (k % 256) == 0) {
+                LOG_ERROR(HW_GPU,
+                          "V367_SHADER_PC_HORS_PROGRAMME #{} pc={:#x} entree={:#x} pas={} emits={}",
+                          k, program_counter, entry_point, v367_steps, v367_emits);
+            }
+            break;
+        }
+        if (v367_cap != 0 && ++v367_steps > v367_cap) [[unlikely]] {
+            if (v367_trace_n < v367_trace.size()) {
+                v367_trace[v367_trace_n++] = program_counter;
+            } else {
+                static std::atomic<u64> v367_runaway{0};
+                const u64 k = ++v367_runaway;
+                if (k <= 8 || (k % 256) == 0) {
+                    std::string pcs;
+                    std::string ops;
+                    for (std::size_t t = 0; t < v367_trace_n; ++t) {
+                        pcs += fmt::format("{:03x} ", v367_trace[t]);
+                        ops += fmt::format("{:08x} ", program_code[v367_trace[t]]);
+                    }
+                    std::string bools;
+                    for (std::size_t bi = 0; bi < uniforms.b.size(); ++bi) {
+                        bools += uniforms.b[bi] ? '1' : '0';
+                    }
+                    LOG_ERROR(
+                        HW_GPU,
+                        "V367_SHADER_SANS_FIN #{} pas={} emits={} entree={:#x} "
+                        "b[0..15]={} i0=({},{},{}) i1=({},{},{}) i2=({},{},{}) i3=({},{},{}) "
+                        "cc=({},{}) piles call={} loop={} if={} | pc: {}| instr: {}",
+                        k, v367_steps, v367_emits, entry_point, bools,
+                        static_cast<u32>(uniforms.i[0].x), static_cast<u32>(uniforms.i[0].y),
+                        static_cast<u32>(uniforms.i[0].z), static_cast<u32>(uniforms.i[1].x),
+                        static_cast<u32>(uniforms.i[1].y), static_cast<u32>(uniforms.i[1].z),
+                        static_cast<u32>(uniforms.i[2].x), static_cast<u32>(uniforms.i[2].y),
+                        static_cast<u32>(uniforms.i[2].z), static_cast<u32>(uniforms.i[3].x),
+                        static_cast<u32>(uniforms.i[3].y), static_cast<u32>(uniforms.i[3].z),
+                        state.conditional_code[0], state.conditional_code[1], call_stack.size(),
+                        loop_stack.size(), if_stack.size(), pcs, ops);
+                }
+                break;
+            }
+        }
 
         const Instruction instr(program_code[program_counter]);
         const SwizzlePattern swizzle(swizzle_data[instr.common.operand_desc_id]);
@@ -652,6 +731,7 @@ static void RunInterpreter(const ShaderSetup& setup, ShaderUnit& state,
                 auto* emitter = state.emitter_ptr;
                 ASSERT_MSG(emitter, "Execute EMIT on VS");
                 emitter->Emit(state.output);
+                ++v367_emits; // v367 : compte des EMIT du passage (GS)
                 break;
             }
 
