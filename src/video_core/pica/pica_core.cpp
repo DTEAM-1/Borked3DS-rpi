@@ -2511,6 +2511,42 @@ void PicaCore::LoadVertices(bool is_indexed) {
                  pipeline.vertex_attributes.GetPhysicalBaseAddress());
     }
 
+    // v366 -- GARDE-FOU A : nombre de sommets d'un draw sur le chemin LOGICIEL.
+    //
+    // Cause racine du gel majeur, capturee par gdb (run W, point d'arret sur mmap > 1 Gio) :
+    //   EmuThread -> PicaCore lambda -> PrimitiveAssembler::SubmitVertex
+    //             -> RasterizerAccelerated::AddTriangle -> vertex_batch.emplace_back
+    //             -> operator new -> malloc -> mmap(1 610 616 832)
+    // vertex_batch (HardwareVertex, 88 octets) double : 1,5 -> 3 -> 6 -> 12 Gio + 4096, soit
+    // exactement la demande refusee a l'octet pres dans les runs Q, R, U et V. 1,5 Gio = ~18
+    // millions de sommets dans un seul lot : aucun draw 3DS legitime n'en approche.
+    //
+    // La boucle ci-dessous n'est bornee QUE par le registre PICA num_vertices. Le chemin
+    // accelere, lui, est borne par SAFE_PICA_HW_MAX_VERTICES : un draw au-dela est renvoye ICI,
+    // sans aucune limite. On saute donc tout draw logiciel au-dela du plafond. DrawTriangles()
+    // ignore deja proprement un lot vide. Le log dit si num_vertices etait aberrant.
+    // Plafond : BORKED3DS_V3DV_SOFTWARE_MAX_VERTICES (defaut 1 048 576, 0 = illimite).
+    {
+        static const u32 v366_cap = GetEnvU32("BORKED3DS_V3DV_SOFTWARE_MAX_VERTICES", 1u << 20);
+        const u32 v366_n = static_cast<u32>(pipeline.num_vertices);
+        if (v366_cap != 0 && v366_n > v366_cap) [[unlikely]] {
+            static std::atomic<u64> v366_skipped{0};
+            const u64 k = ++v366_skipped;
+            if (k <= 16 || (k % 256) == 0) {
+                LOG_ERROR(HW_GPU,
+                          "V366_SW_VERTEX_CAP draw_saute#{} num_vertices={} ({:#010x}) plafond={} "
+                          "indexed={} vertex_offset={} base_address={:#010X} index_offset={:#x} "
+                          "index_u16={}",
+                          k, v366_n, v366_n, v366_cap, is_indexed,
+                          static_cast<u32>(pipeline.vertex_offset),
+                          static_cast<u32>(pipeline.vertex_attributes.GetPhysicalBaseAddress()),
+                          static_cast<u32>(pipeline.index_array.offset),
+                          pipeline.index_array.format != 0);
+            }
+            return;
+        }
+    }
+
     const PAddr base_address = pipeline.vertex_attributes.GetPhysicalBaseAddress();
     const auto loader = VertexLoader(memory, pipeline);
     regs.internal.rasterizer.ValidateSemantics();
