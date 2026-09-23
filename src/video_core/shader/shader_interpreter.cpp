@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdlib>
 #include <string>
 #include <cmath>
@@ -193,6 +194,36 @@ static void RunInterpreter(const ShaderSetup& setup, ShaderUnit& state,
                         static_cast<u32>(uniforms.i[3].y), static_cast<u32>(uniforms.i[3].z),
                         state.conditional_code[0], state.conditional_code[1], call_stack.size(),
                         loop_stack.size(), if_stack.size(), pcs, ops);
+
+                    // v368 -- les VALEURS. La boucle du run Z est : 062 CMP c90 < r0 ;
+                    // 063 JMPC sortie si (c90.x < r0.x) OU NON(c90.y < r0.y) ; 0b3 ADD r0 = r0 + r1 ;
+                    // 0b5 JMPU b0 -> 062. Elle ne finit que si r0 depasse la limite c90. Il faut donc
+                    // c90, r0, r1 (le pas), r2, les entrees v0..v7 du geometry shader, et le code
+                    // d'initialisation (du point d'entree jusqu'a la boucle) pour savoir d'ou vient r1.
+                    // Chaque composante : valeur decimale et bits du float32 (0x...) pour voir une
+                    // absorption de precision f24 (r0 + r1 == r0).
+                    const auto v4 = [](const auto& v) {
+                        return fmt::format("({:.9g}/{:08x} {:.9g}/{:08x} {:.9g}/{:08x} {:.9g}/{:08x})",
+                                           v.x.ToFloat32(), std::bit_cast<u32>(v.x.ToFloat32()),
+                                           v.y.ToFloat32(), std::bit_cast<u32>(v.y.ToFloat32()),
+                                           v.z.ToFloat32(), std::bit_cast<u32>(v.z.ToFloat32()),
+                                           v.w.ToFloat32(), std::bit_cast<u32>(v.w.ToFloat32()));
+                    };
+                    std::string ins;
+                    for (u32 k2 = 0; k2 < 8; ++k2) {
+                        ins += fmt::format(" v{}={}", k2, v4(state.input[k2]));
+                    }
+                    LOG_ERROR(HW_GPU,
+                              "V368_VALEURS #{} c90={} r0={} r1={} r2={} r3={} |{}", k,
+                              v4(uniforms.f[90]), v4(state.temporary[0]), v4(state.temporary[1]),
+                              v4(state.temporary[2]), v4(state.temporary[3]), ins);
+                    std::string prog;
+                    for (u32 a = entry_point; a < entry_point + 96 && a < MAX_PROGRAM_CODE_LENGTH;
+                         ++a) {
+                        prog += fmt::format("{:08x} ", program_code[a]);
+                    }
+                    LOG_ERROR(HW_GPU, "V368_PROGRAMME #{} entree={:#x} mots: {}", k, entry_point,
+                              prog);
                 }
                 break;
             }
