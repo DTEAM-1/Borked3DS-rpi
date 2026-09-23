@@ -284,6 +284,22 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .is_vulkan = true,
     };
     BuildLayout();
+
+    // v370 -- CACHE PIPELINE PERDUE APRES CHARGEMENT D'UN SAVESTATE.
+    //
+    // La cache pipeline Vulkan (pipeline_cache) n'etait creee que par LoadDiskCache(), appelee
+    // une seule fois au demarrage par EmuThread (bootmanager.cpp, LoadDiskResources). Or charger
+    // un savestate fait System::serialize -> Shutdown(true) -> Init() : TOUT le renderer est
+    // recree, donc un nouveau PipelineCache, et LoadDiskResources n'est plus jamais rappele.
+    // Consequences mesurees (runs Z4b/Z4c, Kid Icarus) :
+    //   - toute la partie tourne avec pipeline_cache = VK_NULL_HANDLE : aucun pipeline n'est
+    //     mis en cache, les memes pipelines de 14 a 34 s se recompilent a chaque session ;
+    //   - a la sortie, SaveDiskCache() voit !pipeline_cache et n'ecrit rien ;
+    //   - le seul fichier ecrit est celui de l'ancienne instance detruite au chargement du
+    //     savestate : 40 octets (en-tete seul), date = heure du chargement du savestate.
+    // Correctif : creer et charger la cache des la construction. LoadDiskCache() devient
+    // idempotente, donc l'appel de LoadDiskResources au demarrage ne change rien.
+    LoadDiskCache();
 }
 
 void PipelineCache::BuildLayout() {
@@ -306,6 +322,11 @@ PipelineCache::~PipelineCache() {
 }
 
 void PipelineCache::LoadDiskCache() {
+    // v370 : idempotent. Deja creee (par le constructeur) -> ne pas la remplacer : des
+    // pipelines en cours de compilation sur les workers utilisent deja ce handle.
+    if (pipeline_cache) {
+        return;
+    }
     if (!Settings::values.use_disk_shader_cache || !EnsureDirectories()) {
         return;
     }
@@ -344,6 +365,7 @@ void PipelineCache::LoadDiskCache() {
     }
 
     LOG_INFO(Render_Vulkan, "Loading pipeline cache with size {} KB", cache_file_size / 1024);
+    LOG_WARNING(Render_Vulkan, "V370_PIPELINE_CACHE_CHARGEE octets={}", cache_file_size);
     cache_info.initialDataSize = cache_file_size;
     cache_info.pInitialData = cache_data.data();
 }
@@ -370,6 +392,7 @@ void PipelineCache::SaveDiskCache() {
         LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
         return;
     }
+    LOG_WARNING(Render_Vulkan, "V370_PIPELINE_CACHE_SAUVEE octets={}", cache_data.size());
 }
 
 bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
