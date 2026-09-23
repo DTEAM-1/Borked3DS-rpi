@@ -31,6 +31,45 @@
 namespace Pica {
 
 // ---------------------------------------------------------------------------------------------
+// v369 -- SONDE DE PROVENANCE des uniformes flottants du geometry shader.
+//
+// Run Z3 (V368) : la boucle 062..0b5 du GS (entree 0x59) ne se termine jamais parce que r0, r1,
+// r2 recoivent des valeurs absurdes (r0.x = 2,8e9, r1.y = 5,7e13, inf). Ces registres sont
+// charges depuis les uniformes flottants c14, c15, c21, c22 du GS. Question : QUI les a ecrits
+// en dernier, et avec quels mots bruts ?
+//
+//   origine : 0 jamais ecrit depuis le demarrage, 1 envoi GS f24, 2 envoi GS f32,
+//             3 copie miroir depuis le VS (configuration partagee, use_gs == No).
+//   seq     : numero d'ordre global de la derniere ecriture (0 = jamais).
+//   brut    : les 3 (f24) ou 4 (f32) mots de la file au moment de l'ecriture (envoi GS seulement).
+//
+// Deuxieme mesure, la plus decisive : la file d'envoi (uniform_queue) doit etre VIDE chaque fois
+// que le jeu reecrit le registre d'index. Si elle contient deja 1 ou 2 mots, tous les envois
+// suivants sont decales d'autant et chaque uniforme recu est un melange de deux vecteurs.
+// Compteurs g_v369_*_desync + journal V369_FILE_DESALIGNEE (8 premieres, puis 1 sur 1024).
+//
+// Aucune variable d'environnement : quelques ecritures atomiques par envoi d'uniforme, aucun
+// journal en regime normal. Lu par shader_interpreter.cpp au moment de la coupure V367.
+// ---------------------------------------------------------------------------------------------
+std::array<std::atomic<u32>, 96> g_v369_gs_uniform_origin{};
+std::array<std::atomic<u32>, 96> g_v369_gs_uniform_seq{};
+std::array<std::array<std::atomic<u32>, 4>, 96> g_v369_gs_uniform_raw{};
+std::atomic<u32> g_v369_seq{0};
+std::atomic<u32> g_v369_gs_desync{0};
+std::atomic<u32> g_v369_vs_desync{0};
+std::atomic<const void*> g_v369_gs_setup_ptr{nullptr};
+// Parametres du dernier draw logiciel (LoadVertices), lus a la coupure V367 :
+//  0 indexed  1 vertex_offset  2 num_vertices  3 use_gs  4 gs_mode  5 gs_start_index
+//  6 gs_stride  7 gs_fixed_vertex_num  8 variable_primitive  9 variable_main_num
+// 10 vs_output_num  11 base_address  12 index_offset  13 index_u16  14 decalage_applique
+// 15 numero du draw logiciel
+std::array<std::atomic<u32>, 16> g_v369_draw{};
+// Les 8 derniers sommets soumis (identifiant de sommet lu) et leur position dans le draw.
+std::array<std::atomic<u32>, 8> g_v369_last_vertex{};
+std::array<std::atomic<u32>, 8> g_v369_last_vertex_pos{};
+std::atomic<u32> g_v369_last_vertex_n{0};
+
+// ---------------------------------------------------------------------------------------------
 // TG12 (BORKED3DS_TG12_LUT_WRITES=1) -- sonde de MESURE, inerte hors variable d'environnement.
 //
 // Question laissee ouverte par TG09/TG10/TG11 (25/08). La LUT ReflectRed est mesuree ENTIEREMENT
@@ -1334,6 +1373,35 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
                   id, regs.internal.reg_array[id], mask);
     }
 
+    // v369 : le registre d'index des uniformes flottants est le mot qui precede set_value[0].
+    {
+        constexpr u32 v369_gs_index_reg = PICA_REG_INDEX(gs.uniform_setup.set_value[0]) - 1;
+        constexpr u32 v369_vs_index_reg = PICA_REG_INDEX(vs.uniform_setup.set_value[0]) - 1;
+        if (id == v369_gs_index_reg || id == v369_vs_index_reg) [[unlikely]] {
+            const bool v369_is_gs = (id == v369_gs_index_reg);
+            ShaderSetup& v369_setup = v369_is_gs ? gs_setup : vs_setup;
+            const u32 pending = v369_setup.uniform_queue.index;
+            if (pending != 0) {
+                const u32 k = (v369_is_gs ? g_v369_gs_desync : g_v369_vs_desync)
+                                  .fetch_add(1, std::memory_order_relaxed) +
+                              1;
+                if (k <= 8 || (k % 1024) == 0) {
+                    const auto& us = v369_is_gs ? regs.internal.gs.uniform_setup
+                                                : regs.internal.vs.uniform_setup;
+                    LOG_ERROR(HW_GPU,
+                              "V369_FILE_DESALIGNEE #{} unite={} mots_en_attente={} "
+                              "file=({:08x} {:08x} {:08x} {:08x}) nouvel_index={} f32={} "
+                              "ancien_reg={:08x} nouveau_reg={:08x} masque={:x}",
+                              k, v369_is_gs ? "gs" : "vs", pending,
+                              v369_setup.uniform_queue.buffer[0], v369_setup.uniform_queue.buffer[1],
+                              v369_setup.uniform_queue.buffer[2], v369_setup.uniform_queue.buffer[3],
+                              us.index.Value(), us.IsFloat32() ? 1 : 0, old_value,
+                              regs.internal.reg_array[id], mask);
+                }
+            }
+        }
+    }
+
     switch (id) {
     case PICA_REG_INDEX(trigger_irq):
         signal_interrupt(Service::GSP::InterruptId::P3D);
@@ -1557,9 +1625,24 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     case PICA_REG_INDEX(gs.uniform_setup.set_value[4]):
     case PICA_REG_INDEX(gs.uniform_setup.set_value[5]):
     case PICA_REG_INDEX(gs.uniform_setup.set_value[6]):
-    case PICA_REG_INDEX(gs.uniform_setup.set_value[7]):
-        gs_setup.WriteUniformFloatReg(regs.internal.gs, value);
+    case PICA_REG_INDEX(gs.uniform_setup.set_value[7]): {
+        const bool v369_f32 = regs.internal.gs.uniform_setup.IsFloat32();
+        const auto v369_index = gs_setup.WriteUniformFloatReg(regs.internal.gs, value);
+        if (v369_index && *v369_index < g_v369_gs_uniform_origin.size()) {
+            const u32 i = *v369_index;
+            g_v369_gs_setup_ptr.store(&gs_setup, std::memory_order_relaxed);
+            g_v369_gs_uniform_origin[i].store(v369_f32 ? 2u : 1u, std::memory_order_relaxed);
+            g_v369_gs_uniform_seq[i].store(g_v369_seq.fetch_add(1, std::memory_order_relaxed) + 1,
+                                           std::memory_order_relaxed);
+            // La file vient d'etre videe (index remis a 0) mais son tampon garde les mots recus.
+            for (u32 w = 0; w < 4; ++w) {
+                g_v369_gs_uniform_raw[i][w].store(
+                    (w < 3 || v369_f32) ? gs_setup.uniform_queue.buffer[w] : 0u,
+                    std::memory_order_relaxed);
+            }
+        }
         break;
+    }
 
     case PICA_REG_INDEX(gs.program.set_word[0]):
     case PICA_REG_INDEX(gs.program.set_word[1]):
@@ -1639,6 +1722,21 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
             regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No && index) {
             gs_setup.uniforms.f[index.value()] = vs_setup.uniforms.f[index.value()];
+            // v369 : provenance = copie miroir depuis le VS.
+            if (index.value() < g_v369_gs_uniform_origin.size()) {
+                const u32 i = index.value();
+                g_v369_gs_setup_ptr.store(&gs_setup, std::memory_order_relaxed);
+                g_v369_gs_uniform_origin[i].store(3u, std::memory_order_relaxed);
+                g_v369_gs_uniform_seq[i].store(
+                    g_v369_seq.fetch_add(1, std::memory_order_relaxed) + 1,
+                    std::memory_order_relaxed);
+                const bool f32 = regs.internal.vs.uniform_setup.IsFloat32();
+                for (u32 w = 0; w < 4; ++w) {
+                    g_v369_gs_uniform_raw[i][w].store(
+                        (w < 3 || f32) ? vs_setup.uniform_queue.buffer[w] : 0u,
+                        std::memory_order_relaxed);
+                }
+            }
         }
         break;
     }
@@ -2572,20 +2670,78 @@ void PicaCore::LoadVertices(bool is_indexed) {
                   index_u16);
     }
 
+    // v369 -- CORRECTIF DE FIDELITE : un draw INDEXE n'utilise pas vertex_offset.
+    //
+    // Citra et Azahar (LoadVertices) : « Indexed rendering doesn't use the start offset » --
+    // vertex = index_array[i] en indexe, i + vertex_offset seulement en non indexe. Le chemin
+    // accelere de ce depot fait deja pareil (RasterizerAccelerated::AnalyzeVertexArray : l'offset
+    // n'intervient que dans la branche non indexee). Ce chemin LOGICIEL, lui, ajoutait
+    // vertex_offset aux indices : un draw indexe qui suit un draw non indexe herite d'un offset
+    // perime et lit d'AUTRES sommets que ceux du jeu. Tous les draws avec geometry shader
+    // passent par ici. En mode GS VariablePrimitive, le premier indice est le NOMBRE de sommets
+    // de la primitive (SubmitIndex) : l'offset le fausse aussi.
+    //
+    // Ancien comportement retabli seulement si BORKED3DS_V3DV_INDEXED_ADD_VERTEX_OFFSET=1
+    // (variable absente = correctif actif). Chaque draw indexe avec un offset non nul est compte
+    // et journalise (V369_INDEXE_OFFSET, 8 premiers puis 1 sur 1024) : c'est la preuve que
+    // l'ancien code lisait de mauvais sommets.
+    static const bool v369_legacy_offset =
+        GetEnvU32("BORKED3DS_V3DV_INDEXED_ADD_VERTEX_OFFSET", 0) != 0;
+    const u32 v369_indexed_offset =
+        (is_indexed && v369_legacy_offset) ? static_cast<u32>(pipeline.vertex_offset) : 0u;
+    {
+        static std::atomic<u32> v369_draw_seq{0};
+        const u32 draw_no = v369_draw_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+        const u32 vs_out_num = static_cast<u32>(pipeline.vs_outmap_total_minus_1_a) + 1;
+        const u32 vals[16] = {
+            is_indexed ? 1u : 0u,
+            static_cast<u32>(pipeline.vertex_offset),
+            static_cast<u32>(pipeline.num_vertices),
+            static_cast<u32>(pipeline.use_gs.Value()),
+            static_cast<u32>(pipeline.gs_config.mode.Value()),
+            static_cast<u32>(pipeline.gs_config.start_index),
+            static_cast<u32>(pipeline.gs_config.stride_minus_1) + 1,
+            static_cast<u32>(pipeline.gs_config.fixed_vertex_num_minus_1) + 1,
+            static_cast<u32>(pipeline.variable_primitive),
+            static_cast<u32>(pipeline.variable_vertex_main_num_minus_1) + 1,
+            vs_out_num,
+            static_cast<u32>(base_address),
+            static_cast<u32>(index_info.offset),
+            index_u16 ? 1u : 0u,
+            v369_indexed_offset,
+            draw_no,
+        };
+        for (std::size_t v = 0; v < 16; ++v) {
+            g_v369_draw[v].store(vals[v], std::memory_order_relaxed);
+        }
+        g_v369_last_vertex_n.store(0, std::memory_order_relaxed);
+        if (is_indexed && pipeline.vertex_offset != 0) [[unlikely]] {
+            static std::atomic<u64> v369_offset_draws{0};
+            const u64 k = ++v369_offset_draws;
+            if (k <= 8 || (k % 1024) == 0) {
+                LOG_ERROR(HW_GPU,
+                          "V369_INDEXE_OFFSET #{} vertex_offset={} num_vertices={} use_gs={} "
+                          "gs_mode={} applique={} draw_logiciel={}",
+                          k, static_cast<u32>(pipeline.vertex_offset),
+                          static_cast<u32>(pipeline.num_vertices), vals[3], vals[4],
+                          v369_indexed_offset, draw_no);
+            }
+        }
+    }
     const auto read_index = [&](u32 index) -> u32 {
         if (!is_indexed) {
             return index + pipeline.vertex_offset;
         }
         if (available_indices == 0) {
-            return pipeline.vertex_offset;
+            return v369_indexed_offset;
         }
         const u32 clamped_index = std::min(index, available_indices - 1);
         if (index_u16) {
             u16 value{};
             std::memcpy(&value, index_bytes + clamped_index * sizeof(u16), sizeof(u16));
-            return static_cast<u32>(value) + pipeline.vertex_offset;
+            return static_cast<u32>(value) + v369_indexed_offset;
         }
-        return static_cast<u32>(index_bytes[clamped_index]) + pipeline.vertex_offset;
+        return static_cast<u32>(index_bytes[clamped_index]) + v369_indexed_offset;
     };
 
     constexpr std::size_t VertexCacheSize = 64;
@@ -2642,6 +2798,12 @@ void PicaCore::LoadVertices(bool is_indexed) {
             }
         }
 
+        {
+            // v369 : anneau des 8 derniers sommets soumis (identifiant lu, position dans le draw).
+            const u32 slot = g_v369_last_vertex_n.fetch_add(1, std::memory_order_relaxed) % 8;
+            g_v369_last_vertex[slot].store(vertex, std::memory_order_relaxed);
+            g_v369_last_vertex_pos[slot].store(index, std::memory_order_relaxed);
+        }
         geometry_pipeline.SubmitVertex(vs_output);
     }
 
