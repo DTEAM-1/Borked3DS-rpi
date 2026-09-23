@@ -11,6 +11,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <memory>
+#include <unordered_map>
 
 #include "common/common_paths.h"
 #include "common/file_util.h"
@@ -1080,24 +1082,113 @@ bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
         }
     }
 
-    const auto [it, new_config] = programmable_vertex_map.try_emplace(config);
+    // v373 -- VOIE HYBRIDE POUR LES VERTEX SHADERS (equivalent de l'ubershader de Dolphin ou de
+    // l'interpreteur de shaders de RPCS3).
+    //
+    // Mesure S2b/S3a (Sonic) : un gel de ~1 s = six conversions GLSL -> SPIR-V de vertex shaders
+    // PICA (~27 000 mots, ~170 ms chacune) faites en serie sur EmuThread. v372 les met en cache,
+    // ce qui regle le jeu A CHAUD ; a froid, la conversion doit encore etre faite une fois.
+    //
+    // Au lieu de geler, on la fait en arriere-plan : tant que le SPIR-V n'est pas pret, on
+    // renvoie false. RasterizerVulkan::AccelerateDrawBatch echoue alors a SetupVertexShader() et
+    // PicaCore::DrawArrays bascule sur LoadVertices() : le vertex shader PICA est execute par le
+    // CPU (JIT) et l'objet est dessine normalement par le chemin logiciel -- le meme que celui de
+    // tous les draws avec geometry shader. Ni gel, ni objet manquant. Des que le SPIR-V est
+    // pret, le draw suivant reprend le chemin Vulkan.
+    //   - A chaud (SPIR-V deja en cache v372) : pris tout de suite, aucun passage par le CPU.
+    //   - Conversions sur un pool dedie (BORKED3DS_V3DV_VS_TRANSLATE_THREADS, defaut 2, max 4),
+    //     separe des workers de pipelines qu'un pipeline poison peut occuper 30 s.
+    //   - BORKED3DS_V3DV_DISABLE_HYBRID_VS=1 : retour a la conversion synchrone (comparaison).
+    //   - Journal V373_VS_HYBRIDE : lance / pret (avec le nombre de draws passes par le CPU).
+    // Etat partage entre instances de PipelineCache (un savestate recree le renderer) : la cle
+    // est config.Hash(), qui designe le meme programme PICA et donc le meme SPIR-V.
+    struct V373Pending {
+        std::atomic<bool> done{false};
+        std::vector<u32> code;
+        std::chrono::steady_clock::time_point t_submit{};
+        u64 cpu_draws{0};
+    };
+    static const bool v373_disabled = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_DISABLE_HYBRID_VS");
+        return v != nullptr && v[0] != '\0';
+    }();
+    static std::unordered_map<u64, std::shared_ptr<V373Pending>> v373_pending;
+    static u64 v373_launched = 0;
+    static u64 v373_ready = 0;
+    static u64 v373_cpu_draws_total = 0;
+
+    auto it = programmable_vertex_map.find(config);
+    const bool new_config = it == programmable_vertex_map.end();
     if (new_config) {
         const bool use_spirv = Settings::values.spirv_shader_gen.GetValue();
         const vk::Device device = instance.GetDevice();
 
         std::vector<u32> code;
+        const u64 v373_key = config.Hash();
 
         if (use_spirv && false) {
             // TODO: Generate vertex shader SPIRV from the given VS program
             // code = SPIRV::GenerateVertexShader(setup, config, profile);
+        } else if (const auto pit = v373_pending.find(v373_key); pit != v373_pending.end()) {
+            V373Pending& p = *pit->second;
+            if (!p.done.load(std::memory_order_acquire)) {
+                ++p.cpu_draws;
+                ++v373_cpu_draws_total;
+                return false; // conversion en cours : ce draw passe par le chemin CPU
+            }
+            code = std::move(p.code);
+            ++v373_ready;
+            LOG_WARNING(Render_Vulkan,
+                        "V373_VS_HYBRIDE pret cle={:016x} mots={} delai_ms={:.1f} "
+                        "draws_cpu={} | lances={} prets={} draws_cpu_total={}",
+                        v373_key, code.size(),
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - p.t_submit)
+                            .count(),
+                        p.cpu_draws, v373_launched, v373_ready, v373_cpu_draws_total);
+            v373_pending.erase(pit);
+            if (code.empty()) {
+                LOG_ERROR(Render_Vulkan, "Failed to translate programmable vertex shader");
+                programmable_vertex_map.emplace(config, nullptr);
+                return false;
+            }
         } else {
             const std::string program = GLSL::GenerateVertexShader(setup, config, true);
             if (program.empty()) {
                 LOG_ERROR(Render_Vulkan, "Failed to retrieve programmable vertex shader");
-                programmable_vertex_map[config] = nullptr;
+                programmable_vertex_map.emplace(config, nullptr);
                 return false;
             }
-            code = CompileGLSLtoSPIRV(program, vk::ShaderStageFlagBits::eVertex, device);
+            if (v373_disabled) {
+                code = CompileGLSLtoSPIRV(program, vk::ShaderStageFlagBits::eVertex, device);
+            } else if (!TryGetCachedSPIRV(program, vk::ShaderStageFlagBits::eVertex, code)) {
+                static Common::ThreadWorker v373_workers(
+                    GetEnvU32Limited("BORKED3DS_V3DV_VS_TRANSLATE_THREADS", 2, 4),
+                    "VS translate");
+                auto pending = std::make_shared<V373Pending>();
+                pending->t_submit = std::chrono::steady_clock::now();
+                pending->cpu_draws = 1;
+                ++v373_cpu_draws_total;
+                ++v373_launched;
+                v373_pending.emplace(v373_key, pending);
+                v373_workers.QueueWork([pending, program, device] {
+                    pending->code =
+                        CompileGLSLtoSPIRV(program, vk::ShaderStageFlagBits::eVertex, device);
+                    pending->done.store(true, std::memory_order_release);
+                });
+                LOG_WARNING(Render_Vulkan,
+                            "V373_VS_HYBRIDE lance cle={:016x} glsl_octets={} | lances={} "
+                            "prets={} draws_cpu_total={}",
+                            v373_key, program.size(), v373_launched, v373_ready,
+                            v373_cpu_draws_total);
+                return false; // ce draw passe par le chemin CPU
+            }
+        }
+
+        if (code.empty()) {
+            LOG_ERROR(Render_Vulkan, "Failed to translate programmable vertex shader");
+            programmable_vertex_map.emplace(config, nullptr);
+            return false;
         }
 
         const u64 code_hash = Common::ComputeHash64(std::as_bytes(std::span(code)));
@@ -1113,7 +1204,7 @@ bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
             });
         }
 
-        it->second = &shader;
+        it = programmable_vertex_map.emplace(config, &shader).first;
     }
 
     Shader* const shader{it->second};

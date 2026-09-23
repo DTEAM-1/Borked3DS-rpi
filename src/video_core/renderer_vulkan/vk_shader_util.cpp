@@ -559,6 +559,55 @@ std::vector<u32> CompileGLSLtoSPIRVUncached(std::string_view code, vk::ShaderSta
 
 } // namespace
 
+// v373 -- consultation de la cache SANS jamais convertir. Utilisee par la voie hybride des
+// vertex shaders (vk_pipeline_cache.cpp) : a chaud, le SPIR-V est pris ici tout de suite ; a
+// froid, la conversion part en arriere-plan et le draw passe par le chemin CPU en attendant.
+bool TryGetCachedSPIRV(std::string_view code, vk::ShaderStageFlagBits stage,
+                       std::vector<u32>& out, std::string_view premable) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const V372Key key{
+        static_cast<u32>(stage),
+        static_cast<u32>(Settings::values.optimize_spirv_output.GetValue()),
+        static_cast<u32>(code.size()),
+        static_cast<u32>(premable.size()),
+        Common::ComputeHash64(code.data(), code.size()),
+        Common::ComputeHash64(premable.data(), premable.size()),
+    };
+    {
+        std::scoped_lock lock(g_v372_mutex);
+        if (const auto it = g_v372_mem.find(key); it != g_v372_mem.end()) {
+            out = it->second;
+            g_v372_hit_mem.fetch_add(1, std::memory_order_relaxed);
+            V372Log("memoire", stage, out.size(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                              t0)
+                        .count());
+            LogSpirvTrace(out, "CompileGLSLtoSPIRV/cache", stage);
+            return true;
+        }
+    }
+    if (!V372DiskEnabled()) {
+        return false;
+    }
+    std::vector<u32> result;
+    if (!V372ReadDisk(key, result)) {
+        return false;
+    }
+    g_v372_hit_disk.fetch_add(1, std::memory_order_relaxed);
+    LogSpirvTrace(result, "CompileGLSLtoSPIRV/cache", stage);
+    {
+        std::scoped_lock lock(g_v372_mutex);
+        if (g_v372_mem.size() < V372_MEM_MAX_ENTRIES) {
+            g_v372_mem.emplace(key, result);
+        }
+    }
+    V372Log("disque", stage, result.size(),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                .count());
+    out = std::move(result);
+    return true;
+}
+
 std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBits stage,
                                     vk::Device device, std::string_view premable) {
     const auto t0 = std::chrono::steady_clock::now();

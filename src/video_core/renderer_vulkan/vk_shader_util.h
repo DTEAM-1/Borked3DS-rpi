@@ -6,6 +6,8 @@
 #pragma once
 
 #include <span>
+#include <string_view>
+#include <vector>
 
 #include "video_core/renderer_vulkan/vk_common.h"
 
@@ -26,6 +28,13 @@ std::vector<u32> OptimizeSPIRV(std::vector<u32> code);
  */
 std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBits stage,
                                     vk::Device device, std::string_view premable = "");
+
+/**
+ * @brief v373 : returns the SPIR-V for this GLSL if it is already in the conversion cache
+ *        (memory or disk, v372), without ever converting. Returns false on a cache miss.
+ */
+bool TryGetCachedSPIRV(std::string_view code, vk::ShaderStageFlagBits stage,
+                       std::vector<u32>& out, std::string_view premable = "");
 
 /**
  * @brief Creates a vulkan shader module from GLSL by converting it to SPIR-V using glslang.
