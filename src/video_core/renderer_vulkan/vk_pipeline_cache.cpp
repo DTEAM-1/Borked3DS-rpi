@@ -658,6 +658,87 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
 
         bool try_build_result = pipeline->TryBuild(effective_wait_built);
 
+        // v371 -- COURTE ATTENTE A LA PREMIERE DEMANDE D'UN PIPELINE.
+        //
+        // Avec A7Z41_PIPELINE_FORCE_NOWAIT_ON_WAIT, un pipeline qui n'est pas pret fait sauter
+        // son draw, meme si sa construction ne prend que 0,1 ms (cache V3DV chaude, v370). Test
+        // S1 (Sonic, a chaud, census par image) : 28 images avec draws sautes en 10 grappes,
+        // exactement aux instants ou de nouveaux pipelines sont construits, alors que tous se
+        // construisent en 0,0-0,3 ms (compile_max_ms). Symptome visible : une boite de texte
+        // affichee sans son texte puis corrigee, un petit flash noir, 3-4 fois par session.
+        //
+        // Correctif : a la PREMIERE demande d'un pipeline (new_pipeline) seulement, attendre
+        // qu'il soit pret, au plus BORKED3DS_V3DV_PIPELINE_FIRST_WAIT_MS (defaut 16 ms, 0 =
+        // desactive), en sondant toutes les 250 us. Un pipeline lent (poison de 10-40 s) coute
+        // donc au plus 16 ms une seule fois, puis retrouve le comportement actuel (draw saute,
+        // aucun gel). Plafond global : BORKED3DS_V3DV_PIPELINE_FIRST_WAIT_CAP_MS (defaut 48 ms
+        // d'attente cumulee par fenetre d'une seconde) pour qu'une scene neuve avec beaucoup de
+        // pipelines lents ne fabrique pas un gel. BindPipeline tourne sur EmuThread seulement.
+        if (!try_build_result && new_pipeline && !effective_wait_built) {
+            static const u32 v371_budget_ms =
+                GetEnvU32Limited("BORKED3DS_V3DV_PIPELINE_FIRST_WAIT_MS", 16, 100);
+            static const u32 v371_cap_ms =
+                GetEnvU32Limited("BORKED3DS_V3DV_PIPELINE_FIRST_WAIT_CAP_MS", 48, 1000);
+            if (v371_budget_ms > 0) {
+                using v371_clock = std::chrono::steady_clock;
+                static v371_clock::time_point v371_window_start = v371_clock::now();
+                static u64 v371_window_spent_us = 0;
+                static u64 v371_events = 0;
+                static u64 v371_ready = 0;
+                static u64 v371_expired = 0;
+                static u64 v371_capped = 0;
+                static u64 v371_total_us = 0;
+                static u64 v371_max_us = 0;
+
+                const auto t0 = v371_clock::now();
+                if (t0 - v371_window_start >= std::chrono::seconds(1)) {
+                    v371_window_start = t0;
+                    v371_window_spent_us = 0;
+                }
+                const u64 cap_us = static_cast<u64>(v371_cap_ms) * 1000;
+                const u64 left_us =
+                    v371_window_spent_us < cap_us ? cap_us - v371_window_spent_us : 0;
+                const u64 budget_us =
+                    std::min<u64>(static_cast<u64>(v371_budget_ms) * 1000, left_us);
+
+                const char* outcome = "plafond";
+                if (budget_us > 0) {
+                    const auto deadline = t0 + std::chrono::microseconds(budget_us);
+                    outcome = "expire";
+                    while (v371_clock::now() < deadline) {
+                        std::this_thread::sleep_for(std::chrono::microseconds(250));
+                        if (pipeline->IsDone() || pipeline->TryBuild(false)) {
+                            try_build_result = true;
+                            outcome = "pret";
+                            break;
+                        }
+                    }
+                }
+                const u64 waited_us = static_cast<u64>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(v371_clock::now() - t0)
+                        .count());
+                v371_window_spent_us += waited_us;
+                v371_total_us += waited_us;
+                v371_max_us = std::max(v371_max_us, waited_us);
+                ++v371_events;
+                if (try_build_result) {
+                    ++v371_ready;
+                } else if (budget_us > 0) {
+                    ++v371_expired;
+                } else {
+                    ++v371_capped;
+                }
+                if (v371_events <= 24 || (v371_events % 128) == 0) {
+                    LOG_WARNING(Render_Vulkan,
+                                "V371_ATTENTE_PIPELINE #{} resultat={} attente_us={} | cumul: "
+                                "prets={} expires={} plafonnes={} total_ms={:.1f} max_us={}",
+                                v371_events, outcome, waited_us, v371_ready, v371_expired,
+                                v371_capped, static_cast<double>(v371_total_us) / 1000.0,
+                                v371_max_us);
+                }
+            }
+        }
+
         if (a7z60_ultra_quiet_fast_return) {
             if (!try_build_result) {
                 return false;
