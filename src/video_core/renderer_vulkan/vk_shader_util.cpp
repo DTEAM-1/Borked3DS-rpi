@@ -22,7 +22,12 @@
 #include <glslang/Public/ShaderLang.h>
 #include <spirv-tools/optimizer.hpp>
 
+#include <unordered_map>
+
 #include "common/assert.h"
+#include "common/common_paths.h"
+#include "common/file_util.h"
+#include "common/hash.h"
 #include "common/literals.h"
 #include "common/logging/log.h"
 #include "common/settings.h"
@@ -385,8 +390,240 @@ std::mutex g_inflight_csv_mutex;
  * @param stage The pipeline stage the shader will be used in.
  * @param device The vulkan device handle.
  */
+// ---------------------------------------------------------------------------------------------
+// v372 -- CACHE DES CONVERSIONS GLSL -> SPIR-V (memoire + disque).
+//
+// Mesure S2b (Sonic, a chaud, v371) : image de 1 087 ms = SIX conversions de vertex shaders PICA
+// (26 919 a 27 944 mots) faites l'une apres l'autre sur EmuThread, ~160-180 ms chacune, alors
+// que les pipelines se construisaient en 0,1 ms (cache V3DV chaude, v370). Runs Z5a/Z5b (Kid
+// Icarus) : 24-30 grosses conversions par session, a chaud comme a froid, ~la moitie des images
+// > 100 ms. La cache pipeline Vulkan ne couvre PAS cette etape : chaque session reconvertit tout.
+//
+// La conversion est deterministe : meme source GLSL + meme preambule + meme stage + meme reglage
+// optimize_spirv_output + meme binaire => meme SPIR-V. On garde donc le resultat :
+//   - en memoire (doublons de la session, 59 % mesures en v365) ;
+//   - sur disque, <ShaderDir>/vulkan/spirv/<stage>_<hash>.spv. Ce repertoire est sous
+//     shaders/vulkan, que le scriptmodule purge a chaque build : un nouveau binaire (autre
+//     glslang, autre generateur) repart donc toujours d'une cache vide.
+// En-tete verifie a la lecture (magie, version, stage, reglage, tailles, deux hashes, mot
+// magique SPIR-V) : un fichier douteux est ignore et reconverti. Ecriture atomique (fichier
+// temporaire + rename). Actif si use_disk_shader_cache=true ; desactivable sans rebuild par
+// BORKED3DS_V3DV_DISABLE_SPIRV_DISK_CACHE=1 (la memoisation en memoire reste active).
+// Journal : V372_SPIRV_CACHE (chaque vertex shader, puis bilan tous les 64 evenements).
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+constexpr u32 V372_MAGIC = 0x56535342; // "BSSV"
+constexpr u32 V372_VERSION = 1;
+constexpr u32 V372_SPIRV_MAGIC = 0x07230203;
+constexpr std::size_t V372_MEM_MAX_ENTRIES = 4096;
+
+struct V372Header {
+    u32 magic;
+    u32 version;
+    u32 stage;
+    u32 optimize;
+    u32 code_bytes;
+    u32 preamble_bytes;
+    u64 code_hash;
+    u64 preamble_hash;
+    u32 words;
+    u32 reserved;
+};
+static_assert(sizeof(V372Header) == 48);
+
+struct V372Key {
+    u32 stage;
+    u32 optimize;
+    u32 code_bytes;
+    u32 preamble_bytes;
+    u64 code_hash;
+    u64 preamble_hash;
+    bool operator==(const V372Key&) const = default;
+};
+
+struct V372KeyHash {
+    std::size_t operator()(const V372Key& k) const noexcept {
+        return static_cast<std::size_t>(Common::HashCombine(
+            Common::HashCombine(k.code_hash, k.preamble_hash),
+            (static_cast<u64>(k.stage) << 40) ^ (static_cast<u64>(k.optimize) << 32) ^
+                k.code_bytes));
+    }
+};
+
+std::mutex g_v372_mutex;
+std::unordered_map<V372Key, std::vector<u32>, V372KeyHash> g_v372_mem;
+std::atomic<u64> g_v372_hit_mem{0};
+std::atomic<u64> g_v372_hit_disk{0};
+std::atomic<u64> g_v372_miss{0};
+std::atomic<u64> g_v372_write_fail{0};
+std::atomic<u64> g_v372_events{0};
+std::atomic<u64> g_v372_miss_us{0};
+
+bool V372DiskEnabled() {
+    static const bool disabled = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_DISABLE_SPIRV_DISK_CACHE");
+        return v != nullptr && v[0] != '\0';
+    }();
+    return !disabled && Settings::values.use_disk_shader_cache.GetValue();
+}
+
+const std::string& V372Dir() {
+    static const std::string dir = [] {
+        std::string d = FileUtil::GetUserPath(FileUtil::UserPath::ShaderDir) + "vulkan" +
+                        DIR_SEP + "spirv" + DIR_SEP;
+        FileUtil::CreateFullPath(d);
+        return d;
+    }();
+    return dir;
+}
+
+std::string V372Path(const V372Key& k) {
+    return fmt::format("{}{}_{:016x}_{:016x}_{}.spv", V372Dir(), ShaderStageName(
+                           static_cast<vk::ShaderStageFlagBits>(k.stage)),
+                       k.code_hash, k.preamble_hash, k.optimize);
+}
+
+bool V372ReadDisk(const V372Key& k, std::vector<u32>& out) {
+    const std::string path = V372Path(k);
+    FileUtil::IOFile f(path, "rb");
+    if (!f.IsOpen()) {
+        return false;
+    }
+    V372Header h{};
+    if (f.ReadBytes(&h, sizeof(h)) != sizeof(h)) {
+        return false;
+    }
+    if (h.magic != V372_MAGIC || h.version != V372_VERSION || h.stage != k.stage ||
+        h.optimize != k.optimize || h.code_bytes != k.code_bytes ||
+        h.preamble_bytes != k.preamble_bytes || h.code_hash != k.code_hash ||
+        h.preamble_hash != k.preamble_hash || h.words == 0 || h.words > (16u << 20)) {
+        return false;
+    }
+    if (f.GetSize() != sizeof(h) + static_cast<u64>(h.words) * sizeof(u32)) {
+        return false;
+    }
+    std::vector<u32> words(h.words);
+    if (f.ReadBytes(words.data(), words.size() * sizeof(u32)) != words.size() * sizeof(u32)) {
+        return false;
+    }
+    if (words[0] != V372_SPIRV_MAGIC) {
+        return false;
+    }
+    out = std::move(words);
+    return true;
+}
+
+void V372WriteDisk(const V372Key& k, const std::vector<u32>& words) {
+    const std::string path = V372Path(k);
+    const std::string tmp = fmt::format("{}.tmp{}", path, static_cast<long>(gettid()));
+    bool ok = false;
+    {
+        FileUtil::IOFile f(tmp, "wb");
+        if (f.IsOpen()) {
+            const V372Header h{V372_MAGIC,         V372_VERSION,     k.stage,
+                               k.optimize,         k.code_bytes,     k.preamble_bytes,
+                               k.code_hash,        k.preamble_hash,  static_cast<u32>(words.size()),
+                               0};
+            ok = f.WriteBytes(&h, sizeof(h)) == sizeof(h) &&
+                 f.WriteBytes(words.data(), words.size() * sizeof(u32)) ==
+                     words.size() * sizeof(u32);
+        }
+    }
+    if (ok) {
+        ok = FileUtil::Rename(tmp, path);
+    }
+    if (!ok) {
+        FileUtil::Delete(tmp);
+        g_v372_write_fail.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void V372Log(const char* result, vk::ShaderStageFlagBits stage, std::size_t words, double ms) {
+    const u64 n = g_v372_events.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (stage == vk::ShaderStageFlagBits::eVertex || (n % 64) == 0) {
+        LOG_WARNING(Render_Vulkan,
+                    "V372_SPIRV_CACHE #{} {} stage={} mots={} ms={:.1f} | memoire={} disque={} "
+                    "conversions={} ({:.0f} ms) echecs_ecriture={}",
+                    n, result, ShaderStageName(stage), words, ms,
+                    g_v372_hit_mem.load(std::memory_order_relaxed),
+                    g_v372_hit_disk.load(std::memory_order_relaxed),
+                    g_v372_miss.load(std::memory_order_relaxed),
+                    static_cast<double>(g_v372_miss_us.load(std::memory_order_relaxed)) / 1000.0,
+                    g_v372_write_fail.load(std::memory_order_relaxed));
+    }
+}
+
+std::vector<u32> CompileGLSLtoSPIRVUncached(std::string_view code, vk::ShaderStageFlagBits stage,
+                                            vk::Device device, std::string_view premable);
+
+} // namespace
+
 std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBits stage,
                                     vk::Device device, std::string_view premable) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const V372Key key{
+        static_cast<u32>(stage),
+        static_cast<u32>(Settings::values.optimize_spirv_output.GetValue()),
+        static_cast<u32>(code.size()),
+        static_cast<u32>(premable.size()),
+        Common::ComputeHash64(code.data(), code.size()),
+        Common::ComputeHash64(premable.data(), premable.size()),
+    };
+
+    {
+        std::scoped_lock lock(g_v372_mutex);
+        if (const auto it = g_v372_mem.find(key); it != g_v372_mem.end()) {
+            std::vector<u32> copy = it->second;
+            g_v372_hit_mem.fetch_add(1, std::memory_order_relaxed);
+            V372Log("memoire", stage, copy.size(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                              t0)
+                        .count());
+            LogSpirvTrace(copy, "CompileGLSLtoSPIRV/cache", stage);
+            return copy;
+        }
+    }
+
+    const bool disk = V372DiskEnabled();
+    std::vector<u32> result;
+    const char* origin = "conversion";
+    if (disk && V372ReadDisk(key, result)) {
+        g_v372_hit_disk.fetch_add(1, std::memory_order_relaxed);
+        origin = "disque";
+        LogSpirvTrace(result, "CompileGLSLtoSPIRV/cache", stage);
+    } else {
+        result = CompileGLSLtoSPIRVUncached(code, stage, device, premable);
+        if (result.empty()) {
+            return result; // echec : ne rien memoriser
+        }
+        g_v372_miss.fetch_add(1, std::memory_order_relaxed);
+        g_v372_miss_us.fetch_add(
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::steady_clock::now() - t0)
+                                 .count()),
+            std::memory_order_relaxed);
+        if (disk) {
+            V372WriteDisk(key, result);
+        }
+    }
+
+    {
+        std::scoped_lock lock(g_v372_mutex);
+        if (g_v372_mem.size() < V372_MEM_MAX_ENTRIES) {
+            g_v372_mem.emplace(key, result);
+        }
+    }
+    V372Log(origin, stage, result.size(),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                .count());
+    return result;
+}
+
+namespace {
+
+std::vector<u32> CompileGLSLtoSPIRVUncached(std::string_view code, vk::ShaderStageFlagBits stage,
+                                            vk::Device device, std::string_view premable) {
     if (!InitializeCompiler()) {
         return {};
     }
@@ -526,6 +763,8 @@ std::vector<u32> CompileGLSLtoSPIRV(std::string_view code, vk::ShaderStageFlagBi
         return result;
     }
 }
+
+} // namespace
 
 vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, vk::Device device,
                          std::string_view premable) {
