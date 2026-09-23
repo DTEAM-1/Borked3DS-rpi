@@ -30,6 +30,21 @@ using nihstro::RegisterType;
 using nihstro::SourceRegister;
 using nihstro::SwizzlePattern;
 
+// v369 : provenance des uniformes du GS et parametres du draw, ecrits par pica_core.cpp.
+namespace Pica {
+extern std::array<std::atomic<u32>, 96> g_v369_gs_uniform_origin;
+extern std::array<std::atomic<u32>, 96> g_v369_gs_uniform_seq;
+extern std::array<std::array<std::atomic<u32>, 4>, 96> g_v369_gs_uniform_raw;
+extern std::atomic<u32> g_v369_seq;
+extern std::atomic<u32> g_v369_gs_desync;
+extern std::atomic<u32> g_v369_vs_desync;
+extern std::atomic<const void*> g_v369_gs_setup_ptr;
+extern std::array<std::atomic<u32>, 16> g_v369_draw;
+extern std::array<std::atomic<u32>, 8> g_v369_last_vertex;
+extern std::array<std::atomic<u32>, 8> g_v369_last_vertex_pos;
+extern std::atomic<u32> g_v369_last_vertex_n;
+} // namespace Pica
+
 namespace Pica::Shader {
 
 struct IfStackElement {
@@ -224,6 +239,108 @@ static void RunInterpreter(const ShaderSetup& setup, ShaderUnit& state,
                     }
                     LOG_ERROR(HW_GPU, "V368_PROGRAMME #{} entree={:#x} mots: {}", k, entry_point,
                               prog);
+
+                    // v369 -- DUMP COMPLET pour rejouer le passage hors du jeu (3 premieres coupures).
+                    // Chaque vecteur : 4 mots = bits float32 de x y z w (valeurs f24 exactes).
+                    if (k <= 3) {
+                        const auto hx = [](const auto& v) {
+                            return fmt::format("{:08x},{:08x},{:08x},{:08x}",
+                                               std::bit_cast<u32>(v.x.ToFloat32()),
+                                               std::bit_cast<u32>(v.y.ToFloat32()),
+                                               std::bit_cast<u32>(v.z.ToFloat32()),
+                                               std::bit_cast<u32>(v.w.ToFloat32()));
+                        };
+                        const auto ld = [](const auto& a) {
+                            return a.load(std::memory_order_relaxed);
+                        };
+                        const bool is_gs =
+                            (static_cast<const void*>(&setup) == ld(g_v369_gs_setup_ptr));
+                        LOG_ERROR(HW_GPU,
+                                  "V369_ETAT #{} unite={} file_mots_en_attente={} "
+                                  "desalignements_gs={} desalignements_vs={} seq_global={}",
+                                  k, is_gs ? "gs" : "vs?", setup.uniform_queue.index,
+                                  ld(g_v369_gs_desync), ld(g_v369_vs_desync), ld(g_v369_seq));
+                        std::string dr;
+                        static constexpr const char* dn[16] = {
+                            "indexe",     "vertex_offset", "num_vertices", "use_gs",
+                            "gs_mode",    "start_index",   "stride",       "fixed_vertex_num",
+                            "variable",   "main_num",      "vs_out_num",   "base",
+                            "index_off",  "index_u16",     "decalage_applique", "draw_no"};
+                        for (std::size_t d = 0; d < 16; ++d) {
+                            dr += fmt::format(" {}={:#x}", dn[d], ld(g_v369_draw[d]));
+                        }
+                        std::string lv;
+                        const u32 nlv = ld(g_v369_last_vertex_n);
+                        const u32 cnt = nlv < 8 ? nlv : 8;
+                        for (u32 j = 0; j < cnt; ++j) {
+                            const u32 slot = (nlv - cnt + j) % 8;
+                            lv += fmt::format(" [{}]{:#x}", ld(g_v369_last_vertex_pos[slot]),
+                                              ld(g_v369_last_vertex[slot]));
+                        }
+                        LOG_ERROR(HW_GPU, "V369_DRAW #{}{} | derniers_sommets({}):{}", k, dr, nlv,
+                                  lv);
+                        // Uniformes flottants : c<i><origine>@<seq>=x,y,z,w [brut=...]
+                        // origine : - jamais, g envoi GS f24, G envoi GS f32, v miroir VS,
+                        // P = zone ou le pipeline GS depose les SORTIES du vertex shader pendant
+                        // le draw (mode FixedPrimitive : start_index .. + stride x nb_sommets ;
+                        // mode VariablePrimitive : c0 = nombre de sommets, c1.. = sommets). Pour
+                        // une case P, la valeur vient du draw et <seq>/[brut] sont perimes.
+                        static constexpr char on[4] = {'-', 'g', 'G', 'v'};
+                        const u32 d_use_gs = ld(g_v369_draw[3]);
+                        const u32 d_mode = ld(g_v369_draw[4]);
+                        u32 p_begin = 0;
+                        u32 p_end = 0;
+                        if (d_use_gs != 0 && d_mode == 2) {
+                            p_begin = ld(g_v369_draw[5]);
+                            p_end = p_begin + ld(g_v369_draw[6]) * ld(g_v369_draw[7]);
+                        } else if (d_use_gs != 0 && d_mode == 1) {
+                            p_begin = 0;
+                            p_end = 96;
+                        }
+                        for (u32 part = 0; part < 6; ++part) {
+                            std::string ul;
+                            for (u32 i = part * 16; i < part * 16 + 16; ++i) {
+                                const u32 o = ld(g_v369_gs_uniform_origin[i]);
+                                const bool in_p = (i >= p_begin && i < p_end);
+                                ul += fmt::format(" c{}{}{}@{}={}", i, in_p ? "P" : "",
+                                                  on[o < 4 ? o : 0],
+                                                  ld(g_v369_gs_uniform_seq[i]),
+                                                  hx(uniforms.f[i]));
+                                if (o != 0) {
+                                    ul += fmt::format("[brut={:08x},{:08x},{:08x},{:08x}]",
+                                                      ld(g_v369_gs_uniform_raw[i][0]),
+                                                      ld(g_v369_gs_uniform_raw[i][1]),
+                                                      ld(g_v369_gs_uniform_raw[i][2]),
+                                                      ld(g_v369_gs_uniform_raw[i][3]));
+                                }
+                            }
+                            LOG_ERROR(HW_GPU, "V369_UNIFORMES #{} {}/6{}", k, part + 1, ul);
+                        }
+                        std::string rg;
+                        for (u32 r = 0; r < 16; ++r) {
+                            rg += fmt::format(" v{}={}", r, hx(state.input[r]));
+                        }
+                        LOG_ERROR(HW_GPU, "V369_ENTREES #{}{}", k, rg);
+                        rg.clear();
+                        for (u32 r = 0; r < 16; ++r) {
+                            rg += fmt::format(" r{}={}", r, hx(state.temporary[r]));
+                        }
+                        LOG_ERROR(HW_GPU, "V369_TEMPORAIRES #{}{} a0={} a1={} aL={}", k, rg,
+                                  state.address_registers[0], state.address_registers[1],
+                                  state.address_registers[2]);
+                        for (u32 blk = 0; blk < 4; ++blk) {
+                            std::string pw;
+                            for (u32 a = blk * 128; a < blk * 128 + 128; ++a) {
+                                pw += fmt::format("{:08x} ", program_code[a]);
+                            }
+                            LOG_ERROR(HW_GPU, "V369_PROGRAMME #{} {:03x}: {}", k, blk * 128, pw);
+                        }
+                        std::string sw;
+                        for (u32 a = 0; a < 128; ++a) {
+                            sw += fmt::format("{:08x} ", swizzle_data[a]);
+                        }
+                        LOG_ERROR(HW_GPU, "V369_SWIZZLE #{} {}", k, sw);
+                    }
                 }
                 break;
             }
