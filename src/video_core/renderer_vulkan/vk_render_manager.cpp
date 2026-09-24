@@ -284,7 +284,75 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
     };
     images = framebuffer->Images();
     aspects = framebuffer->Aspects();
+    V382NoteWritten(images);
     BeginRendering(new_pass);
+}
+
+void RenderManager::V382NoteWritten(const std::array<vk::Image, 2>& written) noexcept {
+    // Appele a chaque draw : table minuscule (quelques cibles par frame), recherche
+    // lineaire, aucune allocation une fois la table remplie.
+    for (const vk::Image image : written) {
+        if (!image) {
+            continue;
+        }
+        bool found = false;
+        for (V382Written& entry : v382_written) {
+            if (entry.image == image) {
+                entry.frame = v382_frame;
+                entry.dirty = true;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            v382_written.push_back(V382Written{image, v382_frame, true});
+        }
+    }
+}
+
+bool RenderManager::V382WrittenRecently(vk::Image image) const noexcept {
+    if (!image) {
+        return false;
+    }
+    for (const V382Written& entry : v382_written) {
+        if (entry.image == image) {
+            return v382_frame - entry.frame <= 1;
+        }
+    }
+    return false;
+}
+
+bool RenderManager::V382IsDirty(vk::Image image) const noexcept {
+    if (!image) {
+        return false;
+    }
+    for (const V382Written& entry : v382_written) {
+        if (entry.image == image) {
+            return entry.dirty;
+        }
+    }
+    return false;
+}
+
+void RenderManager::V382MarkSynced() noexcept {
+    for (V382Written& entry : v382_written) {
+        entry.dirty = false;
+    }
+}
+
+bool RenderManager::V382IsOpenPassImage(vk::Image image) const noexcept {
+    if (!image || !pass.render_pass) {
+        return false;
+    }
+    return images[0] == image || images[1] == image;
+}
+
+void RenderManager::V382TickFrame() noexcept {
+    ++v382_frame;
+    // Oublie les cibles qui n'ont plus servi depuis deux frames : la table reste petite
+    // et un handle d'image detruit puis reutilise ne reste pas marque indefiniment.
+    std::erase_if(v382_written,
+                  [this](const V382Written& entry) { return v382_frame - entry.frame > 1; });
 }
 
 void RenderManager::BeginRendering(const RenderPass& new_pass) {

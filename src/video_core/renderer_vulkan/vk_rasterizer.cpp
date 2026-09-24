@@ -808,6 +808,21 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return cached;
 }
 
+/// V382 -- synchronisation des textures rendues par le jeu (voir SyncTextureUnits).
+///   0 : comportement TB33 (defaut de ce build, pour l'A/B)
+///   1 : copie si la texture est une image de la cible du draw ou du render pass ouvert
+///       (boucle de feedback que color_view == base_view ne voit pas) ; la copie est
+///       alors LIEE, comme pour le feedback direct
+///   2 : 1 + meme traitement (copie, fermeture, barrieres) pour toute texture ecrite
+///       comme cible pendant la frame courante ou la precedente
+///   3 : 1 + pour ces textures rendues recemment ET reecrites depuis la derniere
+///       synchronisation : fermeture du render pass et barriere memoire seulement,
+///       SANS copie (une fois par draw au plus)
+[[nodiscard]] u32 GetV382TexSyncMode() {
+    static const u32 cached = GetEnvU32("BORKED3DS_V3DV_V382_TEXSYNC", 0);
+    return cached;
+}
+
 /// vLUT169 -- ECHAPPATOIRE du correctif d'offset de LUT d'eclairage (SyncAndUploadLUTsLF).
 ///
 /// LE DEFAUT CORRIGE. `texture_lf_buffer` est un buffer EN FLOT : StreamBuffer::Map() rend le
@@ -1822,6 +1837,13 @@ std::atomic<u64> g_vk_strict_owned_present_clear_counter{0};
 // Volume : une ligne par frame sur les 400 premieres, puis uniquement les frames vides.
 std::atomic<u64> g_a7z12_frame_index{0};
 std::atomic<u32> g_a7z12_draws_entered{0};
+// V382 : classement des textures liees (par frame, remis a zero a chaque tick).
+std::atomic<u32> g_v382_direct{0};
+std::atomic<u32> g_v382_target{0};
+std::atomic<u32> g_v382_recent{0};
+std::atomic<u32> g_v382_other{0};
+std::atomic<u32> g_v382_copies{0};
+std::atomic<u32> g_v382_syncs{0};
 std::atomic<u32> g_a7z12_draws_completed{0};
 std::atomic<u32> g_a7z12_draws_succeeded{0};
 std::atomic<u32> g_a7z12_draws_accel{0};      // draws avec accelerate=true (VS materiel)
@@ -2650,6 +2672,15 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
 RasterizerVulkan::~RasterizerVulkan() = default;
 
 void RasterizerVulkan::TickFrame() {
+    // V382 : frontiere de frame du suivi des cibles, et compteurs de classement des
+    // textures (remis a zero a chaque tick ; emis sous la garde du census).
+    renderpass_cache.V382TickFrame();
+    const u32 v382_direct = g_v382_direct.exchange(0, std::memory_order_relaxed);
+    const u32 v382_target = g_v382_target.exchange(0, std::memory_order_relaxed);
+    const u32 v382_recent = g_v382_recent.exchange(0, std::memory_order_relaxed);
+    const u32 v382_other = g_v382_other.exchange(0, std::memory_order_relaxed);
+    const u32 v382_copies = g_v382_copies.exchange(0, std::memory_order_relaxed);
+    const u32 v382_syncs = g_v382_syncs.exchange(0, std::memory_order_relaxed);
     // TG14 : la frontiere de frame remet l'index de draw a zero pour que MAX_DRAWS s'applique
     // par frame et non sur toute la session. Independant du census A7Z12.
     if (IsTG14Active()) {
@@ -2811,6 +2842,12 @@ void RasterizerVulkan::TickFrame() {
                      psub_ns / 1000ull, psub_max / 1000ull, d_fb, d_rp, d_ar, d_cl, f_fb,
                      f_rp, f_ar, f_cl, fbn, seq_count, seq_draws, fbh[0], fbh[1], fbh[2],
                      fbh[3], fbh[4], fbh[5]);
+
+            LOG_INFO(Render_Vulkan,
+                     "V382_TEXSYNC frame={} mode={} direct={} cible={} recente={} autre={} "
+                     "copies={} syncs={}",
+                     frame, GetV382TexSyncMode(), v382_direct, v382_target, v382_recent,
+                     v382_other, v382_copies, v382_syncs);
 
             // TB28a : une ligne par cible de rendu, dans l'ordre d'apparition (le meme
             // que fbh0..fbh5). Emise sous la meme garde que le census, donc au plus une
@@ -9306,6 +9343,9 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
     const vk::Sampler null_handle = null_sampler.Handle();
     const vk::ImageView color_view =
         framebuffer ? framebuffer->ImageView(SurfaceType::Color) : vk::ImageView{};
+    // V382 mode 3 : une seule fermeture + barriere par draw, meme si plusieurs unites
+    // de texture lisent des images rendues.
+    bool v382_synced_this_draw = false;
 
     for (u32 texture_index = 0; texture_index < pica_textures.size(); ++texture_index) {
         const auto& texture = pica_textures[texture_index];
@@ -9432,7 +9472,77 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         Surface& surface = res_cache.GetTextureSurface(texture);
         Sampler& sampler = res_cache.GetSampler(texture.config);
         const vk::ImageView base_view = surface.ImageView();
-        const bool direct_feedback = IsValidImageView(color_view) && color_view == base_view;
+        const bool direct_view_feedback =
+            IsValidImageView(color_view) && color_view == base_view;
+
+        // -------------------------------------------------------------------
+        // V382 -- A QUELLE TEXTURE LA SYNCHRONISATION DE TB33 MANQUE-T-ELLE ?
+        //
+        // TB37 (Luigi's Mansion 2) : avec DISABLE_LAZY_COPY_VIEW=1, les clignotements
+        // (ecrans TV, cadres de texte, un quart d'ecran, logo sur le labo) disparaissent,
+        // mais l'image passe de ~70 ms a 170-230 ms (500-1000 fermetures de render pass).
+        // Dans le chemin sans feedback, copy_view n'est pourtant jamais liee : c'est
+        // l'EFFET DE BORD de CopyImageView (fermeture du render pass + barrieres sur
+        // l'image de la texture) qui corrige le rendu, pas la copie.
+        //
+        // Classement de chaque texture liee :
+        //   direct  : sa vue EST la vue couleur de la cible (cas deja traite par TB33)
+        //   cible   : son IMAGE est une cible du draw ou du render pass ouvert, par une
+        //             autre vue (couleur ou profondeur) -- feedback non detecte
+        //   recente : son image a servi de cible pendant cette frame ou la precedente
+        //   autre   : texture ordinaire (chargee depuis la memoire 3DS)
+        // Le mode (BORKED3DS_V3DV_V382_TEXSYNC) decide qui paie la synchronisation.
+        // -------------------------------------------------------------------
+        const u32 v382_mode = GetV382TexSyncMode();
+        const vk::Image v382_image = surface.Image();
+        // CopyImageView ne copie que l'aspect couleur : une texture de profondeur n'est
+        // jamais candidate a la copie V382 (elle reste comptee, pour le classement).
+        const bool v382_is_color =
+            static_cast<bool>(surface.Aspect() & vk::ImageAspectFlagBits::eColor);
+        bool v382_target = false;
+        if (!direct_view_feedback && v382_image) {
+            if (framebuffer) {
+                const std::array<vk::Image, 2> fb_images = framebuffer->Images();
+                v382_target = fb_images[0] == v382_image || fb_images[1] == v382_image;
+            }
+            v382_target = v382_target || renderpass_cache.V382IsOpenPassImage(v382_image);
+        }
+        const bool v382_recent = !direct_view_feedback && !v382_target &&
+                                 renderpass_cache.V382WrittenRecently(v382_image);
+        if (direct_view_feedback) {
+            g_v382_direct.fetch_add(1, std::memory_order_relaxed);
+        } else if (v382_target) {
+            g_v382_target.fetch_add(1, std::memory_order_relaxed);
+        } else if (v382_recent) {
+            g_v382_recent.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            g_v382_other.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        const bool direct_feedback =
+            direct_view_feedback || (v382_mode >= 1 && v382_target && v382_is_color);
+        const bool v382_copy_recent = v382_mode == 2 && v382_recent && v382_is_color;
+        if (v382_mode == 3 && v382_recent && !v382_synced_this_draw &&
+            renderpass_cache.V382IsDirty(v382_image)) {
+            v382_synced_this_draw = true;
+            renderpass_cache.EndRendering();
+            scheduler.Record([](vk::CommandBuffer cmdbuf) {
+                const vk::MemoryBarrier barrier = {
+                    .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
+                                     vk::AccessFlagBits::eDepthStencilAttachmentWrite |
+                                     vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                };
+                cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                                           vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                                           vk::PipelineStageFlagBits::eLateFragmentTests |
+                                           vk::PipelineStageFlagBits::eTransfer,
+                                       vk::PipelineStageFlagBits::eFragmentShader,
+                                       vk::DependencyFlags{}, barrier, {}, {});
+            });
+            renderpass_cache.V382MarkSynced();
+            g_v382_syncs.fetch_add(1, std::memory_order_relaxed);
+        }
 
         // -------------------------------------------------------------------
         // TB33 -- NE MATERIALISER LA COPIE QUE SI ELLE PEUT SERVIR.
@@ -9471,8 +9581,11 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
         // s'execute en parallele d'un CPU a ~37 ms. Les supprimer ne rapporterait donc
         // quasiment rien -- le chantier de tri des draws par cible est SANS OBJET.
         // -------------------------------------------------------------------
-        const bool copy_view_needed =
-            direct_feedback || !IsValidImageView(base_view) || IsLazyCopyViewDisabled();
+        const bool copy_view_needed = direct_feedback || v382_copy_recent ||
+                                      !IsValidImageView(base_view) || IsLazyCopyViewDisabled();
+        if (copy_view_needed) {
+            g_v382_copies.fetch_add(1, std::memory_order_relaxed);
+        }
         const vk::ImageView copy_view =
             copy_view_needed ? surface.CopyImageView() : vk::ImageView{};
 

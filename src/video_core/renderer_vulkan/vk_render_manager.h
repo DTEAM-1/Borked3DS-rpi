@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 #include "common/math_util.h"
 #include "video_core/renderer_vulkan/vk_common.h"
@@ -210,6 +211,29 @@ public:
     /// travail pur perdu ? Purement descriptif : aucune decision de rendu ne la lit.
     void Tb28bNoteAddresses(u32 color_addr, u32 depth_addr) noexcept;
 
+    /// V382 : suivi des images ecrites comme cible de rendu (couleur ou profondeur).
+    ///
+    /// TB33 ne materialise plus la copie d'une texture que si sa vue EST la vue couleur
+    /// de la cible courante. TB37 (Luigi's Mansion 2) a montre que ce n'est pas suffisant :
+    /// les textures que le jeu a lui-meme rendues (ecrans TV, cadres de texte) clignotent
+    /// et montrent un contenu perime ; l'echappatoire DISABLE_LAZY_COPY_VIEW les corrige
+    /// mais recopie TOUTES les textures (500-1000 fermetures de render pass par image).
+    /// Ce suivi permet de ne payer la synchronisation que pour les textures rendues.
+    ///
+    /// V382WrittenRecently : l'image a servi de cible pendant la frame courante ou la
+    /// precedente. V382IsOpenPassImage : l'image est une cible du render pass ouvert.
+    [[nodiscard]] bool V382WrittenRecently(vk::Image image) const noexcept;
+    [[nodiscard]] bool V382IsOpenPassImage(vk::Image image) const noexcept;
+
+    /// V382 mode 3 : l'image a-t-elle ete ecrite comme cible depuis la derniere
+    /// synchronisation V382 ? V382MarkSynced() est appele juste apres la barriere
+    /// (qui couvre toutes les images) et remet tous les indicateurs a faux.
+    [[nodiscard]] bool V382IsDirty(vk::Image image) const noexcept;
+    void V382MarkSynced() noexcept;
+
+    /// V382 : frontiere de frame, appelee a chaque TickFrame (independant du census).
+    void V382TickFrame() noexcept;
+
     /// Returns the renderpass associated with the color-depth format pair
     vk::RenderPass GetRenderpass(VideoCore::PixelFormat color, VideoCore::PixelFormat depth,
                                  bool is_clear);
@@ -228,6 +252,16 @@ private:
     std::array<vk::ImageAspectFlags, 2> aspects;
     RenderPass pass{};
     u32 num_draws{};
+
+    /// V382 : images ecrites comme cible, avec la frame de leur derniere ecriture.
+    struct V382Written {
+        vk::Image image;
+        u64 frame;
+        bool dirty;
+    };
+    void V382NoteWritten(const std::array<vk::Image, 2>& written) noexcept;
+    std::vector<V382Written> v382_written;
+    u64 v382_frame{0};
 };
 
 } // namespace Vulkan
