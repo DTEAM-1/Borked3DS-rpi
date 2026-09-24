@@ -3554,10 +3554,22 @@ void FragmentModule::DefineTexUnitSampler(u32 texture_unit) {
             out += "return texture(tex0, vec3(texcoord0, texcoord0_w));";
             break;
         case TexturingRegs::TextureConfig::Shadow2D:
-            out += "return shadowTexture(texcoord0, texcoord0_w);";
-            break;
         case TexturingRegs::TextureConfig::ShadowCube:
-            out += "return shadowTextureCube(texcoord0, texcoord0_w);";
+            if (profile.is_vulkan) {
+                // v379b : sur Vulkan, DefineShadowHelpers() n'est pas emis (compatibilite
+                // Pi 5 / V3DV, voir plus haut), donc shadowTexture / shadowTextureCube
+                // n'existent pas dans le source. L'appel faisait echouer glslang
+                // ("no matching overloaded function"), le module SPIR-V etait vide et le
+                // pipeline se construisait sans fragment shader : plantage de l'emulateur
+                // (Luigi's Mansion 2, lampe torche). L'ecriture de la carte d'ombre est elle
+                // aussi coupee sur Vulkan (WriteShadow garde par des extensions GL) : il n'y a
+                // rien de valide a lire. On rend une ombre neutre (1.0 = pleine lumiere).
+                out += "return vec4(1.0);";
+            } else if (config.texture.texture0_type == TexturingRegs::TextureConfig::Shadow2D) {
+                out += "return shadowTexture(texcoord0, texcoord0_w);";
+            } else {
+                out += "return shadowTextureCube(texcoord0, texcoord0_w);";
+            }
             break;
         default:
             LOG_CRITICAL(HW_GPU, "Unhandled texture type {:x}",

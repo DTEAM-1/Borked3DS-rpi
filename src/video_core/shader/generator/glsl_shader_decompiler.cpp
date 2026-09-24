@@ -1204,7 +1204,11 @@ private:
                     if (v379_pos != nullptr) {
                         const auto dest_it = v379_pos->find(jmp_dest);
                         if (dest_it == v379_pos->end()) {
-                            v379_inconsistent = true;
+                            // v379b : cible sans etiquette = sortie (`default: return false`
+                            // de la forme d'origine) ; etiquette inatteignable = incoherence.
+                            if (v379_labels == nullptr || v379_labels->count(jmp_dest)) {
+                                v379_inconsistent = true;
+                            }
                         } else {
                             backward = dest_it->second <= v379_block_pos;
                         }
@@ -1606,23 +1610,35 @@ private:
             const u32 next_label = next_label_of(it);
             v377_block_label = label;
             v377_open_guards = 0;
-            const std::size_t first_edge = v379_edges.size();
             const u32 compile_end = CompileRange(label, next_label);
             auto& out = succ[label];
-            for (std::size_t e = first_edge; e < v379_edges.size(); ++e) {
-                out.push_back(v379_edges[e].second);
-            }
+            // (les aretes de saut sont ajoutees apres la boucle, etiquettes definitives)
             if (compile_end != PROGRAM_END) {
                 if (compile_end > next_label) {
                     // Etiquette situee dans un bloc IF/LOOP deja execute : meme traitement que la
                     // forme d'origine, on poursuit directement apres ce bloc.
                     labels.emplace(compile_end);
                 }
-                out.push_back(compile_end);
+                // v379b : poursuite vers une adresse qui n'est pas une etiquette (fin de la
+                // sous-routine) ou bloc vide : c'est une sortie (`return false` de la forme
+                // d'origine, via `default`), pas une arete. Sans cette regle, toute
+                // sous-routine appelee par CALL retombait sur la forme d'origine (sub_105_134
+                // de Luigi's Mansion 2, inlinee 4 fois par vertex shader).
+                if (compile_end != label && labels.count(compile_end)) {
+                    out.push_back(compile_end);
+                }
             }
         }
         v379_collect = false;
         shader = saved;
+        // Sauts : seules les cibles qui sont des etiquettes forment une arete. Un saut vers une
+        // adresse sans etiquette (jamais parcourue par l'analyse) tombe, dans la forme d'origine,
+        // sur `default: return false` : c'est une sortie, traitee comme telle a l'emission.
+        for (const auto& [from, dest] : v379_edges) {
+            if (labels.count(dest)) {
+                succ[from].push_back(dest);
+            }
+        }
 
         // --- Blocs atteignables depuis BEGIN --------------------------------------------------
         std::set<u32> reach;
@@ -1733,6 +1749,7 @@ private:
 
         // --- Passe 2 : emission ----------------------------------------------------------------
         v379_pos = &pos;
+        v379_labels = &labels;
         v379_inconsistent = false;
         shader.AddLine("uint jmp_to = {}u;", subroutine.begin);
         for (const int c : order) {
@@ -1754,7 +1771,11 @@ private:
                 }
                 if (compile_end != PROGRAM_END) {
                     const auto end_it = pos.find(compile_end);
-                    if (end_it == pos.end()) {
+                    if (compile_end == label || !labels.count(compile_end)) {
+                        // v379b : sortie de la sous-routine (voir la passe 1), jamais `continue`.
+                        shader.AddLine("if (jmp_to == {}u) {{ jmp_to = {}u; }}", label,
+                                       compile_end);
+                    } else if (end_it == pos.end()) {
                         v379_inconsistent = true;
                     } else if (end_it->second <= v379_block_pos) {
                         shader.AddLine("if (jmp_to == {}u) {{ jmp_to = {}u; continue; }}", label,
@@ -1776,6 +1797,7 @@ private:
         shader.AddLine("return false;");
         v377_acyclic = false;
         v379_pos = nullptr;
+        v379_labels = nullptr;
 
         if (v379_inconsistent) {
             shader = saved;
@@ -1846,6 +1868,7 @@ private:
     bool v379_collect = false;
     std::vector<std::pair<u32, u32>> v379_edges;
     const std::map<u32, u32>* v379_pos = nullptr;
+    const std::set<u32>* v379_labels = nullptr;
     u32 v379_block_pos = 0;
     bool v379_inconsistent = false;
 };
