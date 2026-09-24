@@ -13,10 +13,27 @@ namespace Pica::Shader::Generator::GLSL {
 
 using RegGetter = std::function<std::string(u32)>;
 
+/// v380 : jmpu_spec_mask / jmpu_spec_values -- booleens uniformes dont la valeur est connue pour
+/// ce draw. Les JMPU qui les testent deviennent des sauts toujours pris ou jamais pris. 0 = aucune
+/// specialisation (comportement v379b).
 std::string DecompileProgram(const Pica::ProgramCode& program_code,
                              const Pica::SwizzleData& swizzle_data, u32 main_offset,
                              const RegGetter& inputreg_getter, const RegGetter& outputreg_getter,
-                             bool sanitize_mul);
+                             bool sanitize_mul, u16 jmpu_spec_mask = 0, u16 jmpu_spec_values = 0);
+
+/// v380 : masque des booleens testes par des JMPU situes dans une composante cyclique du flot de
+/// controle (boucle statique). Luigi's Mansion 2 : ses sauts sont tous des JMPU ; pour chaque
+/// valeur des booleens le graphe est sans cycle, mais tous les chemins ensemble en forment un, et
+/// le vertex shader (57 000 mots) compile en 37 a 98 s. 0 si aucun (cas de tous les autres jeux
+/// testes) ou si l'analyse echoue.
+u16 CyclicJumpBoolMask(const Pica::ProgramCode& program_code,
+                       const Pica::SwizzleData& swizzle_data, u32 main_offset);
+
+/// v380 : meme chose avec cache par (programme, swizzle, point d'entree). Appele a chaque draw par
+/// PicaVSConfigState::Init. BORKED3DS_V3DV_V380_NO_JMPU_SPEC=1 renvoie toujours 0 (A/B).
+u16 CyclicJumpBoolMaskCached(const Pica::ProgramCode& program_code,
+                             const Pica::SwizzleData& swizzle_data, u64 program_hash,
+                             u64 swizzle_hash, u32 main_offset);
 
 /// v117c-MIRROR (Plan A gating): true if this VS should receive the V3DV low-bank mirror, i.e. it
 /// reads f[64..95] via an address-register (dynamic) index AND never reads any uniform f[<32]. The

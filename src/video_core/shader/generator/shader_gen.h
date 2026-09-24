@@ -81,6 +81,12 @@ struct PicaVSConfigState {
     // Load operations to apply to the input vertex data
     std::array<AttribLoadFlags, 16> load_flags;
 
+    // v380 : booleens uniformes figes dans le shader genere. Seuls ceux qui controlent des JMPU
+    // formant une boucle statique (CyclicJumpBoolMaskCached) ; 0 pour tous les autres shaders.
+    // Font partie de la cle : une autre valeur de ces booleens = une autre variante du shader.
+    u16 jmpu_spec_mask;
+    u16 jmpu_spec_values;
+
     // output_map[output register index] -> output attribute index
     std::array<u32, 16> output_map;
 

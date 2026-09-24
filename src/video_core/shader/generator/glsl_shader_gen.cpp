@@ -551,7 +551,8 @@ layout(location = ATTRIBUTE_VIEW) out vec3 view;
     V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl before_decompile_program");
     auto program_source =
         DecompileProgram(setup.program_code, setup.swizzle_data, config.state.main_offset,
-                         get_input_reg, get_output_reg, config.state.sanitize_mul);
+                         get_input_reg, get_output_reg, config.state.sanitize_mul,
+                         config.state.jmpu_spec_mask, config.state.jmpu_spec_values);
     V115DA7Z3GLSLTraceRaw("v115d_a7z3_glsl after_decompile_program");
     V115DA7Z3GLSLTraceNumber("v115d_a7z3_glsl program_source_size", program_source.size());
 

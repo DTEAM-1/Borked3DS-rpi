@@ -726,10 +726,13 @@ public:
     GLSLGenerator(const std::set<Subroutine>& subroutines, const ProgramCode& program_code,
                   const SwizzleData& swizzle_data, u32 main_offset,
                   const RegGetter& inputreg_getter, const RegGetter& outputreg_getter,
-                  bool sanitize_mul)
+                  bool sanitize_mul, u16 jmpu_spec_mask = 0, u16 jmpu_spec_values = 0,
+                  u16* cyclic_jmpu_mask_out = nullptr)
         : subroutines(subroutines), program_code(program_code), swizzle_data(swizzle_data),
           main_offset(main_offset), inputreg_getter(inputreg_getter),
-          outputreg_getter(outputreg_getter), sanitize_mul(sanitize_mul) {
+          outputreg_getter(outputreg_getter), sanitize_mul(sanitize_mul),
+          v380_spec_mask(jmpu_spec_mask), v380_spec_values(jmpu_spec_values),
+          v380_cyclic_mask_out(cyclic_jmpu_mask_out) {
 
         Generate();
     }
@@ -1180,15 +1183,36 @@ private:
             case OpCode::Id::JMPC:
             case OpCode::Id::JMPU: {
                 std::string condition;
+                // v380 : JMPU dont le booleen est specialise (valeur connue pour ce draw, voir
+                // DecompileProgram) : le saut est soit toujours pris, soit jamais.
+                bool v380_resolved = false;
+                bool v380_taken = false;
+                int v380_bool_id = -1;
                 if (instr.opcode.Value() == OpCode::Id::JMPC) {
                     condition = EvaluateCondition(instr.flow_control);
                 } else {
                     bool invert_test = instr.flow_control.num_instructions & 1;
-                    condition = (invert_test ? "!" : "") +
-                                GetUniformBool(instr.flow_control.bool_uniform_id);
+                    const u32 bool_id = instr.flow_control.bool_uniform_id.Value();
+                    v380_bool_id = static_cast<int>(bool_id);
+                    condition = (invert_test ? "!" : "") + GetUniformBool(bool_id);
+                    if (bool_id < 16 && ((v380_spec_mask >> bool_id) & 1u) != 0) {
+                        v380_resolved = true;
+                        v380_taken = (((v380_spec_values >> bool_id) & 1u) != 0) != invert_test;
+                    }
                 }
 
                 const u32 jmp_dest = instr.flow_control.dest_offset.Value();
+                if (v380_resolved && !v380_taken) {
+                    // Jamais pris pour cette valeur du booleen : aucune arete, aucun code.
+                    shader.AddLine("// v380 : saut specialise, jamais pris");
+                    break;
+                }
+                if (v380_resolved) {
+                    // Toujours pris : la suite du bloc est morte. CompileRange s'arrete apres
+                    // cette instruction (pas de poursuite en fin de bloc).
+                    condition = "true";
+                    v380_stop = true;
+                }
                 if (v377_acyclic) {
                     // v379 : saut dans la chaine ordonnee par le flot (voir V379TryStructured).
                     // Passe de releve : on note l'arete bloc -> cible, le texte est jete.
@@ -1199,6 +1223,10 @@ private:
                     // tete de cette boucle et les gardes sautent jusqu'au bloc vise.
                     if (v379_collect) {
                         v379_edges.emplace_back(v377_block_label, jmp_dest);
+                        if (v380_bool_id >= 0 && !v380_resolved) {
+                            v380_block_bools[v377_block_label] |=
+                                static_cast<u16>(1u << (v380_bool_id & 15));
+                        }
                     }
                     bool backward = false;
                     if (v379_pos != nullptr) {
@@ -1372,6 +1400,12 @@ private:
         u32 program_counter;
         for (program_counter = begin; program_counter < (begin > end ? PROGRAM_END : end);) {
             program_counter = CompileInstr(program_counter);
+            if (v380_stop) {
+                // v380 : saut specialise toujours pris. Le reste du bloc est mort et il n'y a
+                // pas de poursuite : meme valeur de retour qu'un END.
+                v380_stop = false;
+                return PROGRAM_END;
+            }
         }
         return program_counter;
     }
@@ -1605,6 +1639,7 @@ private:
         v379_pos = nullptr;
         v379_inconsistent = false;
         v379_edges.clear();
+        v380_block_bools.clear();
         for (auto it = labels.begin(); it != labels.end(); ++it) {
             const u32 label = *it;
             const u32 next_label = next_label_of(it);
@@ -1648,7 +1683,7 @@ private:
             todo.pop_back();
             if (!labels.count(n)) {
                 v377_acyclic = false;
-                V379CountSubroutine(V379Form::Fallback, 0, 0, subroutine);
+                V380Count(V379Form::Fallback, 0, 0, subroutine);
                 return false; // cible hors des etiquettes connues : forme d'origine
             }
             if (!reach.insert(n).second) {
@@ -1732,8 +1767,22 @@ private:
         }
         if (order.size() != ncomp || comp_of[subroutine.begin] != order.front()) {
             v377_acyclic = false;
-            V379CountSubroutine(V379Form::Fallback, 0, 0, subroutine);
+            V380Count(V379Form::Fallback, 0, 0, subroutine);
             return false;
+        }
+
+        // v380 : booleens des JMPU situes dans une composante cyclique. Rapportes a l'appelant
+        // (CyclicJumpBoolMask) pour specialiser ces sauts : dans Luigi's Mansion 2, chaque
+        // valeur des booleens donne un graphe sans cycle.
+        if (v380_cyclic_mask_out != nullptr) {
+            for (const u32 n : reach) {
+                if (cyclic[comp_of[n]]) {
+                    const auto b = v380_block_bools.find(n);
+                    if (b != v380_block_bools.end()) {
+                        *v380_cyclic_mask_out |= b->second;
+                    }
+                }
+            }
         }
 
         std::map<u32, u32> pos;
@@ -1801,15 +1850,22 @@ private:
 
         if (v379_inconsistent) {
             shader = saved;
-            V379CountSubroutine(V379Form::Fallback, 0, 0, subroutine);
+            V380Count(V379Form::Fallback, 0, 0, subroutine);
             return false;
         }
-        V379CountSubroutine(loop_blocks == 0 ? V379Form::Acyclic : V379Form::Loops, loop_blocks,
+        V380Count(loop_blocks == 0 ? V379Form::Acyclic : V379Form::Loops, loop_blocks,
                             static_cast<u32>(reach.size()), subroutine);
         return true;
     }
 
     enum class V379Form { Acyclic, Loops, Fallback };
+
+    /// v380 -- pas de journal pendant l'analyse de CyclicJumpBoolMask (compilation a blanc).
+    void V380Count(V379Form form, u32 loop_blocks, u32 blocks, const Subroutine& subroutine) {
+        if (v380_cyclic_mask_out == nullptr) {
+            V379CountSubroutine(form, loop_blocks, blocks, subroutine);
+        }
+    }
 
     /// v379 -- journal : quelques lignes au debut, puis toute forme avec boucle ou repli.
     /// Le nom V377_FORME et le compteur boucle_conservee (= replis sur la forme d'origine) sont
@@ -1869,23 +1925,74 @@ private:
     std::vector<std::pair<u32, u32>> v379_edges;
     const std::map<u32, u32>* v379_pos = nullptr;
     const std::set<u32>* v379_labels = nullptr;
+
+    // v380 -- specialisation des JMPU (booleens connus pour ce draw) et releve des booleens
+    // de sauts situes dans des composantes cycliques.
+    const u16 v380_spec_mask;
+    const u16 v380_spec_values;
+    u16* const v380_cyclic_mask_out;
+    bool v380_stop = false;
+    std::map<u32, u16> v380_block_bools;
     u32 v379_block_pos = 0;
     bool v379_inconsistent = false;
 };
 
 std::string DecompileProgram(const ProgramCode& program_code, const SwizzleData& swizzle_data,
                              u32 main_offset, const RegGetter& inputreg_getter,
-                             const RegGetter& outputreg_getter, bool sanitize_mul) {
+                             const RegGetter& outputreg_getter, bool sanitize_mul,
+                             u16 jmpu_spec_mask, u16 jmpu_spec_values) {
 
     try {
         auto subroutines = ControlFlowAnalyzer(program_code, main_offset).MoveSubroutines();
         GLSLGenerator generator(subroutines, program_code, swizzle_data, main_offset,
-                                inputreg_getter, outputreg_getter, sanitize_mul);
+                                inputreg_getter, outputreg_getter, sanitize_mul, jmpu_spec_mask,
+                                jmpu_spec_values);
         return generator.MoveShaderCode();
     } catch (const DecompileFail& exception) {
         LOG_INFO(HW_GPU, "Shader decompilation failed: {}", exception.what());
         return "";
     }
+}
+
+u16 CyclicJumpBoolMask(const ProgramCode& program_code, const SwizzleData& swizzle_data,
+                       u32 main_offset) {
+    u16 mask = 0;
+    try {
+        auto subroutines = ControlFlowAnalyzer(program_code, main_offset).MoveSubroutines();
+        const RegGetter any_reg = [](u32) { return std::string{"reg_tmp0"}; };
+        GLSLGenerator generator(subroutines, program_code, swizzle_data, main_offset, any_reg,
+                                any_reg, false, 0, 0, &mask);
+    } catch (const std::exception&) {
+        return 0;
+    }
+    return mask;
+}
+
+u16 CyclicJumpBoolMaskCached(const ProgramCode& program_code, const SwizzleData& swizzle_data,
+                             u64 program_hash, u64 swizzle_hash, u32 main_offset) {
+    static const bool disabled = std::getenv("BORKED3DS_V3DV_V380_NO_JMPU_SPEC") != nullptr;
+    if (disabled) {
+        return 0;
+    }
+    static std::mutex mutex;
+    static std::map<std::tuple<u64, u64, u32>, u16> cache;
+    const auto key = std::make_tuple(program_hash, swizzle_hash, main_offset);
+    {
+        std::scoped_lock lock{mutex};
+        if (const auto it = cache.find(key); it != cache.end()) {
+            return it->second;
+        }
+    }
+    const u16 mask = CyclicJumpBoolMask(program_code, swizzle_data, main_offset);
+    {
+        std::scoped_lock lock{mutex};
+        cache.emplace(key, mask);
+    }
+    if (mask != 0) {
+        LOG_WARNING(HW_GPU, "V380_SPECIALISATION programme={:016x} entree={} booleens=0x{:04x}",
+                    program_hash, main_offset, mask);
+    }
+    return mask;
 }
 
 } // namespace Pica::Shader::Generator::GLSL

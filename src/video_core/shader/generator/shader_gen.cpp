@@ -18,6 +18,7 @@
 #include "common/settings.h"
 #include "video_core/pica/regs_internal.h"
 #include "video_core/pica/shader_setup.h"
+#include "video_core/shader/generator/glsl_shader_decompiler.h"
 #include "video_core/shader/generator/shader_gen.h"
 
 namespace Pica::Shader::Generator {
@@ -168,6 +169,17 @@ void PicaVSConfigState::Init(const Pica::RegsInternal& regs, Pica::ShaderSetup& 
     program_hash = setup.GetProgramCodeHash();
     swizzle_hash = setup.GetSwizzleDataHash();
     main_offset = regs.vs.main_offset;
+
+    // v380 : specialisation des JMPU en boucle statique (Luigi's Mansion 2). Masque calcule une
+    // fois par programme ; les valeurs sont celles des booleens uniformes de ce draw.
+    jmpu_spec_mask = GLSL::CyclicJumpBoolMaskCached(setup.program_code, setup.swizzle_data,
+                                                    program_hash, swizzle_hash, main_offset);
+    jmpu_spec_values = 0;
+    for (u32 i = 0; i < 16; ++i) {
+        if (((jmpu_spec_mask >> i) & 1u) != 0 && setup.uniforms.b[i]) {
+            jmpu_spec_values = static_cast<u16>(jmpu_spec_values | (1u << i));
+        }
+    }
 
     num_outputs = 0;
     load_flags.fill(AttribLoadFlags::Float);
