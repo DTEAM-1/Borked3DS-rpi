@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -14,6 +15,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 #include <fmt/format.h>
 #include <nihstro/shader_bytecode.h>
 #include "common/assert.h"
@@ -1188,21 +1190,39 @@ private:
 
                 const u32 jmp_dest = instr.flow_control.dest_offset.Value();
                 if (v377_acyclic) {
-                    // v377 : saut vers l'avant dans la chaine acyclique. On note la cible, puis
-                    // la suite du bloc courant n'est executee que si aucun saut n'a eu lieu.
-                    // Un saut vers l'arriere invalide la chaine : Generate() revient alors a la
-                    // forme en boucle pour cette sous-routine.
-                    if (jmp_dest <= offset) {
-                        v377_backward_jump = true;
+                    // v379 : saut dans la chaine ordonnee par le flot (voir V379TryStructured).
+                    // Passe de releve : on note l'arete bloc -> cible, le texte est jete.
+                    // Passe d'emission : une cible placee PLUS LOIN dans l'ordre d'emission se
+                    // traite comme en v377 (on note la cible, la suite du bloc est gardee) ; une
+                    // cible placee AVANT ou sur le bloc courant appartient forcement a la meme
+                    // composante cyclique, emise dans un `while (true)` : `continue` repart en
+                    // tete de cette boucle et les gardes sautent jusqu'au bloc vise.
+                    if (v379_collect) {
+                        v379_edges.emplace_back(v377_block_label, jmp_dest);
+                    }
+                    bool backward = false;
+                    if (v379_pos != nullptr) {
+                        const auto dest_it = v379_pos->find(jmp_dest);
+                        if (dest_it == v379_pos->end()) {
+                            v379_inconsistent = true;
+                        } else {
+                            backward = dest_it->second <= v379_block_pos;
+                        }
                     }
                     shader.AddLine("if ({}) {{", condition);
                     ++shader.scope;
-                    shader.AddLine("jmp_to = {}u;", jmp_dest);
+                    if (backward) {
+                        shader.AddLine("jmp_to = {}u; continue;", jmp_dest);
+                    } else {
+                        shader.AddLine("jmp_to = {}u;", jmp_dest);
+                    }
                     --shader.scope;
                     shader.AddLine("}}");
-                    shader.AddLine("if (jmp_to == {}u) {{", v377_block_label);
-                    ++shader.scope;
-                    ++v377_open_guards;
+                    if (!backward) {
+                        shader.AddLine("if (jmp_to == {}u) {{", v377_block_label);
+                        ++shader.scope;
+                        ++v377_open_guards;
+                    }
                     break;
                 }
 
@@ -1484,8 +1504,8 @@ private:
                 if (CompileRange(subroutine.begin, subroutine.end) != PROGRAM_END) {
                     shader.AddLine("return false;");
                 }
-            } else if (!V377LegacyVertexShaderForm() && V377TryAcyclic(subroutine)) {
-                // v377 : chaine acyclique emise (tous les sauts vont vers l'avant).
+            } else if (!V377LegacyVertexShaderForm() && V379TryStructured(subroutine)) {
+                // v379 : chaine ordonnee par le flot, boucles limitees aux cycles reels.
             } else {
                 labels.insert(subroutine.begin);
                 shader.AddLine("uint jmp_to = {}u;", subroutine.begin);
@@ -1529,42 +1549,68 @@ private:
     }
 
     /**
-     * v377 -- emet une sous-routine a etiquettes sous forme de chaine acyclique :
+     * v379 -- emet une sous-routine a etiquettes sous forme de chaine ORDONNEE PAR LE FLOT :
      *
      *     uint jmp_to = BEGIN;
-     *     if (jmp_to == L0) { ...bloc L0... ; if (jmp_to == L0) { jmp_to = L1; } }
-     *     if (jmp_to == L1) { ... }
+     *     if (jmp_to == A) { ...bloc A... ; if (jmp_to == A) { jmp_to = B; } }
+     *     while (true) {                                   // composante cyclique seulement
+     *         if (jmp_to == C) { ... if (x) { jmp_to = C; continue; } ... }
+     *         if (jmp_to == D) { ... }
+     *         break;
+     *     }
      *     return false;
      *
-     * Semantique identique a la forme `while (true) { switch (jmp_to) }` tant que tous les sauts
-     * vont vers l'avant : les blocs sont visites dans l'ordre croissant des etiquettes, un saut
-     * pose `jmp_to` sur une etiquette plus loin et les blocs intermediaires ne s'executent pas.
-     * Dans un bloc, les instructions qui suivent un saut sont gardees par `jmp_to == L`.
+     * v377 placait les blocs dans l'ordre des ADRESSES et abandonnait (forme `while/switch`
+     * d'origine) des qu'un saut visait une adresse plus basse. Luigi's Mansion 2 le montre : son
+     * programme principal commence a 159 et saute vers du code partage place en 2 et 118. Ce ne
+     * sont pas des boucles, seulement du code range plus haut ; v377 retombait pourtant sur la
+     * forme d'origine, et ses deux vertex shaders (56 000 mots) compilaient en 84 et 98 s.
      *
-     * Retourne false (et rend le texte du shader intact) si un saut vers l'arriere est trouve :
-     * l'appelant emet alors la forme en boucle d'origine pour cette sous-routine.
+     * Deux passes :
+     *   1. releve : chaque bloc [L, etiquette suivante) est compile a blanc ; on note ses aretes
+     *      (sauts et poursuite en fin de bloc). Le texte est jete.
+     *   2. emission : blocs atteignables depuis BEGIN, regroupes en composantes fortement
+     *      connexes (Tarjan), composantes dans l'ordre topologique, blocs d'une composante dans
+     *      l'ordre des adresses. Toute arete qui va plus loin dans cet ordre est traitee comme en
+     *      v377 (gardes). Toute arete qui revient en arriere reste dans sa composante, qui est
+     *      alors emise dans un `while (true)` ; l'arete devient `continue` et les gardes sautent
+     *      jusqu'au bloc vise. Une entree par le milieu d'une composante marche de la meme facon.
+     *
+     * Sans cycle, le resultat est la chaine acyclique de v377 (dans un autre ordre si du code
+     * est range plus haut). Avec cycles, seule la boucle reelle est emise en boucle, sans
+     * `switch`. Les etendues de blocs, la poursuite apres un bloc IF/LOOP (etiquette ajoutee en
+     * cours de route) et le retour `false` final sont ceux de la forme d'origine.
+     *
+     * Retourne false (texte intact) si la structure est incoherente (cible inconnue) :
+     * l'appelant emet alors la forme d'origine.
      */
-    bool V377TryAcyclic(const Subroutine& subroutine) {
+    bool V379TryStructured(const Subroutine& subroutine) {
         const ShaderWriter saved = shader;
         std::set<u32> labels = subroutine.labels;
         labels.insert(subroutine.begin);
 
+        const auto next_label_of = [&](std::set<u32>::const_iterator it) {
+            const auto next_it = std::next(it);
+            return next_it == labels.end() ? subroutine.end : *next_it;
+        };
+
+        // --- Passe 1 : releve des aretes -------------------------------------------------------
+        std::map<u32, std::vector<u32>> succ;
         v377_acyclic = true;
-        v377_backward_jump = false;
-        shader.AddLine("uint jmp_to = {}u;", subroutine.begin);
+        v379_collect = true;
+        v379_pos = nullptr;
+        v379_inconsistent = false;
+        v379_edges.clear();
         for (auto it = labels.begin(); it != labels.end(); ++it) {
             const u32 label = *it;
-            const auto next_it = std::next(it);
-            const u32 next_label = next_it == labels.end() ? subroutine.end : *next_it;
-
-            shader.AddLine("if (jmp_to == {}u) {{", label);
-            ++shader.scope;
+            const u32 next_label = next_label_of(it);
             v377_block_label = label;
             v377_open_guards = 0;
+            const std::size_t first_edge = v379_edges.size();
             const u32 compile_end = CompileRange(label, next_label);
-            for (; v377_open_guards > 0; --v377_open_guards) {
-                --shader.scope;
-                shader.AddLine("}}");
+            auto& out = succ[label];
+            for (std::size_t e = first_edge; e < v379_edges.size(); ++e) {
+                out.push_back(v379_edges[e].second);
             }
             if (compile_end != PROGRAM_END) {
                 if (compile_end > next_label) {
@@ -1572,39 +1618,211 @@ private:
                     // forme d'origine, on poursuit directement apres ce bloc.
                     labels.emplace(compile_end);
                 }
-                shader.AddLine("if (jmp_to == {}u) {{ jmp_to = {}u; }}", label, compile_end);
+                out.push_back(compile_end);
             }
-            --shader.scope;
-            shader.AddLine("}}");
+        }
+        v379_collect = false;
+        shader = saved;
+
+        // --- Blocs atteignables depuis BEGIN --------------------------------------------------
+        std::set<u32> reach;
+        std::vector<u32> todo{subroutine.begin};
+        while (!todo.empty()) {
+            const u32 n = todo.back();
+            todo.pop_back();
+            if (!labels.count(n)) {
+                v377_acyclic = false;
+                V379CountSubroutine(V379Form::Fallback, 0, 0, subroutine);
+                return false; // cible hors des etiquettes connues : forme d'origine
+            }
+            if (!reach.insert(n).second) {
+                continue;
+            }
+            for (const u32 s : succ[n]) {
+                todo.push_back(s);
+            }
+        }
+
+        // --- Composantes fortement connexes (Tarjan) -------------------------------------------
+        std::map<u32, int> index_of, low_of, comp_of;
+        std::vector<u32> stack;
+        std::set<u32> on_stack;
+        std::vector<std::vector<u32>> comps;
+        int next_index = 0;
+        std::function<void(u32)> strong = [&](u32 v) {
+            index_of[v] = low_of[v] = next_index++;
+            stack.push_back(v);
+            on_stack.insert(v);
+            for (const u32 w : succ[v]) {
+                if (!index_of.count(w)) {
+                    strong(w);
+                    low_of[v] = std::min(low_of[v], low_of[w]);
+                } else if (on_stack.count(w)) {
+                    low_of[v] = std::min(low_of[v], index_of[w]);
+                }
+            }
+            if (low_of[v] == index_of[v]) {
+                std::vector<u32> comp;
+                u32 w;
+                do {
+                    w = stack.back();
+                    stack.pop_back();
+                    on_stack.erase(w);
+                    comp_of[w] = static_cast<int>(comps.size());
+                    comp.push_back(w);
+                } while (w != v);
+                std::sort(comp.begin(), comp.end());
+                comps.push_back(std::move(comp));
+            }
+        };
+        for (const u32 n : reach) {
+            if (!index_of.count(n)) {
+                strong(n);
+            }
+        }
+
+        // --- Ordre topologique des composantes (la plus basse adresse d'abord a egalite) --------
+        const std::size_t ncomp = comps.size();
+        std::vector<int> indegree(ncomp, 0);
+        std::vector<std::set<int>> comp_succ(ncomp);
+        std::vector<bool> cyclic(ncomp, false);
+        for (const u32 n : reach) {
+            const int cn = comp_of[n];
+            for (const u32 s : succ[n]) {
+                const int cs = comp_of[s];
+                if (cs == cn) {
+                    cyclic[cn] = true;
+                } else if (comp_succ[cn].insert(cs).second) {
+                    ++indegree[cs];
+                }
+            }
+        }
+        std::set<std::pair<u32, int>> ready;
+        for (std::size_t c = 0; c < ncomp; ++c) {
+            if (indegree[c] == 0) {
+                ready.emplace(comps[c].front(), static_cast<int>(c));
+            }
+        }
+        std::vector<int> order;
+        while (!ready.empty()) {
+            const int c = ready.begin()->second;
+            ready.erase(ready.begin());
+            order.push_back(c);
+            for (const int s : comp_succ[c]) {
+                if (--indegree[s] == 0) {
+                    ready.emplace(comps[s].front(), s);
+                }
+            }
+        }
+        if (order.size() != ncomp || comp_of[subroutine.begin] != order.front()) {
+            v377_acyclic = false;
+            V379CountSubroutine(V379Form::Fallback, 0, 0, subroutine);
+            return false;
+        }
+
+        std::map<u32, u32> pos;
+        u32 loop_blocks = 0;
+        for (const int c : order) {
+            for (const u32 n : comps[c]) {
+                pos.emplace(n, static_cast<u32>(pos.size()));
+            }
+            if (cyclic[c]) {
+                loop_blocks += static_cast<u32>(comps[c].size());
+            }
+        }
+
+        // --- Passe 2 : emission ----------------------------------------------------------------
+        v379_pos = &pos;
+        v379_inconsistent = false;
+        shader.AddLine("uint jmp_to = {}u;", subroutine.begin);
+        for (const int c : order) {
+            if (cyclic[c]) {
+                shader.AddLine("while (true) {{");
+                ++shader.scope;
+            }
+            for (const u32 label : comps[c]) {
+                const u32 next_label = next_label_of(labels.find(label));
+                shader.AddLine("if (jmp_to == {}u) {{", label);
+                ++shader.scope;
+                v377_block_label = label;
+                v379_block_pos = pos.at(label);
+                v377_open_guards = 0;
+                const u32 compile_end = CompileRange(label, next_label);
+                for (; v377_open_guards > 0; --v377_open_guards) {
+                    --shader.scope;
+                    shader.AddLine("}}");
+                }
+                if (compile_end != PROGRAM_END) {
+                    const auto end_it = pos.find(compile_end);
+                    if (end_it == pos.end()) {
+                        v379_inconsistent = true;
+                    } else if (end_it->second <= v379_block_pos) {
+                        shader.AddLine("if (jmp_to == {}u) {{ jmp_to = {}u; continue; }}", label,
+                                       compile_end);
+                    } else {
+                        shader.AddLine("if (jmp_to == {}u) {{ jmp_to = {}u; }}", label,
+                                       compile_end);
+                    }
+                }
+                --shader.scope;
+                shader.AddLine("}}");
+            }
+            if (cyclic[c]) {
+                shader.AddLine("break;");
+                --shader.scope;
+                shader.AddLine("}}");
+            }
         }
         shader.AddLine("return false;");
         v377_acyclic = false;
+        v379_pos = nullptr;
 
-        V377CountSubroutine(!v377_backward_jump, subroutine);
-        if (v377_backward_jump) {
+        if (v379_inconsistent) {
             shader = saved;
+            V379CountSubroutine(V379Form::Fallback, 0, 0, subroutine);
             return false;
         }
+        V379CountSubroutine(loop_blocks == 0 ? V379Form::Acyclic : V379Form::Loops, loop_blocks,
+                            static_cast<u32>(reach.size()), subroutine);
         return true;
     }
 
-    /// v377 -- journal : quelques lignes au debut, puis toutes les formes en boucle conservees.
-    static void V377CountSubroutine(bool acyclic, const Subroutine& subroutine) {
+    enum class V379Form { Acyclic, Loops, Fallback };
+
+    /// v379 -- journal : quelques lignes au debut, puis toute forme avec boucle ou repli.
+    /// Le nom V377_FORME et le compteur boucle_conservee (= replis sur la forme d'origine) sont
+    /// gardes pour que les commandes de resume existantes restent valables.
+    static void V379CountSubroutine(V379Form form, u32 loop_blocks, u32 blocks,
+                                    const Subroutine& subroutine) {
         static std::mutex mutex;
         static u64 acyclic_count = 0;
-        static u64 loop_count = 0;
+        static u64 structured_count = 0;
+        static u64 fallback_count = 0;
         std::scoped_lock lock{mutex};
-        if (acyclic) {
+        switch (form) {
+        case V379Form::Acyclic:
             ++acyclic_count;
-        } else {
-            ++loop_count;
+            break;
+        case V379Form::Loops:
+            ++structured_count;
+            break;
+        case V379Form::Fallback:
+            ++fallback_count;
+            break;
         }
-        const u64 total = acyclic_count + loop_count;
-        if (!acyclic || total <= 8 || (total % 256) == 0) {
+        const u64 total = acyclic_count + structured_count + fallback_count;
+        if (form != V379Form::Acyclic || total <= 8 || (total % 256) == 0) {
+            const std::string what =
+                form == V379Form::Acyclic
+                    ? std::string{"acyclique"}
+                    : form == V379Form::Loops
+                          ? fmt::format("boucle_reelle({}/{}_blocs)", loop_blocks, blocks)
+                          : std::string{"boucle_conservee(repli)"};
             LOG_WARNING(HW_GPU,
-                        "V377_FORME {} {} | cumul: acyclique={} boucle_conservee={}",
-                        acyclic ? "acyclique" : "boucle_conservee(saut_arriere)",
-                        subroutine.GetName(), acyclic_count, loop_count);
+                        "V377_FORME {} {} | cumul: acyclique={} boucle_reelle={} "
+                        "boucle_conservee={}",
+                        what, subroutine.GetName(), acyclic_count, structured_count,
+                        fallback_count);
         }
     }
 
@@ -1619,11 +1837,17 @@ private:
 
     ShaderWriter shader;
 
-    // v377 -- etat de l'emission acyclique de la sous-routine en cours.
+    // v377 -- etat de l'emission de la sous-routine en cours.
     bool v377_acyclic = false;
-    bool v377_backward_jump = false;
     u32 v377_block_label = 0;
     int v377_open_guards = 0;
+
+    // v379 -- releve des aretes (passe 1) et position des blocs dans l'ordre d'emission (passe 2).
+    bool v379_collect = false;
+    std::vector<std::pair<u32, u32>> v379_edges;
+    const std::map<u32, u32>* v379_pos = nullptr;
+    u32 v379_block_pos = 0;
+    bool v379_inconsistent = false;
 };
 
 std::string DecompileProgram(const ProgramCode& program_code, const SwizzleData& swizzle_data,
