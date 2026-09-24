@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdlib>
 #include <exception>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <set>
@@ -56,6 +57,23 @@ public:
         return static_cast<std::size_t>(std::strtoull(v, nullptr, 10));
     }();
     return cap;
+}
+
+/// v377 -- forme des vertex shaders PICA traduits.
+///
+/// Mesure au banc v3dbench (Pi 5, Mesa 26.1.2, shader poison de Sonic, 26 900 mots SPIR-V) :
+///   - forme d'origine (boucle `while (true) { switch (jmp_to) }` + lecture d'uniforme gardee par
+///     un `if`) : 17 a 77 s en jeu, et plantage du pilote dans le banc ;
+///   - chaine acyclique `if (jmp_to == ...)` + lecture sans branche : 2,0 s, calcul identique.
+/// La boucle d'aiguillage oblige V3D a garder tous les registres PICA vivants a chaque tour ;
+/// les 84 `if` de controle de bornes coupent le code en blocs et empechent l'ordonnancement
+/// des lectures TMU. Les deux causes font echouer l'allocation de registres a repetition.
+///
+/// Par defaut : nouvelle forme. BORKED3DS_V3DV_V377_LEGACY_VS=1 rend la forme d'origine
+/// (comparaison A/B ; ne jamais poser =0, l'absence de la variable suffit).
+[[nodiscard]] bool V377LegacyVertexShaderForm() {
+    static const bool legacy = std::getenv("BORKED3DS_V3DV_V377_LEGACY_VS") != nullptr;
+    return legacy;
 }
 
 /// Describes the behaviour of code path of a given entry point and a return point.
@@ -1168,10 +1186,29 @@ private:
                                 GetUniformBool(instr.flow_control.bool_uniform_id);
                 }
 
+                const u32 jmp_dest = instr.flow_control.dest_offset.Value();
+                if (v377_acyclic) {
+                    // v377 : saut vers l'avant dans la chaine acyclique. On note la cible, puis
+                    // la suite du bloc courant n'est executee que si aucun saut n'a eu lieu.
+                    // Un saut vers l'arriere invalide la chaine : Generate() revient alors a la
+                    // forme en boucle pour cette sous-routine.
+                    if (jmp_dest <= offset) {
+                        v377_backward_jump = true;
+                    }
+                    shader.AddLine("if ({}) {{", condition);
+                    ++shader.scope;
+                    shader.AddLine("jmp_to = {}u;", jmp_dest);
+                    --shader.scope;
+                    shader.AddLine("}}");
+                    shader.AddLine("if (jmp_to == {}u) {{", v377_block_label);
+                    ++shader.scope;
+                    ++v377_open_guards;
+                    break;
+                }
+
                 shader.AddLine("if ({}) {{", condition);
                 ++shader.scope;
-                shader.AddLine("{{ jmp_to = {}u; break; }}",
-                               instr.flow_control.dest_offset.Value());
+                shader.AddLine("{{ jmp_to = {}u; break; }}", jmp_dest);
 
                 --shader.scope;
                 shader.AddLine("}}");
@@ -1338,8 +1375,15 @@ private:
         // UVs) the out-of-range fallback was the culprit. Off by default -> original behaviour.
         if (std::getenv("BORKED3DS_V3DV_CLAMP_OFFSET_INDEX") != nullptr) {
             shader.AddLine("return uniforms.f[min(index, 95u)];");
-        } else {
+        } else if (V377LegacyVertexShaderForm()) {
             shader.AddLine("return index < 96u ? uniforms.f[index] : vec4(1.0);");
+        } else {
+            // v377 : meme resultat que la forme d'origine (vec4(1.0) hors plage), mais sans
+            // branche : la lecture se fait toujours a un index borne, puis une selection garde
+            // la valeur de repli. Inlinee a chaque lecture indexee (84 fois dans le poison de
+            // Sonic), la forme `?:` produisait autant de `if` autour de lectures TMU.
+            shader.AddLine(
+                "return mix(uniforms.f[min(index, 95u)], vec4(1.0), bvec4(index >= 96u));");
         }
         --shader.scope;
         shader.AddLine("}}\n");
@@ -1440,6 +1484,8 @@ private:
                 if (CompileRange(subroutine.begin, subroutine.end) != PROGRAM_END) {
                     shader.AddLine("return false;");
                 }
+            } else if (!V377LegacyVertexShaderForm() && V377TryAcyclic(subroutine)) {
+                // v377 : chaine acyclique emise (tous les sauts vont vers l'avant).
             } else {
                 labels.insert(subroutine.begin);
                 shader.AddLine("uint jmp_to = {}u;", subroutine.begin);
@@ -1482,6 +1528,86 @@ private:
         }
     }
 
+    /**
+     * v377 -- emet une sous-routine a etiquettes sous forme de chaine acyclique :
+     *
+     *     uint jmp_to = BEGIN;
+     *     if (jmp_to == L0) { ...bloc L0... ; if (jmp_to == L0) { jmp_to = L1; } }
+     *     if (jmp_to == L1) { ... }
+     *     return false;
+     *
+     * Semantique identique a la forme `while (true) { switch (jmp_to) }` tant que tous les sauts
+     * vont vers l'avant : les blocs sont visites dans l'ordre croissant des etiquettes, un saut
+     * pose `jmp_to` sur une etiquette plus loin et les blocs intermediaires ne s'executent pas.
+     * Dans un bloc, les instructions qui suivent un saut sont gardees par `jmp_to == L`.
+     *
+     * Retourne false (et rend le texte du shader intact) si un saut vers l'arriere est trouve :
+     * l'appelant emet alors la forme en boucle d'origine pour cette sous-routine.
+     */
+    bool V377TryAcyclic(const Subroutine& subroutine) {
+        const ShaderWriter saved = shader;
+        std::set<u32> labels = subroutine.labels;
+        labels.insert(subroutine.begin);
+
+        v377_acyclic = true;
+        v377_backward_jump = false;
+        shader.AddLine("uint jmp_to = {}u;", subroutine.begin);
+        for (auto it = labels.begin(); it != labels.end(); ++it) {
+            const u32 label = *it;
+            const auto next_it = std::next(it);
+            const u32 next_label = next_it == labels.end() ? subroutine.end : *next_it;
+
+            shader.AddLine("if (jmp_to == {}u) {{", label);
+            ++shader.scope;
+            v377_block_label = label;
+            v377_open_guards = 0;
+            const u32 compile_end = CompileRange(label, next_label);
+            for (; v377_open_guards > 0; --v377_open_guards) {
+                --shader.scope;
+                shader.AddLine("}}");
+            }
+            if (compile_end != PROGRAM_END) {
+                if (compile_end > next_label) {
+                    // Etiquette situee dans un bloc IF/LOOP deja execute : meme traitement que la
+                    // forme d'origine, on poursuit directement apres ce bloc.
+                    labels.emplace(compile_end);
+                }
+                shader.AddLine("if (jmp_to == {}u) {{ jmp_to = {}u; }}", label, compile_end);
+            }
+            --shader.scope;
+            shader.AddLine("}}");
+        }
+        shader.AddLine("return false;");
+        v377_acyclic = false;
+
+        V377CountSubroutine(!v377_backward_jump, subroutine);
+        if (v377_backward_jump) {
+            shader = saved;
+            return false;
+        }
+        return true;
+    }
+
+    /// v377 -- journal : quelques lignes au debut, puis toutes les formes en boucle conservees.
+    static void V377CountSubroutine(bool acyclic, const Subroutine& subroutine) {
+        static std::mutex mutex;
+        static u64 acyclic_count = 0;
+        static u64 loop_count = 0;
+        std::scoped_lock lock{mutex};
+        if (acyclic) {
+            ++acyclic_count;
+        } else {
+            ++loop_count;
+        }
+        const u64 total = acyclic_count + loop_count;
+        if (!acyclic || total <= 8 || (total % 256) == 0) {
+            LOG_WARNING(HW_GPU,
+                        "V377_FORME {} {} | cumul: acyclique={} boucle_conservee={}",
+                        acyclic ? "acyclique" : "boucle_conservee(saut_arriere)",
+                        subroutine.GetName(), acyclic_count, loop_count);
+        }
+    }
+
 private:
     const std::set<Subroutine>& subroutines;
     const ProgramCode& program_code;
@@ -1492,6 +1618,12 @@ private:
     const bool sanitize_mul;
 
     ShaderWriter shader;
+
+    // v377 -- etat de l'emission acyclique de la sous-routine en cours.
+    bool v377_acyclic = false;
+    bool v377_backward_jump = false;
+    u32 v377_block_label = 0;
+    int v377_open_guards = 0;
 };
 
 std::string DecompileProgram(const ProgramCode& program_code, const SwizzleData& swizzle_data,
