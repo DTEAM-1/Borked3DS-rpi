@@ -5,6 +5,7 @@
 
 #include "common/assert.h"
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -64,6 +65,32 @@ namespace {
 [[nodiscard]] bool IsPresentTraceForceQuietEnabled() {
     return IsEnvEnabledLocal("BORKED3DS_V3DV_FORCE_QUIET_PRESENT") ||
            IsEnvEnabledLocal("BORKED3DS_V3DV_FORCE_QUIET_DISPLAY");
+}
+
+/// V383 -- NOMBRE MAXIMAL D'IMAGES QUE LE GPU PEUT AVOIR EN RETARD.
+///
+/// TB40 (Luigi's Mansion 2) : les clignotements (TV, cadres de texte, quart d'ecran, logo sur
+/// le labo, ecran du bas coupe en diagonale) disparaissent quand la vitesse est limitee a 15 %,
+/// c'est-a-dire quand le GPU n'est plus en retard (sub_lag ~300 -> ~70), sans aucun autre
+/// changement. C'est une course : une ressource est reecrite avant que le GPU l'ait lue.
+/// Luigi est le seul titre limite par le GPU (render 94-98 %), donc le seul ou le retard grandit.
+///
+/// Le scheduler.Finish() de SwapBuffers, qui bornait ce retard de fait, a ete retire en v115-D
+/// (interblocage au demarrage de Sonic). Ici on n'attend JAMAIS l'image courante : seulement
+/// une image deja soumise, dont le travail GPU ne depend plus du CPU -- pas d'interblocage.
+///
+/// Valeur N >= 1 : a la fin de l'image k, attendre que le GPU ait fini l'image k-N.
+/// Absente ou 0 : comportement inchange. Comme le GPU est le goulot, le CPU attend deja ;
+/// la borne ne devrait presque rien couter en vitesse.
+[[nodiscard]] u32 GetV383MaxGpuLagFrames() {
+    static const u32 cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_V383_MAX_GPU_LAG");
+        if (value == nullptr || *value == '\0') {
+            return 0u;
+        }
+        return static_cast<u32>(std::strtoul(value, nullptr, 10));
+    }();
+    return cached;
 }
 
 [[nodiscard]] bool IsPresentTraceEnabled() {
@@ -1682,6 +1709,35 @@ void RendererVulkan::SwapBuffers() {
         secondary_window->PollEvents();
     }
 #endif
+
+    // V383 : borne le retard du GPU (voir GetV383MaxGpuLagFrames). RenderToWindow vient de
+    // soumettre l'image (scheduler.Flush(render_ready)) : CurrentTick() - 1 est son tick.
+    if (const u32 max_lag = GetV383MaxGpuLagFrames(); max_lag > 0) {
+        static u64 v383_wait_us = 0;
+        static u64 v383_waits = 0;
+        static u64 v383_frames = 0;
+        v383_frame_ticks.push_back(scheduler.CurrentTick() - 1);
+        while (v383_frame_ticks.size() > max_lag) {
+            const u64 tick = v383_frame_ticks.front();
+            v383_frame_ticks.pop_front();
+            if (!scheduler.IsFree(tick)) {
+                const auto t0 = std::chrono::steady_clock::now();
+                scheduler.Wait(tick);
+                v383_wait_us += static_cast<u64>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count());
+                ++v383_waits;
+            }
+        }
+        if (++v383_frames % 60 == 0) {
+            LOG_INFO(Render_Vulkan, "V383_LAG max={} images=60 attentes={} attente_ms={}",
+                     max_lag, v383_waits, v383_wait_us / 1000);
+            v383_wait_us = 0;
+            v383_waits = 0;
+        }
+    }
+
     rasterizer.TickFrame();
     EndFrame();
 }

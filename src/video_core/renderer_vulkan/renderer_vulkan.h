@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <deque>
 #include "common/common_types.h"
 #include "common/math_util.h"
 #include "video_core/renderer_base.h"
@@ -136,6 +137,10 @@ private:
     std::array<ScreenInfo, 3> screen_infos{};
     PresentUniformData draw_info{};
     vk::ClearColorValue clear_color{};
+
+    /// V383 : ticks GPU des dernieres images soumises, pour borner le retard du GPU
+    /// (BORKED3DS_V3DV_V383_MAX_GPU_LAG). Vide si la borne est desactivee.
+    std::deque<u64> v383_frame_ticks;
 };
 
 } // namespace Vulkan
