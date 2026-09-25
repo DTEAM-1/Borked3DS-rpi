@@ -1272,6 +1272,12 @@ bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
                 Pica::Shader::Generator::PicaVSConfigState famille;
                 std::memcpy(&famille, &config.state, sizeof(famille));
                 famille.load_flags.fill(Pica::Shader::Generator::AttribLoadFlags{});
+                // v385 : la famille reste l'identite du programme PICA -- les valeurs figees
+                // (booleens, compteurs de boucle) en sont exclues, comme les formats de sommets.
+                famille.jmpu_spec_mask = 0;
+                famille.jmpu_spec_values = 0;
+                famille.loop_spec_mask = 0;
+                famille.loop_spec_values.fill(0);
                 shader.v384_famille = Common::ComputeStructHash64(famille);
             }
             workers.QueueWork([device, &shader] {
