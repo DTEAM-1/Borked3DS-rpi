@@ -187,6 +187,61 @@ constexpr u64 POISON_THRESHOLD_NS = 2'000'000'000ull; // 2 s
     return enabled;
 }
 
+// V384 (mesure A) -- IDENTITE DES PIPELINES LOURDS.
+//
+// Seuil propre, distinct du seuil POISON (2 s, garde pour la comparabilite avec les recaps
+// et pour ne pas multiplier les SPIR-V copies dans /tmp). Mesure TB43/TB44 (plus longue
+// compilation par fenetre d'une seconde) : 0 cas entre 0,1 et 0,5 s, puis 5 a 15 fenetres
+// entre 0,5 et 2 s -- des pipelines deja visibles a l'ecran (un trou de ~30 a 120 images)
+// que le seuil de 2 s ignorait. Defaut 500 ms ; BORKED3DS_V3DV_V384_ID_MS=N le remplace.
+[[nodiscard]] u64 GetV384IdThresholdNs() {
+    static const u64 cached = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_V384_ID_MS");
+        u64 ms = 500;
+        if (v != nullptr && *v != '\0') {
+            ms = std::strtoull(v, nullptr, 10);
+        }
+        return ms * 1'000'000ull;
+    }();
+    return cached;
+}
+
+void V384LogPipelineId(const Instance& instance, const PipelineInfo& info,
+                       const std::array<Shader*, 3>& stages, u64 elapsed_ns) {
+    const u64 hash = info.Hash(instance);
+    {
+        static std::mutex logged_mutex;
+        static std::unordered_set<u64> logged_hashes;
+        std::scoped_lock lock{logged_mutex};
+        if (!logged_hashes.insert(hash).second) {
+            return;
+        }
+    }
+    // Identite de chaque stage et format de chaque attribut de sommet.
+    // Permet de dire, pour une serie de poisons, s'il s'agit de shaders differents ou du
+    // meme programme recompile pour des etats / formats differents (methodes G et C).
+    const auto stage_key = [&](u32 i) -> u64 { return stages[i] ? stages[i]->v384_cle : 0; };
+    const u64 vs_famille = stages[0] ? stages[0]->v384_famille : 0;
+    std::string vtx_fmt;
+    for (u32 a = 0; a < info.vertex_layout.attribute_count && a < info.vertex_layout.attributes.size();
+         ++a) {
+        const VertexAttribute& attr = info.vertex_layout.attributes[a];
+        if (!vtx_fmt.empty()) {
+            vtx_fmt += '/';
+        }
+        vtx_fmt += fmt::format("{}:{}x{}", attr.location.Value(),
+                               static_cast<u32>(attr.type.Value()), attr.size.Value());
+    }
+    if (vtx_fmt.empty()) {
+        vtx_fmt = "-";
+    }
+    LOG_INFO(Render_Vulkan,
+             "V384_POISON_ID hash={:#018x} compile_ms={:.1f} vs_cle={:#018x} "
+             "vs_famille={:#018x} fs_cle={:#018x} gs_cle={:#018x} vtx_fmt={}",
+             hash, elapsed_ns / 1.0e6, stage_key(0), vs_famille, stage_key(1), stage_key(2),
+             vtx_fmt);
+}
+
 // Dumpe la signature complete d'un pipeline dont la compilation a explose, pour
 // identifier CE qui empoisonne le compilateur V3DV (shader ? etat baked ?).
 // Ne dumpe qu'UNE fois par hash. Ecrit aussi le SPIR-V de chaque stage present
@@ -234,29 +289,6 @@ void DumpPoisonPipeline(const Instance& instance, const PipelineInfo& info,
         dumped_files = "-";
     }
 
-    // V384 (mesure A) : identite de chaque stage et format de chaque attribut de sommet.
-    // Permet de dire, pour une serie de poisons, s'il s'agit de shaders differents ou du
-    // meme programme recompile pour des etats / formats differents (methodes G et C).
-    const auto stage_key = [&](u32 i) -> u64 { return stages[i] ? stages[i]->v384_cle : 0; };
-    const u64 vs_famille = stages[0] ? stages[0]->v384_famille : 0;
-    std::string vtx_fmt;
-    for (u32 a = 0; a < info.vertex_layout.attribute_count && a < info.vertex_layout.attributes.size();
-         ++a) {
-        const VertexAttribute& attr = info.vertex_layout.attributes[a];
-        if (!vtx_fmt.empty()) {
-            vtx_fmt += '/';
-        }
-        vtx_fmt += fmt::format("{}:{}x{}", attr.location.Value(),
-                               static_cast<u32>(attr.type.Value()), attr.size.Value());
-    }
-    if (vtx_fmt.empty()) {
-        vtx_fmt = "-";
-    }
-    LOG_INFO(Render_Vulkan,
-             "V384_POISON_ID hash={:#018x} compile_ms={:.1f} vs_cle={:#018x} "
-             "vs_famille={:#018x} fs_cle={:#018x} gs_cle={:#018x} vtx_fmt={}",
-             hash, elapsed_ns / 1.0e6, stage_key(0), vs_famille, stage_key(1), stage_key(2),
-             vtx_fmt);
 
     LOG_INFO(
         Render_Vulkan,
@@ -958,6 +990,9 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
                     // Avec A7Z8_DUMP_ALL_SPIRV, on capture aussi les pipelines RAPIDES
                     // (scene boule Sonic) pour trancher la piste precision fp16.
                     DumpPoisonPipeline(instance, info, stages, build_elapsed_ns);
+                }
+                if (build_elapsed_ns > GetV384IdThresholdNs()) {
+                    V384LogPipelineId(instance, info, stages, build_elapsed_ns);
                 }
             }
         }
