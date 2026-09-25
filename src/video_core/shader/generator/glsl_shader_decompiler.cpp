@@ -727,12 +727,16 @@ public:
                   const SwizzleData& swizzle_data, u32 main_offset,
                   const RegGetter& inputreg_getter, const RegGetter& outputreg_getter,
                   bool sanitize_mul, u16 jmpu_spec_mask = 0, u16 jmpu_spec_values = 0,
-                  u16* cyclic_jmpu_mask_out = nullptr)
+                  u16* cyclic_jmpu_mask_out = nullptr, u8 loop_spec_mask = 0,
+                  const std::array<u32, 4>& loop_spec_values = {},
+                  u16* used_bools_out = nullptr, u8* used_loops_out = nullptr)
         : subroutines(subroutines), program_code(program_code), swizzle_data(swizzle_data),
           main_offset(main_offset), inputreg_getter(inputreg_getter),
           outputreg_getter(outputreg_getter), sanitize_mul(sanitize_mul),
           v380_spec_mask(jmpu_spec_mask), v380_spec_values(jmpu_spec_values),
-          v380_cyclic_mask_out(cyclic_jmpu_mask_out) {
+          v380_cyclic_mask_out(cyclic_jmpu_mask_out), v385_loop_mask(loop_spec_mask),
+          v385_loop_values(loop_spec_values), v385_used_bools_out(used_bools_out),
+          v385_used_loops_out(used_loops_out) {
 
         Generate();
     }
@@ -827,7 +831,18 @@ private:
     }
 
     /// Generates code representing a bool uniform
+    /// v385 : un booleen dont la valeur est connue pour ce draw (bit de v380_spec_mask) est emis
+    /// comme constante : IFU / CALLU / JMPU deviennent des tests sur `true` / `false`, que le
+    /// compilateur du pilote elimine. Sinon : lecture de l'uniforme, comme avant.
     std::string GetUniformBool(u32 index) const {
+        if (index < 16) {
+            if (v385_used_bools_out != nullptr) {
+                *v385_used_bools_out = static_cast<u16>(*v385_used_bools_out | (1u << index));
+            }
+            if (((v380_spec_mask >> index) & 1u) != 0) {
+                return ((v380_spec_values >> index) & 1u) != 0 ? "true" : "false";
+            }
+        }
         return fmt::format("uniforms.b[{}]", index);
     }
 
@@ -1345,8 +1360,20 @@ private:
             }
 
             case OpCode::Id::LOOP: {
-                const std::string int_uniform =
-                    fmt::format("uniforms.i[{}]", instr.flow_control.int_uniform_id.Value());
+                // v385 : compteur de boucle connu pour ce draw -> litteral (bornes constantes,
+                // le pilote peut derouler). Sinon : lecture de l'uniforme, comme avant.
+                const u32 int_id = instr.flow_control.int_uniform_id.Value();
+                if (v385_used_loops_out != nullptr && int_id < 4) {
+                    *v385_used_loops_out = static_cast<u8>(*v385_used_loops_out | (1u << int_id));
+                }
+                std::string int_uniform;
+                if (int_id < 4 && ((v385_loop_mask >> int_id) & 1u) != 0) {
+                    const u32 v = v385_loop_values[int_id];
+                    int_uniform = fmt::format("uvec3({}u, {}u, {}u)", v & 0xFFu, (v >> 8) & 0xFFu,
+                                              (v >> 16) & 0xFFu);
+                } else {
+                    int_uniform = fmt::format("uniforms.i[{}]", int_id);
+                }
 
                 shader.AddLine("address_registers.z = int({}.y);", int_uniform);
 
@@ -1935,18 +1962,26 @@ private:
     std::map<u32, u16> v380_block_bools;
     u32 v379_block_pos = 0;
     bool v379_inconsistent = false;
+
+    // v385 -- compteurs de boucle specialises (bits 0-3 = i[0..3], valeur x | y << 8 | z << 16)
+    // et releve des booleens / compteurs lus par le programme (compilation a blanc).
+    const u8 v385_loop_mask;
+    const std::array<u32, 4> v385_loop_values;
+    u16* const v385_used_bools_out;
+    u8* const v385_used_loops_out;
 };
 
 std::string DecompileProgram(const ProgramCode& program_code, const SwizzleData& swizzle_data,
                              u32 main_offset, const RegGetter& inputreg_getter,
                              const RegGetter& outputreg_getter, bool sanitize_mul,
-                             u16 jmpu_spec_mask, u16 jmpu_spec_values) {
+                             u16 jmpu_spec_mask, u16 jmpu_spec_values, u8 loop_spec_mask,
+                             const std::array<u32, 4>& loop_spec_values) {
 
     try {
         auto subroutines = ControlFlowAnalyzer(program_code, main_offset).MoveSubroutines();
         GLSLGenerator generator(subroutines, program_code, swizzle_data, main_offset,
                                 inputreg_getter, outputreg_getter, sanitize_mul, jmpu_spec_mask,
-                                jmpu_spec_values);
+                                jmpu_spec_values, nullptr, loop_spec_mask, loop_spec_values);
         return generator.MoveShaderCode();
     } catch (const DecompileFail& exception) {
         LOG_INFO(HW_GPU, "Shader decompilation failed: {}", exception.what());
@@ -1993,6 +2028,139 @@ u16 CyclicJumpBoolMaskCached(const ProgramCode& program_code, const SwizzleData&
                     program_hash, main_offset, mask);
     }
     return mask;
+}
+
+// ---------------------------------------------------------------------------------------------
+// v385 -- SPECIALISATION DE TOUS LES BOOLEENS ET COMPTEURS DE BOUCLE LUS PAR LE PROGRAMME.
+//
+// Mesure TB46-TB51 (six jeux, caches vides) : les pipelines lourds (>= 0,5 s) reviennent a
+// quelques programmes PICA (Kid Icarus : 82 pipelines, 2 programmes) dont le VS est recompile par
+// V3D pour chaque pipeline. Banc TB52 (VS poison de Sonic, opt_compile_time) : booleens b[] et
+// compteur i0 figes en constantes -> 1 086 -> 560 ms (-48 %), avec GS 878 -> 420 ms (-52 %).
+//
+// Masque par programme (compilation a blanc, en cache) = booleens lus par IFU / CALLU / JMPU et
+// compteurs lus par LOOP. Le masque ne change jamais le resultat : les valeurs figees sont celles du
+// draw courant et font partie de la cle du VS. Il ne change que le nombre de variantes, borne par
+// un plafond par programme (BORKED3DS_V3DV_V385_MAX_VARIANTS, defaut 4) : au-dela, les nouvelles
+// combinaisons prennent la forme generique (seuls restent figes les JMPU cycliques de v380).
+// Echappatoire (A/B) : BORKED3DS_V3DV_V385_NO_SPEC=1.
+// ---------------------------------------------------------------------------------------------
+namespace {
+struct V385ProgramInfo {
+    u16 cyclic_bools = 0;
+    u16 used_bools = 0;
+    u8 used_loops = 0;
+    std::set<std::pair<u16, std::array<u32, 4>>> variants;
+    bool capped = false;
+};
+} // Anonymous namespace
+
+V385Spec V385ComputeSpec(const ProgramCode& program_code, const SwizzleData& swizzle_data,
+                         u64 program_hash, u64 swizzle_hash, u32 main_offset,
+                         const std::array<bool, 16>& bools,
+                         const std::array<u32, 4>& loop_values) {
+    static const bool v380_disabled =
+        std::getenv("BORKED3DS_V3DV_V380_NO_JMPU_SPEC") != nullptr;
+    static const bool v385_disabled = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_V385_NO_SPEC");
+        return v != nullptr && v[0] != '\0';
+    }();
+    static const std::size_t max_variants = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_V385_MAX_VARIANTS");
+        const unsigned long n = (v != nullptr && v[0] != '\0') ? std::strtoul(v, nullptr, 10) : 4;
+        return static_cast<std::size_t>(n == 0 ? 1 : n);
+    }();
+    static std::mutex mutex;
+    static std::map<std::tuple<u64, u64, u32>, V385ProgramInfo> programs;
+
+    const auto key = std::make_tuple(program_hash, swizzle_hash, main_offset);
+    std::unique_lock lock{mutex};
+    auto it = programs.find(key);
+    if (it == programs.end()) {
+        lock.unlock();
+        V385ProgramInfo info;
+        try {
+            auto subroutines = ControlFlowAnalyzer(program_code, main_offset).MoveSubroutines();
+            const RegGetter any_reg = [](u32) { return std::string{"reg_tmp0"}; };
+            u16 cyclic = 0;
+            GLSLGenerator generator(subroutines, program_code, swizzle_data, main_offset, any_reg,
+                                    any_reg, false, 0, 0, &cyclic, 0, {}, &info.used_bools,
+                                    &info.used_loops);
+            info.cyclic_bools = v380_disabled ? 0 : cyclic;
+        } catch (const std::exception&) {
+            info = V385ProgramInfo{};
+        }
+        if (v385_disabled) {
+            info.used_bools = 0;
+            info.used_loops = 0;
+        }
+        if (info.cyclic_bools != 0) {
+            LOG_WARNING(HW_GPU,
+                        "V380_SPECIALISATION programme={:016x} entree={} booleens=0x{:04x}",
+                        program_hash, main_offset, info.cyclic_bools);
+        }
+        if (info.used_bools != 0 || info.used_loops != 0) {
+            LOG_WARNING(HW_GPU,
+                        "V385_SPECIALISATION programme={:016x} entree={} booleens=0x{:04x} "
+                        "boucles=0x{:x} plafond={}",
+                        program_hash, main_offset, info.used_bools, info.used_loops,
+                        max_variants);
+        }
+        lock.lock();
+        it = programs.emplace(key, std::move(info)).first;
+    }
+    V385ProgramInfo& info = it->second;
+
+    const auto bool_values_of = [&](u16 mask) {
+        u16 values = 0;
+        for (u32 i = 0; i < 16; ++i) {
+            if (((mask >> i) & 1u) != 0 && bools[i]) {
+                values = static_cast<u16>(values | (1u << i));
+            }
+        }
+        return values;
+    };
+
+    V385Spec spec{};
+    const u16 full_mask = static_cast<u16>(info.cyclic_bools | info.used_bools);
+    if (info.used_bools != 0 || info.used_loops != 0) {
+        const u16 full_values = bool_values_of(full_mask);
+        std::array<u32, 4> loops{};
+        for (u32 i = 0; i < 4; ++i) {
+            if (((info.used_loops >> i) & 1u) != 0) {
+                loops[i] = loop_values[i] & 0xFFFFFFu;
+            }
+        }
+        const auto variant = std::make_pair(full_values, loops);
+        bool admitted = info.variants.count(variant) != 0;
+        if (!admitted && info.variants.size() < max_variants) {
+            info.variants.insert(variant);
+            admitted = true;
+            LOG_WARNING(HW_GPU,
+                        "V385_VARIANTE programme={:016x} entree={} n={} booleens=0x{:04x} "
+                        "i0={:06x} i1={:06x} i2={:06x} i3={:06x}",
+                        program_hash, main_offset, info.variants.size(), full_values, loops[0],
+                        loops[1], loops[2], loops[3]);
+        }
+        if (admitted) {
+            spec.bool_mask = full_mask;
+            spec.bool_values = full_values;
+            spec.loop_mask = info.used_loops;
+            spec.loop_values = loops;
+            return spec;
+        }
+        if (!info.capped) {
+            info.capped = true;
+            LOG_WARNING(HW_GPU,
+                        "V385_PLAFOND programme={:016x} entree={} plafond={} : combinaisons "
+                        "suivantes en forme generique",
+                        program_hash, main_offset, max_variants);
+        }
+    }
+    // Forme generique : seuls les JMPU cycliques de v380 restent figes (indispensable pour Luigi).
+    spec.bool_mask = info.cyclic_bools;
+    spec.bool_values = bool_values_of(info.cyclic_bools);
+    return spec;
 }
 
 } // namespace Pica::Shader::Generator::GLSL

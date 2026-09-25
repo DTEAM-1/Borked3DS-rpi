@@ -170,16 +170,23 @@ void PicaVSConfigState::Init(const Pica::RegsInternal& regs, Pica::ShaderSetup& 
     swizzle_hash = setup.GetSwizzleDataHash();
     main_offset = regs.vs.main_offset;
 
-    // v380 : specialisation des JMPU en boucle statique (Luigi's Mansion 2). Masque calcule une
-    // fois par programme ; les valeurs sont celles des booleens uniformes de ce draw.
-    jmpu_spec_mask = GLSL::CyclicJumpBoolMaskCached(setup.program_code, setup.swizzle_data,
-                                                    program_hash, swizzle_hash, main_offset);
-    jmpu_spec_values = 0;
-    for (u32 i = 0; i < 16; ++i) {
-        if (((jmpu_spec_mask >> i) & 1u) != 0 && setup.uniforms.b[i]) {
-            jmpu_spec_values = static_cast<u16>(jmpu_spec_values | (1u << i));
-        }
+    // v380 : specialisation des JMPU en boucle statique (Luigi's Mansion 2).
+    // v385 : etendue a tous les booleens lus par IFU / CALLU / JMPU et aux compteurs de boucle,
+    // avec un plafond de variantes par programme (voir V385ComputeSpec). Masques calcules une fois
+    // par programme ; les valeurs sont celles de ce draw.
+    std::array<u32, 4> loop_values{};
+    for (u32 i = 0; i < 4; ++i) {
+        const auto& iu = regs.vs.int_uniforms[i];
+        loop_values[i] = (iu.x.Value() & 0xFFu) | ((iu.y.Value() & 0xFFu) << 8) |
+                         ((iu.z.Value() & 0xFFu) << 16);
     }
+    const GLSL::V385Spec spec =
+        GLSL::V385ComputeSpec(setup.program_code, setup.swizzle_data, program_hash, swizzle_hash,
+                              main_offset, setup.uniforms.b, loop_values);
+    jmpu_spec_mask = spec.bool_mask;
+    jmpu_spec_values = spec.bool_values;
+    loop_spec_mask = spec.loop_mask;
+    loop_spec_values = spec.loop_values;
 
     num_outputs = 0;
     load_flags.fill(AttribLoadFlags::Float);

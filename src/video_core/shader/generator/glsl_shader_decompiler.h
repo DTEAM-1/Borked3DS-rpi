@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <array>
 #include <functional>
 #include <string>
 #include "video_core/pica/shader_setup.h"
@@ -19,7 +20,8 @@ using RegGetter = std::function<std::string(u32)>;
 std::string DecompileProgram(const Pica::ProgramCode& program_code,
                              const Pica::SwizzleData& swizzle_data, u32 main_offset,
                              const RegGetter& inputreg_getter, const RegGetter& outputreg_getter,
-                             bool sanitize_mul, u16 jmpu_spec_mask = 0, u16 jmpu_spec_values = 0);
+                             bool sanitize_mul, u16 jmpu_spec_mask = 0, u16 jmpu_spec_values = 0,
+                             u8 loop_spec_mask = 0, const std::array<u32, 4>& loop_spec_values = {});
 
 /// v380 : masque des booleens testes par des JMPU situes dans une composante cyclique du flot de
 /// controle (boucle statique). Luigi's Mansion 2 : ses sauts sont tous des JMPU ; pour chaque
@@ -34,6 +36,24 @@ u16 CyclicJumpBoolMask(const Pica::ProgramCode& program_code,
 u16 CyclicJumpBoolMaskCached(const Pica::ProgramCode& program_code,
                              const Pica::SwizzleData& swizzle_data, u64 program_hash,
                              u64 swizzle_hash, u32 main_offset);
+
+/// v385 : specialisation d'un draw. bool_mask / bool_values vont dans jmpu_spec_mask / values
+/// (JMPU resolus comme en v380, IFU / CALLU / JMPU emis sur des constantes) ; loop_mask /
+/// loop_values figent les compteurs lus par LOOP (x | y << 8 | z << 16).
+struct V385Spec {
+    u16 bool_mask;
+    u16 bool_values;
+    u8 loop_mask;
+    std::array<u32, 4> loop_values;
+};
+
+/// v385 : masques du programme (en cache) et plafond de variantes. Remplace, pour
+/// PicaVSConfigState::Init, l'appel a CyclicJumpBoolMaskCached (le masque cyclique de v380 est
+/// toujours applique, meme au-dela du plafond). loop_values[i] = x | y << 8 | z << 16 de i[i].
+V385Spec V385ComputeSpec(const Pica::ProgramCode& program_code,
+                         const Pica::SwizzleData& swizzle_data, u64 program_hash,
+                         u64 swizzle_hash, u32 main_offset, const std::array<bool, 16>& bools,
+                         const std::array<u32, 4>& loop_values);
 
 /// v117c-MIRROR (Plan A gating): true if this VS should receive the V3DV low-bank mirror, i.e. it
 /// reads f[64..95] via an address-register (dynamic) index AND never reads any uniform f[<32]. The

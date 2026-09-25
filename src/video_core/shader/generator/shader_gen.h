@@ -87,6 +87,12 @@ struct PicaVSConfigState {
     u16 jmpu_spec_mask;
     u16 jmpu_spec_values;
 
+    // v385 : compteurs de boucle (i[0..3]) figes dans le shader genere. Bits 0-3 du masque ;
+    // valeurs x | y << 8 | z << 16, celles du draw courant. Partie de la cle, comme ci-dessus.
+    // v385 etend aussi jmpu_spec_mask / values a tous les booleens lus par IFU / CALLU / JMPU.
+    u8 loop_spec_mask;
+    std::array<u32, 4> loop_spec_values;
+
     // output_map[output register index] -> output attribute index
     std::array<u32, 16> output_map;
 
