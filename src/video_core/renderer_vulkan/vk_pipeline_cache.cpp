@@ -7,6 +7,7 @@
 #include <boost/container/static_vector.hpp>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -320,7 +321,61 @@ void PipelineCache::BuildLayout() {
 }
 
 PipelineCache::~PipelineCache() {
+    // V384 : une sauvegarde de fond peut etre en cours ; la terminer avant la derniere.
+    if (v384_save_thread.joinable()) {
+        v384_save_thread.join();
+    }
     SaveDiskCache();
+}
+
+// ---------------------------------------------------------------------------------------
+// V384 (methode E) -- SAUVEGARDER LA CACHE PIPELINE PENDANT LA PARTIE.
+//
+// La cache n'etait ecrite qu'a la destruction du PipelineCache (sortie propre). Un plantage,
+// une coupure de courant ou un arret brutal perdait TOUTES les compilations de la session
+// (jusqu'a plusieurs minutes de poisons au premier passage). Ici : au plus toutes les 30 s,
+// et seulement si de nouveaux pipelines ont ete crees depuis la derniere sauvegarde, la
+// cache est ecrite sur un fil de fond (aucun gel du rendu). Ecriture atomique (.tmp puis
+// rename) : un arret pendant l'ecriture laisse l'ancien fichier intact.
+// Echappatoire (A/B seulement) : BORKED3DS_V3DV_V384_NO_CACHE_SAVE=1.
+// ---------------------------------------------------------------------------------------
+void PipelineCache::V384MaybeSaveDiskCache() {
+    static const bool disabled = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_V384_NO_CACHE_SAVE");
+        return v != nullptr && v[0] != '\0';
+    }();
+    constexpr auto kPeriod = std::chrono::seconds(30);
+    if (disabled || !pipeline_cache || !Settings::values.use_disk_shader_cache) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (v384_last_save.time_since_epoch().count() == 0) {
+        v384_last_save = now; // premiere image : on laisse passer une periode
+        v384_saved_pipelines = graphics_pipelines.size();
+        return;
+    }
+    if (now - v384_last_save < kPeriod) {
+        return;
+    }
+    const std::size_t count = graphics_pipelines.size();
+    if (count == v384_saved_pipelines || v384_save_running.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (v384_save_thread.joinable()) {
+        v384_save_thread.join(); // fil precedent deja termine (save_running faux)
+    }
+    v384_last_save = now;
+    v384_saved_pipelines = count;
+    v384_save_running.store(true, std::memory_order_release);
+    v384_save_thread = std::thread([this, count] {
+        const auto t0 = std::chrono::steady_clock::now();
+        SaveDiskCache();
+        LOG_WARNING(Render_Vulkan, "V384_CACHE_EN_PARTIE pipelines={} ms={}", count,
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count());
+        v384_save_running.store(false, std::memory_order_release);
+    });
 }
 
 void PipelineCache::LoadDiskCache() {
@@ -376,22 +431,33 @@ void PipelineCache::SaveDiskCache() {
     if (!Settings::values.use_disk_shader_cache || !EnsureDirectories() || !pipeline_cache) {
         return;
     }
+    // V384 : serialise les sauvegardes (fil de fond et sortie ne s'ecrivent jamais en meme temps).
+    std::scoped_lock lock{v384_save_mutex};
 
     const auto cache_dir = GetPipelineCacheDir();
     const u32 vendor_id = instance.GetVendorID();
     const u32 device_id = instance.GetDeviceID();
     const auto cache_file_path = fmt::format("{}{:x}{:x}.bin", cache_dir, vendor_id, device_id);
-
-    FileUtil::IOFile cache_file{cache_file_path, "wb"};
-    if (!cache_file.IsOpen()) {
-        LOG_ERROR(Render_Vulkan, "Unable to open pipeline cache for writing");
-        return;
-    }
+    // V384 : ecriture dans un fichier temporaire puis renommage atomique.
+    const auto tmp_file_path = cache_file_path + ".tmp";
 
     const vk::Device device = instance.GetDevice();
     const auto cache_data = device.getPipelineCacheData(*pipeline_cache);
-    if (cache_file.WriteBytes(cache_data.data(), cache_data.size()) != cache_data.size()) {
-        LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
+    {
+        FileUtil::IOFile cache_file{tmp_file_path, "wb"};
+        if (!cache_file.IsOpen()) {
+            LOG_ERROR(Render_Vulkan, "Unable to open pipeline cache for writing");
+            return;
+        }
+        if (cache_file.WriteBytes(cache_data.data(), cache_data.size()) != cache_data.size()) {
+            LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
+            cache_file.Close();
+            FileUtil::Delete(tmp_file_path);
+            return;
+        }
+    }
+    if (!FileUtil::Rename(tmp_file_path, cache_file_path)) {
+        FileUtil::Delete(tmp_file_path);
         return;
     }
     LOG_WARNING(Render_Vulkan, "V370_PIPELINE_CACHE_SAUVEE octets={}", cache_data.size());
@@ -1198,6 +1264,16 @@ bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
 
         if (new_program) {
             shader.program = std::move(code);
+            // V384 (mesure A) : cle complete, et famille = cle sans les formats de sommets.
+            shader.v384_cle = config.Hash();
+            {
+                // memcpy : copie aussi les octets de bourrage (le hachage lit la structure
+                // brute), pour que la famille soit stable d'un lancement a l'autre.
+                Pica::Shader::Generator::PicaVSConfigState famille;
+                std::memcpy(&famille, &config.state, sizeof(famille));
+                famille.load_flags.fill(Pica::Shader::Generator::AttribLoadFlags{});
+                shader.v384_famille = Common::ComputeStructHash64(famille);
+            }
             workers.QueueWork([device, &shader] {
                 shader.module = CompileSPV(shader.program, device);
                 shader.MarkDone();
@@ -1235,6 +1311,7 @@ bool PipelineCache::UseFixedGeometryShader(const Pica::RegsInternal& regs) {
     auto& shader = it->second;
 
     if (new_shader) {
+        shader.v384_cle = gs_config.Hash(); // V384 (mesure A)
         workers.QueueWork([gs_config, device = instance.GetDevice(), &shader]() {
             const auto code = GLSL::GenerateFixedGeometryShader(gs_config, true);
             shader.module = Compile(code, vk::ShaderStageFlagBits::eGeometry, device);
@@ -1260,6 +1337,7 @@ void PipelineCache::UseFragmentShader(const Pica::RegsInternal& regs,
     auto& shader = it->second;
 
     if (new_shader) {
+        shader.v384_cle = fs_config.Hash(); // V384 (mesure A)
         workers.QueueWork([fs_config, this, &shader]() {
             const bool use_spirv = Settings::values.spirv_shader_gen.GetValue();
             const bool is_v3dv_driver = instance.GetDriverID() == vk::DriverId::eMesaV3Dv ||

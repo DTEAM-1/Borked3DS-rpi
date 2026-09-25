@@ -234,6 +234,30 @@ void DumpPoisonPipeline(const Instance& instance, const PipelineInfo& info,
         dumped_files = "-";
     }
 
+    // V384 (mesure A) : identite de chaque stage et format de chaque attribut de sommet.
+    // Permet de dire, pour une serie de poisons, s'il s'agit de shaders differents ou du
+    // meme programme recompile pour des etats / formats differents (methodes G et C).
+    const auto stage_key = [&](u32 i) -> u64 { return stages[i] ? stages[i]->v384_cle : 0; };
+    const u64 vs_famille = stages[0] ? stages[0]->v384_famille : 0;
+    std::string vtx_fmt;
+    for (u32 a = 0; a < info.vertex_layout.attribute_count && a < info.vertex_layout.attributes.size();
+         ++a) {
+        const VertexAttribute& attr = info.vertex_layout.attributes[a];
+        if (!vtx_fmt.empty()) {
+            vtx_fmt += '/';
+        }
+        vtx_fmt += fmt::format("{}:{}x{}", attr.location.Value(),
+                               static_cast<u32>(attr.type.Value()), attr.size.Value());
+    }
+    if (vtx_fmt.empty()) {
+        vtx_fmt = "-";
+    }
+    LOG_INFO(Render_Vulkan,
+             "V384_POISON_ID hash={:#018x} compile_ms={:.1f} vs_cle={:#018x} "
+             "vs_famille={:#018x} fs_cle={:#018x} gs_cle={:#018x} vtx_fmt={}",
+             hash, elapsed_ns / 1.0e6, stage_key(0), vs_famille, stage_key(1), stage_key(2),
+             vtx_fmt);
+
     LOG_INFO(
         Render_Vulkan,
         "TRACE_PIPELINE_POISON hash={:#018x} compile_ms={:.1f} shaders={} "

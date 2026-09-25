@@ -5,7 +5,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <bitset>
+#include <chrono>
+#include <mutex>
+#include <thread>
 #include <tsl/robin_map.h>
 
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
@@ -63,6 +67,10 @@ public:
 
     /// Stores the generated pipeline cache to disk
     void SaveDiskCache();
+
+    /// V384 (methode E) : sauvegarde de fond, au plus toutes les 30 s, si de nouveaux
+    /// pipelines ont ete crees. Appelee une fois par image depuis RasterizerVulkan::TickFrame.
+    void V384MaybeSaveDiskCache();
 
     /// Binds a pipeline using the provided information
     bool BindPipeline(const PipelineInfo& info, bool wait_built = false);
@@ -123,6 +131,13 @@ private:
     std::unordered_map<Pica::Shader::Generator::PicaFixedGSConfig, Shader> fixed_geometry_shaders;
     std::unordered_map<Pica::Shader::FSConfig, Shader> fragment_shaders;
     Shader trivial_vertex_shader;
+
+    // V384 (methode E) : etat de la sauvegarde en cours de partie.
+    std::mutex v384_save_mutex;
+    std::thread v384_save_thread;
+    std::atomic<bool> v384_save_running{false};
+    std::chrono::steady_clock::time_point v384_last_save{};
+    std::size_t v384_saved_pipelines{0};
 };
 
 } // namespace Vulkan

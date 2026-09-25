@@ -80,15 +80,26 @@ namespace {
 /// une image deja soumise, dont le travail GPU ne depend plus du CPU -- pas d'interblocage.
 ///
 /// Valeur N >= 1 : a la fin de l'image k, attendre que le GPU ait fini l'image k-N.
-/// Absente ou 0 : comportement inchange. Comme le GPU est le goulot, le CPU attend deja ;
-/// la borne ne devrait presque rien couter en vitesse.
+///
+/// V384 : BORNE 1 PAR DEFAUT, pour tous les jeux. Mesures (Luigi, menu du labo) :
+///   TB35 sans borne 72,4 ms/image, clignotements ; TB41 borne 1 : 71,5 ms, aucun clignotement ;
+///   TB42 borne 2 : 0 attente, clignotements (le retard reste sous 2 images).
+///   Garde-fou TB43-45 : Sonic, Kid Icarus, Metroid a pleine vitesse (16,4-17,0 ms/image),
+///   0 a 175 ms d'attente cumulee par 60 images, rendu normal.
+/// BORKED3DS_V3DV_V383_MAX_GPU_LAG=N (N >= 1) remplace la valeur ;
+/// echappatoire (A/B seulement) : BORKED3DS_V3DV_V383_NO_GPU_LAG_BOUND=1.
 [[nodiscard]] u32 GetV383MaxGpuLagFrames() {
     static const u32 cached = [] {
-        const char* value = std::getenv("BORKED3DS_V3DV_V383_MAX_GPU_LAG");
-        if (value == nullptr || *value == '\0') {
+        const char* off = std::getenv("BORKED3DS_V3DV_V383_NO_GPU_LAG_BOUND");
+        if (off != nullptr && *off != '\0') {
             return 0u;
         }
-        return static_cast<u32>(std::strtoul(value, nullptr, 10));
+        const char* value = std::getenv("BORKED3DS_V3DV_V383_MAX_GPU_LAG");
+        if (value == nullptr || *value == '\0') {
+            return 1u;
+        }
+        const u32 n = static_cast<u32>(std::strtoul(value, nullptr, 10));
+        return n == 0 ? 1u : n;
     }();
     return cached;
 }

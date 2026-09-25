@@ -164,6 +164,15 @@ struct Shader : public Common::AsyncHandle {
     vk::ShaderModule module;
     vk::Device device;
     std::vector<u32> program;
+
+    /// V384 (mesure A) : identite du shader, pour grouper les pipelines poison.
+    ///   v384_cle     : cle de generation (PicaVSConfig / PicaFixedGSConfig / FSConfig).
+    ///   v384_famille : VS seulement -- meme cle, formats de sommets (load_flags) exclus.
+    ///                  Deux VS de meme famille ne different que par le format des sommets :
+    ///                  c'est exactement ce que la methode G fusionnerait.
+    /// Ecrits une fois a la creation (fil de rendu), avant la mise en file de la compilation.
+    u64 v384_cle{0};
+    u64 v384_famille{0};
 };
 
 class GraphicsPipeline : public Common::AsyncHandle {

@@ -2675,6 +2675,8 @@ void RasterizerVulkan::TickFrame() {
     // V382 : frontiere de frame du suivi des cibles, et compteurs de classement des
     // textures (remis a zero a chaque tick ; emis sous la garde du census).
     renderpass_cache.V382TickFrame();
+    // V384 (methode E) : sauvegarde de la cache pipeline pendant la partie.
+    pipeline_cache.V384MaybeSaveDiskCache();
     const u32 v382_direct = g_v382_direct.exchange(0, std::memory_order_relaxed);
     const u32 v382_target = g_v382_target.exchange(0, std::memory_order_relaxed);
     const u32 v382_recent = g_v382_recent.exchange(0, std::memory_order_relaxed);
