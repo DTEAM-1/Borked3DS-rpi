@@ -93,6 +93,10 @@ struct DynamicState {
 
     Common::Rectangle<u32> scissor;
     Common::Rectangle<s32> viewport;
+    /// V386 (early-Z) : plage de profondeur du viewport. 0/1 = comportement d'origine ; sinon
+    /// depth_offset / depth_offset - depth_scale de la PICA (voir V386EzUsable).
+    f32 depth_min = 0.0f;
+    f32 depth_max = 1.0f;
 
     bool operator==(const DynamicState& other) const noexcept {
         return std::memcmp(this, &other, sizeof(DynamicState)) == 0;

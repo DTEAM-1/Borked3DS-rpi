@@ -40,6 +40,7 @@
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/shader/generator/glsl_shader_decompiler.h"
 #include "video_core/shader/generator/glsl_shader_gen.h"
+#include "video_core/shader/generator/pica_fs_config.h"
 #include "video_core/texture/texture_decode.h"
 
 namespace Vulkan {
@@ -2677,6 +2678,8 @@ void RasterizerVulkan::TickFrame() {
     renderpass_cache.V382TickFrame();
     // V384 (methode E) : sauvegarde de la cache pipeline pendant la partie.
     pipeline_cache.V384MaybeSaveDiskCache();
+    // V386 : recensement des lumieres / part early-Z (une ligne par 60 images).
+    V386ReportFrame();
     const u32 v382_direct = g_v382_direct.exchange(0, std::memory_order_relaxed);
     const u32 v382_target = g_v382_target.exchange(0, std::memory_order_relaxed);
     const u32 v382_recent = g_v382_recent.exchange(0, std::memory_order_relaxed);
@@ -7729,6 +7732,74 @@ void RasterizerVulkan::DrawTriangles() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// V386 -- RECENSEMENT DES LUMIERES (journal seulement, toujours actif, une ligne par 60 images).
+// Pour chaque draw eclaire : nombre de lumieres calculees par le FS, et parmi elles celles dont
+// les quatre couleurs sont nulles (sautables par BORKED3DS_V3DV_V386_SKIP_DARK) et celles sans
+// speculaire (specular_0 et specular_1 nulles). Donne aussi la part des draws en early-Z.
+// Journal : V386_LUMIERES / V386_EZ.
+// ---------------------------------------------------------------------------------------------
+namespace {
+// Atomiques : TickFrame et Draw ne sont pas garantis sur le meme fil (comme les compteurs A7Z12).
+std::atomic<u64> g_v386_lit_draws{0};
+std::atomic<u64> g_v386_lights{0};
+std::atomic<u64> g_v386_dark_lights{0};
+std::atomic<u64> g_v386_nospec_lights{0};
+std::atomic<u64> g_v386_ez_draws{0};
+std::atomic<u64> g_v386_plain_draws{0};
+std::atomic<u32> g_v386_frames{0};
+
+bool V386IsZero(const Common::Vec3f& v) {
+    return v.x == 0.0f && v.y == 0.0f && v.z == 0.0f;
+}
+} // namespace
+
+void RasterizerVulkan::V386CountLights() {
+    const auto& lighting = regs.lighting;
+    if (lighting.disable) {
+        return;
+    }
+    u64 lights = 0, dark = 0, nospec = 0;
+    for (u32 i = 0; i <= lighting.max_light_index; ++i) {
+        const u32 num = lighting.light_enable.GetNum(i);
+        const auto& light = fs_uniform_block_data.data.light_src[num];
+        ++lights;
+        const bool no_spec = V386IsZero(light.specular_0) && V386IsZero(light.specular_1);
+        if (no_spec) {
+            ++nospec;
+        }
+        if (no_spec && V386IsZero(light.diffuse) && V386IsZero(light.ambient)) {
+            ++dark;
+        }
+    }
+    g_v386_lit_draws.fetch_add(1, std::memory_order_relaxed);
+    g_v386_lights.fetch_add(lights, std::memory_order_relaxed);
+    g_v386_dark_lights.fetch_add(dark, std::memory_order_relaxed);
+    g_v386_nospec_lights.fetch_add(nospec, std::memory_order_relaxed);
+}
+
+void RasterizerVulkan::V386ReportFrame() {
+    if (g_v386_frames.fetch_add(1, std::memory_order_relaxed) + 1 < 60) {
+        return;
+    }
+    g_v386_frames.store(0, std::memory_order_relaxed);
+    const u64 lit = g_v386_lit_draws.exchange(0, std::memory_order_relaxed);
+    const u64 lights = g_v386_lights.exchange(0, std::memory_order_relaxed);
+    const u64 dark = g_v386_dark_lights.exchange(0, std::memory_order_relaxed);
+    const u64 nospec = g_v386_nospec_lights.exchange(0, std::memory_order_relaxed);
+    const u64 ez = g_v386_ez_draws.exchange(0, std::memory_order_relaxed);
+    const u64 plain = g_v386_plain_draws.exchange(0, std::memory_order_relaxed);
+    if (lit != 0) {
+        LOG_WARNING(Render_Vulkan,
+                    "V386_LUMIERES images=60 draws_eclaires={} lumieres={} eteintes={} "
+                    "sans_speculaire={}",
+                    lit, lights, dark, nospec);
+    }
+    if (Pica::Shader::V386EzRequested()) {
+        LOG_WARNING(Render_Vulkan, "V386_EZ images=60 draws_ez={} draws_normaux={}", ez, plain);
+    }
+}
+
 bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     BORKED3DS_PROFILE("Vulkan", "Drawing");
     // TG14 : recensement par draw et isolation. Voir le commentaire au-dessus de
@@ -8643,6 +8714,7 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
     SyncAndUploadLUTs();
     SyncAndUploadLUTsLF();
     UploadUniforms(accelerate);
+    V386CountLights();
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_lut_uniform_upload");
     }
@@ -8768,6 +8840,21 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         viewport.y + viewport.height,
     };
     pipeline_info.dynamic.scissor = draw_rect;
+    // V386 (early-Z, BORKED3DS_V3DV_V386_EZ=1) : la conversion de profondeur PICA passe par la
+    // plage du viewport quand le FS de ce draw ne l'ecrit plus (meme decision que FSConfig).
+    if (Pica::Shader::V386EzUsable(regs)) {
+        const f32 depth_scale =
+            Pica::f24::FromRaw(regs.rasterizer.viewport_depth_range).ToFloat32();
+        const f32 depth_offset =
+            Pica::f24::FromRaw(regs.rasterizer.viewport_depth_near_plane).ToFloat32();
+        pipeline_info.dynamic.depth_min = depth_offset;
+        pipeline_info.dynamic.depth_max = depth_offset - depth_scale;
+        g_v386_ez_draws.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        pipeline_info.dynamic.depth_min = 0.0f;
+        pipeline_info.dynamic.depth_max = 1.0f;
+        g_v386_plain_draws.fetch_add(1, std::memory_order_relaxed);
+    }
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 after_dynamic_viewport_scissor");
     }

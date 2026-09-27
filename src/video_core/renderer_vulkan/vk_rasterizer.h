@@ -64,6 +64,11 @@ public:
 
     void SyncFixedState() override;
 
+    /// V386 : recensement des lumieres du draw courant (apres UploadUniforms) et bilan par
+    /// 60 images (V386_LUMIERES / V386_EZ). Journal seulement.
+    void V386CountLights();
+    void V386ReportFrame();
+
 private:
     void NotifyFixedFunctionPicaRegisterChanged(u32 id) override;
 

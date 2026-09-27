@@ -961,14 +961,16 @@ bool PipelineCache::BindPipeline(const PipelineInfo& info, bool wait_built) {
                       current_depth_stencil = current_info.depth_stencil,
                       rasterization = info.rasterization,
                       depth_stencil = info.depth_stencil](vk::CommandBuffer cmdbuf) {
-        if (dynamic.viewport != current_dynamic.viewport || is_dirty) {
+        if (dynamic.viewport != current_dynamic.viewport ||
+            dynamic.depth_min != current_dynamic.depth_min ||
+            dynamic.depth_max != current_dynamic.depth_max || is_dirty) {
             const vk::Viewport vk_viewport = {
                 .x = static_cast<f32>(dynamic.viewport.left),
                 .y = static_cast<f32>(dynamic.viewport.top),
                 .width = static_cast<f32>(dynamic.viewport.GetWidth()),
                 .height = static_cast<f32>(dynamic.viewport.GetHeight()),
-                .minDepth = 0.f,
-                .maxDepth = 1.f,
+                .minDepth = dynamic.depth_min, // V386 : 0 sauf early-Z actif
+                .maxDepth = dynamic.depth_max, // V386 : 1 sauf early-Z actif
             };
             cmdbuf.setViewport(0, vk_viewport);
         }
