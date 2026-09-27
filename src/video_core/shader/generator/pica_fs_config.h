@@ -11,6 +11,20 @@
 
 namespace Pica::Shader {
 
+/// V386 -- vrai si l'option BORKED3DS_V3DV_V386_EZ est presente (lue une seule fois).
+[[nodiscard]] bool V386EzRequested();
+
+/// V386 -- vrai si, pour l'etat PICA courant, la conversion de profondeur
+///   depth = -gl_FragCoord.z * depth_scale + depth_offset
+/// peut etre faite EXACTEMENT par la plage de profondeur du viewport Vulkan
+/// (minDepth = depth_offset, maxDepth = depth_offset - depth_scale), ce qui permet au fragment
+/// shader de ne plus ecrire gl_FragDepth et rend le test de profondeur anticipe (early-Z) a V3D.
+/// Faux sans l'option, en W-buffer (division par w dans le FS), en rendu d'ombre, ou si l'une
+/// des deux bornes sort de [0, 1] (interdit par Vulkan sans VK_EXT_depth_range_unrestricted).
+/// Appelee a la fois par FSConfig (cle du FS) et par le rasteriseur (viewport) : les deux
+/// decisions sont donc toujours identiques pour un meme draw.
+[[nodiscard]] bool V386EzUsable(const Pica::RegsInternal& regs);
+
 struct BlendConfig {
     Pica::FramebufferRegs::BlendEquation eq;
     Pica::FramebufferRegs::BlendFactor src_factor;
@@ -27,6 +41,9 @@ struct FramebufferConfig {
         BitField<5, 1, Pica::RasterizerRegs::DepthBuffering> depthmap_enable;
         BitField<6, 4, Pica::FramebufferRegs::LogicOp> logic_op;
         BitField<10, 1, u32> shadow_rendering;
+        // V386 (BORKED3DS_V3DV_V386_EZ=1) : profondeur PICA portee par la plage de profondeur du
+        // viewport Vulkan au lieu de gl_FragDepth. Voir V386EzUsable().
+        BitField<11, 1, u32> v386_ez;
     };
     BlendConfig rgb_blend{};
     BlendConfig alpha_blend{};

@@ -583,7 +583,11 @@ vec4 secondary_fragment_color = vec4(0.0);
             WriteShadow(); //gvx64
         }
     } else {
-        out += "gl_FragDepth = depth;\n";
+        // V386 (early-Z) : sans ecriture de gl_FragDepth, V3D garde le test de profondeur
+        // anticipe ; la profondeur rasterisee est deja la bonne (plage du viewport).
+        if (!config.framebuffer.v386_ez) {
+            out += "gl_FragDepth = depth;\n";
+        }
         // Round the final fragment color to maintain the PICA's 8 bits of precision
         out += "combiner_output = byteround(combiner_output);\n";
         WriteBlending();
@@ -988,6 +992,12 @@ void FragmentModule::WriteDepth() {
     // original range of [-1, 0]. If the depth range is [0, 1], so all we need to do is
     // un-negate the value to range [-1, 0]. Once we have z_over_w, we can do our own transformation
     // according to PICA specification.
+    // V386 (early-Z) : la plage de profondeur du viewport porte deja la conversion PICA, donc
+    // gl_FragCoord.z EST la profondeur finale. Voir V386EzUsable() dans pica_fs_config.cpp.
+    if (config.framebuffer.v386_ez) {
+        out += "float depth = gl_FragCoord.z;\n";
+        return;
+    }
     if (profile.has_minus_one_to_one_range) {
         out += "float z_over_w = -2.0 * gl_FragCoord.z + 1.0;\n";
     } else {
@@ -1598,10 +1608,39 @@ void FragmentModule::WriteLighting() {
         }
     };
 
+    // V386 -- LUMIERES ETEINTES SAUTEES (BORKED3DS_V3DV_V386_SKIP_DARK=1, inactif par defaut).
+    // Mesure TB73 (Luigi's Mansion 2, jardin) : les FS a 8 lumieres dominent la passe render du
+    // GPU (31 lectures de LUT par fragment). La contribution d'une lumiere est
+    //     (diffuse * dot + ambient) * atten   et   (d0 * specular_0 + d1 * refl * specular_1) * ...
+    // donc exactement nulle si ses quatre couleurs sont nulles. Le test porte sur des uniformes
+    // (meme valeur pour tout le draw) : branche uniforme, quasi gratuite, et les LUT de la lumiere
+    // ne sont plus lues. Seule difference possible : une lumiere eteinte dont un terme vaudrait
+    // NaN (vecteur nul normalise) donnait NaN, elle donne maintenant 0.
+    // Exception : la derniere lumiere porte le terme de Fresnel (alpha) quand il est actif ; elle
+    // n'est jamais sautee, ce terme ne dependant pas des couleurs.
+    static const bool v386_skip_dark = [] {
+        const char* v = std::getenv("BORKED3DS_V3DV_V386_SKIP_DARK");
+        return v != nullptr && v[0] != '\0';
+    }();
+    const bool v386_fresnel_alpha =
+        lighting.lut_fr.enable &&
+        LightingRegs::IsLightingSamplerSupported(lighting.config,
+                                                 LightingRegs::LightingSampler::Fresnel) &&
+        (lighting.enable_primary_alpha || lighting.enable_secondary_alpha);
+
     // Write the code to emulate each enabled light
     for (u32 light_index = 0; light_index < lighting.src_num; ++light_index) {
         const auto& light_config = lighting.lights[light_index];
         const std::string light_src = fmt::format("light_src[{}]", light_config.num.Value());
+        const bool v386_wrap =
+            v386_skip_dark && !(v386_fresnel_alpha && light_index == lighting.src_num - 1);
+        if (v386_wrap) {
+            out += fmt::format("if (any(notEqual({0}.diffuse, vec3(0.0))) || "
+                               "any(notEqual({0}.ambient, vec3(0.0))) || "
+                               "any(notEqual({0}.specular_0, vec3(0.0))) || "
+                               "any(notEqual({0}.specular_1, vec3(0.0)))) {{\n",
+                               light_src);
+        }
 
         // Compute light vector (directional or positional)
         if (light_config.directional) {
@@ -1761,6 +1800,9 @@ void FragmentModule::WriteLighting() {
         // Compute secondary fragment color (specular lighting) function
         out += fmt::format("specular_sum.rgb += ({} + {}) * clamp_highlights * {} * {}{};\n",
                            specular_0, specular_1, dist_atten, spot_atten, shadow_secondary);
+        if (v386_wrap) {
+            out += "}\n";
+        }
     }
 
     // Apply shadow attenuation to alpha components if enabled
