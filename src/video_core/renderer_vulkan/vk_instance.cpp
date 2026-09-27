@@ -536,7 +536,7 @@ bool Instance::CreateDevice() {
                          &fragment_shader_barycentric},
     };
 
-    boost::container::static_vector<const char*, 13> enabled_extensions;
+    boost::container::static_vector<const char*, 16> enabled_extensions;
     for (const auto& ext : extension_support) {
         const bool available = std::find(available_extensions.begin(), available_extensions.end(),
                                          ext.name) != available_extensions.end();
@@ -566,6 +566,37 @@ bool Instance::CreateDevice() {
             } else {
                 LOG_WARNING(Render_Vulkan, "Optional extension {} not available", ext.name);
             }
+        }
+    }
+
+    // V387 -- ROBUSTESSE PAR ETAGE (BORKED3DS_V3DV_V387_FS_NO_ROBUST=1, inactif par defaut).
+    // Mesure banc v387c/d (Luigi's Mansion 2, FS d'eclairage a 8 lumieres, V3DV Mesa 26.1.2) :
+    //   robustBufferAccess actif (comme ici)       : 1278 instructions, 16:27 spills:fills
+    //   robustesse coupee pour le seul FS          :  839 instructions,  2:2 spills:fills
+    // (sans V3D_DEBUG=opt_compile_time ; avec cette option le FS non robuste fait 1336/105:118).
+    // robustBufferAccess reste active pour le peripherique : les vertex shaders PICA lisent
+    // leurs uniformes avec des index de registre d'adresse qui peuvent sortir des bornes. Les FS
+    // ne lisent le bloc d'uniformes qu'a des positions fixes et les LUT a des index bornes par
+    // le generateur. VK_EXT_pipeline_robustness permet de couper la robustesse pour eux seuls.
+    {
+        static const bool v387_requested = [] {
+            const char* v = std::getenv("BORKED3DS_V3DV_V387_FS_NO_ROBUST");
+            return v != nullptr && v[0] != '\0';
+        }();
+        const bool v387_available =
+            std::find(available_extensions.begin(), available_extensions.end(),
+                      VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME) != available_extensions.end();
+        if (v387_requested && v387_available) {
+            enabled_extensions.push_back(VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
+            v387_fs_no_robust = true;
+            LOG_WARNING(Render_Vulkan,
+                        "V387_FS_NO_ROBUST actif : fragment shaders sans robustesse "
+                        "(VK_EXT_pipeline_robustness), robustBufferAccess={} pour le reste",
+                        features.robustBufferAccess ? 1 : 0);
+        } else if (v387_requested) {
+            LOG_WARNING(Render_Vulkan,
+                        "V387_FS_NO_ROBUST demande mais VK_EXT_pipeline_robustness absent : "
+                        "sans effet");
         }
     }
 
@@ -634,6 +665,7 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT{},
         vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT{},
         vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR{},
+        vk::PhysicalDevicePipelineRobustnessFeaturesEXT{.pipelineRobustness = true}, // V387
     };
 
 #define PROP_GET(structName, prop, property) property = properties_chain.get<structName>().prop;
@@ -706,6 +738,11 @@ bool Instance::CreateDevice() {
                  custom_border_color)
     } else {
         device_chain.unlink<vk::PhysicalDeviceCustomBorderColorFeaturesEXT>();
+    }
+
+    // V387 : la fonction pipelineRobustness n'est demandee que si l'option est active.
+    if (!v387_fs_no_robust) {
+        device_chain.unlink<vk::PhysicalDevicePipelineRobustnessFeaturesEXT>();
     }
 
     if (pipeline_creation_cache_control) {

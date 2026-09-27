@@ -845,6 +845,14 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     }
     u32 shader_count = 0;
     std::array<vk::PipelineShaderStageCreateInfo, MAX_SHADER_STAGES> shader_stages;
+    // V387 (BORKED3DS_V3DV_V387_FS_NO_ROBUST=1) : fragment shader compile sans robustesse
+    // d'acces aux buffers ; les autres etages gardent celle du peripherique. Voir vk_instance.cpp.
+    const vk::PipelineRobustnessCreateInfoEXT v387_fs_robustness = {
+        .storageBuffers = vk::PipelineRobustnessBufferBehavior::eDisabled,
+        .uniformBuffers = vk::PipelineRobustnessBufferBehavior::eDisabled,
+        .vertexInputs = vk::PipelineRobustnessBufferBehavior::eDeviceDefault,
+        .images = vk::PipelineRobustnessImageBehavior::eDeviceDefault,
+    };
     for (std::size_t i = 0; i < stages.size(); i++) {
         Shader* shader = stages[i];
         if (!shader) {
@@ -899,8 +907,12 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         if (a7z48_trace) {
             AppendV115DA7Z48GraphicsPipelineTraceBool("v115d_a7z48 build_shader_done_after_wait", shader->IsDone());
         }
+        const vk::ShaderStageFlagBits v387_stage = MakeShaderStage(i);
+        const bool v387_no_robust =
+            instance.IsV387FsNoRobust() && v387_stage == vk::ShaderStageFlagBits::eFragment;
         shader_stages[shader_count++] = vk::PipelineShaderStageCreateInfo{
-            .stage = MakeShaderStage(i),
+            .pNext = v387_no_robust ? &v387_fs_robustness : nullptr,
+            .stage = v387_stage,
             .module = shader->Handle(),
             .pName = "main",
         };

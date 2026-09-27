@@ -168,6 +168,13 @@ public:
         return pipeline_creation_cache_control;
     }
 
+    /// V387 : vrai si BORKED3DS_V3DV_V387_FS_NO_ROBUST est demande ET que
+    /// VK_EXT_pipeline_robustness est active : les fragment shaders sont alors compiles sans
+    /// robustesse d'acces aux buffers (voir vk_graphics_pipeline.cpp, Build).
+    bool IsV387FsNoRobust() const {
+        return v387_fs_no_robust;
+    }
+
     /// Returns true when VK_EXT_shader_stencil_export is supported
     bool IsShaderStencilExportSupported() const {
         return shader_stencil_export;
@@ -360,6 +367,7 @@ private:
     bool fragment_shader_interlock{};
     bool image_format_list{};
     bool pipeline_creation_cache_control{};
+    bool v387_fs_no_robust{};
     bool fragment_shader_barycentric{};
     bool has_portability_subset{};
     bool shader_stencil_export{};
