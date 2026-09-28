@@ -10,6 +10,12 @@
 #include <fstream>
 #include <mutex>
 #include <unordered_set>
+#if defined(__linux__)
+#include <cerrno>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 #include "common/hash.h"
 #include "common/profiling.h"
@@ -428,6 +434,47 @@ GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& ren
 
 GraphicsPipeline::~GraphicsPipeline() = default;
 
+void V390LowerWorkerThreadPriority() {
+#if defined(__linux__)
+    thread_local bool applied = false;
+    if (applied) {
+        return;
+    }
+    applied = true;
+    static const int nice_level = [] {
+        if (std::getenv("BORKED3DS_V3DV_V390_WORKER_NORMAL_PRIO") != nullptr) {
+            return 0;
+        }
+        int level = 19;
+        if (const char* value = std::getenv("BORKED3DS_V3DV_V390_WORKER_NICE")) {
+            const int parsed = std::atoi(value);
+            if (parsed >= 1 && parsed <= 19) {
+                level = parsed;
+            }
+        }
+        return level;
+    }();
+    static std::atomic<u32> lowered{0};
+    static std::atomic<bool> announced{false};
+    if (nice_level == 0) {
+        if (!announced.exchange(true)) {
+            LOG_WARNING(Render_Vulkan,
+                        "V390_PRIORITE_COMPILATION desactivee (BORKED3DS_V3DV_V390_WORKER_NORMAL_PRIO)");
+        }
+        return;
+    }
+    const auto tid = static_cast<id_t>(syscall(SYS_gettid));
+    if (setpriority(PRIO_PROCESS, tid, nice_level) != 0) {
+        LOG_WARNING(Render_Vulkan, "V390_PRIORITE_COMPILATION echec nice={} errno={}", nice_level,
+                    errno);
+        return;
+    }
+    const u32 count = lowered.fetch_add(1, std::memory_order_relaxed) + 1;
+    LOG_WARNING(Render_Vulkan, "V390_PRIORITE_COMPILATION nice={} threads_abaisses={}", nice_level,
+                count);
+#endif
+}
+
 namespace {
 // v342 : le correctif d'inversion de pool est ACTIF PAR DEFAUT. La variable ne sert qu'a le
 // desactiver pour bissection, jamais a l'activer.
@@ -614,7 +661,10 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
     if (a7z48_trace) {
         AppendV115DA7Z48GraphicsPipelineTrace("v115d_a7z48 trybuild_before_queue_worker_build");
     }
-    worker->QueueWork([this] { Build(); });
+    worker->QueueWork([this] {
+        V390LowerWorkerThreadPriority();
+        Build();
+    });
     is_pending.store(true, std::memory_order_release);
     if (a7z57_trace) {
         LogV115DA7Z57GraphicsPipeline("v115d_a7z57 trybuild_after_queue_worker_build");

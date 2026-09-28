@@ -207,4 +207,10 @@ private:
     std::atomic<bool> is_pending{false};
 };
 
+/// v390: lowers the calling thread to background priority (nice 19 by default), once per
+/// thread. Called at the start of every shader/pipeline compile job so that compiling never
+/// takes CPU time away from the emulation thread. BORKED3DS_V3DV_V390_WORKER_NICE=N (1-19)
+/// changes the level; BORKED3DS_V3DV_V390_WORKER_NORMAL_PRIO=1 disables it.
+void V390LowerWorkerThreadPriority();
+
 } // namespace Vulkan

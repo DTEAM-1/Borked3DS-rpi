@@ -1238,6 +1238,7 @@ bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
                 ++v373_launched;
                 v373_pending.emplace(v373_key, pending);
                 v373_workers.QueueWork([pending, program, device] {
+                    V390LowerWorkerThreadPriority();
                     pending->code =
                         CompileGLSLtoSPIRV(program, vk::ShaderStageFlagBits::eVertex, device);
                     pending->done.store(true, std::memory_order_release);
@@ -1281,6 +1282,7 @@ bool PipelineCache::UseProgrammableVertexShader(const Pica::RegsInternal& regs,
                 shader.v384_famille = Common::ComputeStructHash64(famille);
             }
             workers.QueueWork([device, &shader] {
+                V390LowerWorkerThreadPriority();
                 shader.module = CompileSPV(shader.program, device);
                 shader.MarkDone();
             });
@@ -1319,6 +1321,7 @@ bool PipelineCache::UseFixedGeometryShader(const Pica::RegsInternal& regs) {
     if (new_shader) {
         shader.v384_cle = gs_config.Hash(); // V384 (mesure A)
         workers.QueueWork([gs_config, device = instance.GetDevice(), &shader]() {
+            V390LowerWorkerThreadPriority();
             const auto code = GLSL::GenerateFixedGeometryShader(gs_config, true);
             shader.module = Compile(code, vk::ShaderStageFlagBits::eGeometry, device);
             shader.MarkDone();
@@ -1345,6 +1348,7 @@ void PipelineCache::UseFragmentShader(const Pica::RegsInternal& regs,
     if (new_shader) {
         shader.v384_cle = fs_config.Hash(); // V384 (mesure A)
         workers.QueueWork([fs_config, this, &shader]() {
+            V390LowerWorkerThreadPriority();
             const bool use_spirv = Settings::values.spirv_shader_gen.GetValue();
             const bool is_v3dv_driver = instance.GetDriverID() == vk::DriverId::eMesaV3Dv ||
                                         instance.GetDriverID() ==
