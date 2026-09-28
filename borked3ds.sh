@@ -443,6 +443,10 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         "BORKED3DS_V3DV_DISABLE_LAZY_COPY_VIEW"
         "BORKED3DS_V3DV_TRACE_BLEND"
         "BORKED3DS_V3DV_TRACE_DISPLAY_TRANSFER"
+        "V385_SPECIALISATION programme="
+        "V387_FS_NO_ROBUST actif"
+        "BORKED3DS_V3DV_V387_FS_ROBUST"
+        "V389_DEFAUTS_VULKAN"
     )
 
     local borked3ds_missing=0
@@ -468,7 +472,13 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     # Tant qu'elles sont dans le code, elles doivent RESTER hors de cette liste, sinon
     # chaque build sera declare non conforme.
     ################################
+    # v389 : diagnostics v382 (TEXSYNC) et options v386 (early-Z, lumieres eteintes,
+    # recensement) retires du code -- leur presence signale un binaire anterieur a v389.
     local borked3ds_removed=(
+        "BORKED3DS_V3DV_V382_TEXSYNC"
+        "BORKED3DS_V3DV_V386_EZ"
+        "BORKED3DS_V3DV_V386_SKIP_DARK"
+        "V386_LUMIERES"
         "BORKED3DS_V3DV_DIRA_Z_BIAS"
         "BORKED3DS_V3DV_DIRA_FULLSCREEN_TRI"
         "BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE"
@@ -504,64 +514,41 @@ function configure_borked3ds() {
     mkRomDir "3ds"
 
     ################################
-    # LIGNE DE LANCEMENT
+    # LIGNES DE LANCEMENT -- v389 (fermeture du projet)
     #
-    # Nommee "borked3ds_test4" : c'est ce que le runcommand appelle.
+    # Les reglages de la configuration gagnante (v388) ne vivent PLUS dans emulators.cfg :
+    #   - variables BORKED3DS_V3DV_* : posees par le programme au demarrage d'un jeu, SEULEMENT
+    #     quand l'API choisie est Vulkan (en OpenGL elles font fermer l'emulateur) -- voir
+    #     V389ApplyV3dvDefaults() dans src/borked3ds_qt/main.cpp, journal V389_DEFAUTS_VULKAN ;
+    #   - environnement du lanceur (xcb, SDL, GL_OES_texture_buffer, couches Vulkan) : pose au
+    #     debut de main() ;
+    #   - reglages : graphics_api=Vulkan et use_disk_shader_cache=true sont les defauts du code
+    #     (settings.h) ; geometry_shader l'etait deja.
+    # Une variable posee a la main sur une ligne garde la priorite (tests). Echappatoire :
+    # BORKED3DS_V3DV_NO_DEFAULTS=1.
     #
-    # ATTENTION -- PIEGE AVERE : cette fonction REECRIT emulators.cfg a chaque
-    # installation. Une variable ajoutee a la main dans emulators.cfg est donc
-    # perdue au build suivant. Toute nouvelle sonde doit etre ajoutee ICI, dans
-    # cette ligne, sinon elle sera compilee dans le binaire mais jamais activee.
-    # Cas reels : TRACE_SYNC (un cycle de test perdu), puis A7Z8/A7Z10 (sondes
-    # compilees mais silencieusement inactives au run suivant le rebuild).
+    # NE JAMAIS remettre V3D_DEBUG=opt_compile_time : avec les fragment shaders non robustes
+    # (v388), il fait deborder les registres V3D (Luigi's Mansion 2 : 38 -> 126 ms/image).
     #
-    # ------------------------------------------------------------------
-    # EXCEPTION ASSUMEE (v160) : BORKED3DS_V3DV_A7Z12_FRAME_CENSUS=1 est desormais
-    # DANS cette ligne. Motif : le census est l'instrument de mesure de reference du
-    # projet, et son absence apres un rebuild a coute deux cycles de test dans la
-    # meme session (le jeu tourne, le log s'ecrit, mais zero ligne census -- panne
-    # silencieuse). Son cout est negligeable (~7 lignes/s, periode 60 frames).
-    # A RETIRER a l'etape de livraison, quand les mesures seront closes.
+    # Sondes de mesure (plus posees par defaut) a ajouter a la main sur une ligne de test :
+    #   BORKED3DS_V3DV_A7Z12_FRAME_CENSUS=1 BORKED3DS_V3DV_A7Z12_CENSUS_PERIOD=61
+    #   BORKED3DS_V3DV_TRACE_PIPELINE_BUILD=1
     #
-    # Ligne v157 -- BASELINE PROPRE. Ne contient AUCUNE autre sonde diagnostique.
-    #
-    # Regle : les sondes se posent a la main pour un test, JAMAIS ici. En
-    # particulier, ne jamais laisser dans cette ligne :
-    #   BORKED3DS_V3DV_TRACE_DRAW=1  -- ~19 000 lignes de log/seconde, ralentit
-    #     fortement le jeu. Cause de la fausse "regression de vitesse" v156.
-    #   BORKED3DS_V3DV_SOFTWARE_CLEAR_TILE_BUDGET / SAFE_UNTEXTURED_DRAW_BUDGET
-    #     portes a 1e9 -- font executer tous les clears et draws software
-    #     auparavant consommes en no-op : cout reel.
-    #
-    # Etat des artefacts visuels a la v157 :
-    #   - Banding (boule Sonic) : PARQUE. VS et FS prouves fp32 (dump SPIR-V :
-    #     RelaxedPrecision=0, OpTypeFloat 16=0), relaxed_precision off, present
-    #     en 8 bits, Mesa 26.1.2 deja au plus recent. Cause interne a V3D,
-    #     non corrigeable dans nos shaders. Present a l'identique sur gvx64.
-    #   - Flash au demarrage 3D (one-shot, plein ecran, jaune sous Metroid) :
-    #     PARQUE. Cosmetique, une seule occurrence par session. Hypotheses
-    #     eliminees : async_shader_compilation, surface couleur non initialisee
-    #     (A7Z10), budgets cumulatifs, clears de debug present (opt-in, inactifs).
-    #
-    # Ligne v152 :
-    #   DIRA_MAX_VERTICES 128 -> 65536 : le plafond de 128 sommets coupait le draw
-    #   d'un calque clair de Sonic Lost World (rendu "trop fonce"). Mesure : essai
-    #   a 65536 = calque revenu, aucun impact vitesse. L'autre essai (retrait
-    #   complet de DIRA_SW_FALLBACK) a echoue : perte de texte + lenteur.
-    #
-    # Ligne v151 (figement RESOLU) :
-    #   L'extended dynamic state est ACTIF PAR DEFAUT sous strict-compat (voir
-    #   vk_graphics_pipeline.cpp). Mesure Kid Icarus : pire compilation de pipeline
-    #   12993 ms -> ~51 ms, 43 pipelines "poison" -> 0, plus aucun gel.
-    #   Echappatoire sans rebuild : ajouter BORKED3DS_V3DV_DISABLE_EDS=1 a la main.
-    #   Le bug de coherence hash/build qui bloquait ce chantier est RESOLU :
-    #   Hash() et Build() partagent desormais la meme expression de gating.
-    #
-    # v148 avait corrige SAFE_PICA_HW_DRAW_BUDGET=1 / MAX_VERTICES=6, valeurs de
-    # bisection oubliees qui bridaient le rendu, portees a 9999 / 65536.
+    # Trois lignes seulement :
+    #   borked3ds          : jeu, OpenGL ou Vulkan selon le reglage (defaut)
+    #   borked3ds-ui       : interface Qt seule
+    #   borked3ds-ui-qt06  : interface Qt seule, echelle 0,6
+    # Les anciennes lignes de test (borked3ds_*) sont retirees.
     ################################
 
-    addEmulator 1 "${md_id}_test4" "3ds" "XINIT-WM:QT_QPA_PLATFORM=xcb QT_SCALE_FACTOR=0.6 SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0 MESA_EXTENSION_OVERRIDE=GL_OES_texture_buffer VK_INSTANCE_LAYERS= VK_LAYER_PATH= BORKED3DS_V3DV_STRICT_COMPAT=1 BORKED3DS_V3DV_HIGH_SWITCH=1 BORKED3DS_V3DV_ALLOW_PICA_ACCEL=1 BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES=1 BORKED3DS_V3DV_DISABLE_SOFTWARE_QUARANTINE=1 BORKED3DS_V3DV_DIRA_SW_FALLBACK=1 BORKED3DS_V3DV_A7Z71_PICA_TRIGGER_SILENT_DRAWARRAYS=1 BORKED3DS_V3DV_A7Z72_PICA_DRAWARRAYS_SILENT_EARLY_BACKEND=1 BORKED3DS_V3DV_A7Z73_SUPPRESS_RAW_ENTER_SIMPLE_LOG=1 BORKED3DS_V3DV_A7Z74_SILENT_OUTER_ENTRY_TO_STAGE=1 BORKED3DS_V3DV_DISABLE_ACCEL_INTERNAL_DRY_RUN=1 BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF=1 BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF_NO_PRELOG=1 BORKED3DS_V3DV_ALLOW_SAFE_PICA_HW_DRAWS=1 BORKED3DS_V3DV_ENTER_SAFE_PICA_HW_DRAWS=1 BORKED3DS_V3DV_SAFE_PICA_HW_DRAW_BUDGET=9999 BORKED3DS_V3DV_SAFE_PICA_HW_MAX_VERTICES=65536 BORKED3DS_V3DV_A7Z12_FRAME_CENSUS=1 $md_inst/borked3ds %ROM%"
+    addEmulator 1 "$md_id" "3ds" "XINIT-WM:QT_SCALE_FACTOR=0.6 $md_inst/borked3ds -f %ROM%"
+    addEmulator 0 "${md_id}-ui" "3ds" "XINIT-WMC:$md_inst/borked3ds"
+    addEmulator 0 "${md_id}-ui-qt06" "3ds" "XINIT-WMC:QT_SCALE_FACTOR=0.6 $md_inst/borked3ds"
+
+    local _emucfg="$configdir/3ds/emulators.cfg"
+    if [[ -f "$_emucfg" ]]; then
+        sed -i '/^borked3ds_/d' "$_emucfg"
+    fi
 
     addSystem "3ds"
 
