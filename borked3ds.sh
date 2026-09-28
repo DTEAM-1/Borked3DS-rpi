@@ -320,6 +320,7 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     #   V387_FS_NO_ROBUST / BORKED3DS_V3DV_V387_FS_ROBUST : non-robust fragment shaders (v388)
     #   V389_DEFAUTS_VULKAN : Vulkan defaults set by the program (v389)
     #   V390_PRIORITE_COMPILATION : compile threads run at background priority (v390)
+    #   V391_ECLAIRAGE_ALLEGE : reduced lighting for Luigi's Mansion 2 only (v391)
     # To add a marker, append it to borked3ds_markers.
     ################################
 
@@ -371,6 +372,7 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         "BORKED3DS_V3DV_V387_FS_ROBUST"
         "V389_DEFAUTS_VULKAN"
         "V390_PRIORITE_COMPILATION"
+        "V391_ECLAIRAGE_ALLEGE"
     )
 
     local borked3ds_missing=0
