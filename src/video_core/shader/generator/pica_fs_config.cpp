@@ -160,51 +160,8 @@ void ApplyTG08(LightConfig& lighting) {
 
 } // Anonymous namespace
 
-// ---------------------------------------------------------------------------------------------
-// V386 -- EARLY-Z (BORKED3DS_V3DV_V386_EZ=1, inactif par defaut).
-//
-// Mesure TB73 (Luigi's Mansion 2, jardin, a chaud) : passe render du GPU a 98 %, 52,7 ms par
-// image, dont l'essentiel dans les fragment shaders a 8 lumieres. Tous les FS ecrivaient
-// gl_FragDepth ; un FS qui ecrit la profondeur empeche le GPU de rejeter AVANT le shader les
-// fragments caches (early-Z) : chaque fragment recouvert paie donc tout l'eclairage.
-//
-// La conversion PICA est affine en gl_FragCoord.z :
-//     depth = -gl_FragCoord.z * depth_scale + depth_offset
-// Avec la plage de profondeur du viewport Vulkan minDepth = depth_offset et
-// maxDepth = depth_offset - depth_scale (Vulkan admet minDepth > maxDepth), la profondeur
-// rasterisee vaut exactement cette valeur : le FS n'a plus a l'ecrire, et gl_FragCoord.z vaut
-// directement 'depth' (utilise par le brouillard). Conditions : pas de W-buffer (division par w,
-// non affine), pas de rendu d'ombre (chemin a part), bornes dans [0, 1].
-// ---------------------------------------------------------------------------------------------
-bool V386EzRequested() {
-    static const bool requested = [] {
-        const char* v = std::getenv("BORKED3DS_V3DV_V386_EZ");
-        return v != nullptr && v[0] != '\0';
-    }();
-    return requested;
-}
-
-bool V386EzUsable(const Pica::RegsInternal& regs) {
-    if (!V386EzRequested()) {
-        return false;
-    }
-    if (regs.rasterizer.depthmap_enable == Pica::RasterizerRegs::DepthBuffering::WBuffering) {
-        return false;
-    }
-    if (regs.framebuffer.IsShadowRendering()) {
-        return false;
-    }
-    const float scale = Pica::f24::FromRaw(regs.rasterizer.viewport_depth_range).ToFloat32();
-    const float offset =
-        Pica::f24::FromRaw(regs.rasterizer.viewport_depth_near_plane).ToFloat32();
-    const float far_value = offset - scale;
-    const auto in_unit = [](float v) { return v >= 0.0f && v <= 1.0f; }; // faux pour NaN
-    return in_unit(offset) && in_unit(far_value);
-}
-
 FramebufferConfig::FramebufferConfig(const Pica::RegsInternal& regs, const Profile& profile) {
     const auto& output_merger = regs.framebuffer.output_merger;
-    v386_ez.Assign(profile.is_vulkan && V386EzUsable(regs) ? 1 : 0);
     scissor_test_mode.Assign(regs.rasterizer.scissor_test.mode);
     depthmap_enable.Assign(regs.rasterizer.depthmap_enable);
     shadow_rendering.Assign(regs.framebuffer.IsShadowRendering());
