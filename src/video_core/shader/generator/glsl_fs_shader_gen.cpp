@@ -1598,10 +1598,38 @@ void FragmentModule::WriteLighting() {
         }
     };
 
+    // v391 : eclairage allege, Vulkan seulement, pose par jeu dans main.cpp (Luigi's Mansion 2).
+    // Garde les N-1 premieres lumieres et la DERNIERE (elle porte le terme de Fresnel) ; les
+    // lumieres au-dela de K parmi celles gardees perdent leur speculaire.
+    u32 v391_lights = 0;
+    u32 v391_spec = 8;
+    if (profile.is_vulkan) {
+        if (const char* v = std::getenv("BORKED3DS_V3DV_V391_LITE_LIGHTS")) {
+            const int n = std::atoi(v);
+            if (n >= 1 && n <= 7) {
+                v391_lights = static_cast<u32>(n);
+            }
+        }
+        if (const char* v = std::getenv("BORKED3DS_V3DV_V391_LITE_SPEC")) {
+            const int k = std::atoi(v);
+            if (k >= 0 && k <= 8) {
+                v391_spec = static_cast<u32>(k);
+            }
+        }
+    }
+    const bool v391_active = v391_lights != 0 && lighting.src_num > v391_lights;
+    u32 v391_kept = 0;
+
     // Write the code to emulate each enabled light
     for (u32 light_index = 0; light_index < lighting.src_num; ++light_index) {
         const auto& light_config = lighting.lights[light_index];
         const std::string light_src = fmt::format("light_src[{}]", light_config.num.Value());
+        const bool v391_last = light_index == lighting.src_num - 1;
+        if (v391_active && !v391_last && v391_kept + 1 >= v391_lights) {
+            continue; // lumiere ignoree (la derniere est toujours gardee)
+        }
+        ++v391_kept;
+        const bool v391_with_spec = !v391_active || v391_kept <= v391_spec;
 
         // Compute light vector (directional or positional)
         if (light_config.directional) {
@@ -1670,7 +1698,9 @@ void FragmentModule::WriteLighting() {
         }
 
         // If enabled, lookup ReflectRed value, otherwise, 1.0 is used
-        if (lighting.lut_rr.enable &&
+        if (!v391_with_spec) {
+            out += "refl_value = vec3(0.0);\n"; // v391 : speculaire coupe pour cette lumiere
+        } else if (lighting.lut_rr.enable &&
             LightingRegs::IsLightingSamplerSupported(lighting.config,
                                                      LightingRegs::LightingSampler::ReflectRed)) {
             std::string value =
@@ -1683,7 +1713,8 @@ void FragmentModule::WriteLighting() {
         }
 
         // If enabled, lookup ReflectGreen value, otherwise, ReflectRed value is used
-        if (lighting.lut_rg.enable &&
+        if (!v391_with_spec) {
+        } else if (lighting.lut_rg.enable &&
             LightingRegs::IsLightingSamplerSupported(lighting.config,
                                                      LightingRegs::LightingSampler::ReflectGreen)) {
             std::string value =
@@ -1696,7 +1727,8 @@ void FragmentModule::WriteLighting() {
         }
 
         // If enabled, lookup ReflectBlue value, otherwise, ReflectRed value is used
-        if (lighting.lut_rb.enable &&
+        if (!v391_with_spec) {
+        } else if (lighting.lut_rb.enable &&
             LightingRegs::IsLightingSamplerSupported(lighting.config,
                                                      LightingRegs::LightingSampler::ReflectBlue)) {
             std::string value =
@@ -1759,8 +1791,10 @@ void FragmentModule::WriteLighting() {
             light_src, shadow_primary, light_src, dist_atten, spot_atten);
 
         // Compute secondary fragment color (specular lighting) function
-        out += fmt::format("specular_sum.rgb += ({} + {}) * clamp_highlights * {} * {}{};\n",
-                           specular_0, specular_1, dist_atten, spot_atten, shadow_secondary);
+        if (v391_with_spec) {
+            out += fmt::format("specular_sum.rgb += ({} + {}) * clamp_highlights * {} * {}{};\n",
+                               specular_0, specular_1, dist_atten, spot_atten, shadow_secondary);
+        }
     }
 
     // Apply shadow attenuation to alpha components if enabled
