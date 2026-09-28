@@ -485,7 +485,8 @@ struct Values {
     // Core
     Setting<bool> use_cpu_jit{true, "use_cpu_jit"};
     SwitchableSetting<u8> frame_skip{0, "frame_skip"};
-    SwitchableSetting<s32, true> cpu_clock_percentage{75, 5, 400, "cpu_clock_percentage"};
+    // v389 : 100 % (valeur de la configuration de test gagnante ; TB07 : aucun gain en dessous).
+    SwitchableSetting<s32, true> cpu_clock_percentage{100, 5, 400, "cpu_clock_percentage"};
     SwitchableSetting<bool> is_new_3ds{true, "is_new_3ds"};
     SwitchableSetting<bool> lle_applets{false, "lle_applets"};
 
@@ -502,15 +503,17 @@ struct Values {
     Setting<InitTicks> init_ticks_type{InitTicks::Random, "init_ticks_type"};
     Setting<s64> init_ticks_override{0, "init_ticks_override"};
     Setting<bool> plugin_loader_enabled{false, "plugin_loader"};
-    Setting<bool> allow_plugin_loader{true, "allow_plugin_loader"};
+    // v389 : false comme la configuration de test (chargeur de plugins 3GX desactive).
+    Setting<bool> allow_plugin_loader{false, "allow_plugin_loader"};
     Setting<u16> steps_per_hour{0, "steps_per_hour"};
 
     // Renderer
+    // v389 : Vulkan par defaut (Pi 5 / V3DV) quand il est compile ; OpenGL reste choisissable.
     SwitchableSetting<GraphicsAPI, true> graphics_api{
-#if defined(ENABLE_OPENGL)
-        GraphicsAPI::OpenGL,
-#elif defined(ENABLE_VULKAN)
+#if defined(ENABLE_VULKAN)
         GraphicsAPI::Vulkan,
+#elif defined(ENABLE_OPENGL)
+        GraphicsAPI::OpenGL,
 #elif defined(ENABLE_SOFTWARE_RENDERER)
         GraphicsAPI::Software,
 #else
@@ -529,7 +532,9 @@ struct Values {
     SwitchableSetting<bool> async_shader_compilation{true, "async_shader_compilation"};
     SwitchableSetting<bool> async_presentation{true, "async_presentation"};
     SwitchableSetting<bool> use_hw_shader{true, "use_hw_shader"};
-    SwitchableSetting<bool> use_disk_shader_cache{false, "use_disk_shader_cache"};
+    // v389 : true par defaut -- active la cache SPIR-V sur disque (v372) et la sauvegarde de la
+    // cache pipeline (v384) ; configuration gagnante mesuree du projet.
+    SwitchableSetting<bool> use_disk_shader_cache{true, "use_disk_shader_cache"};
     Setting<u32> startup_shader_load_limit{1000, "startup_shader_load_limit"};  //gvx64
     SwitchableSetting<bool> shaders_accurate_mul{false, "shaders_accurate_mul"};
     SwitchableSetting<bool> use_vsync_new{true, "use_vsync_new"};
@@ -626,7 +631,8 @@ struct Values {
     // Debugging
     Setting<bool> record_frame_times{false, "record_frame_times"};
     std::unordered_map<std::string, bool> lle_modules;
-    Setting<bool> delay_start_for_lle_modules{true, "delay_start_for_lle_modules"};
+    // v389 : false comme la configuration de test (aucun module LLE actif par defaut).
+    Setting<bool> delay_start_for_lle_modules{false, "delay_start_for_lle_modules"};
     Setting<bool> use_gdbstub{false, "use_gdbstub"};
     Setting<u16> gdbstub_port{24689, "gdbstub_port"};
     Setting<bool> instant_debug_log{true, "instant_debug_log"};
@@ -642,7 +648,9 @@ struct Values {
     SwitchableSetting<bool> upscaling_hack{false, "upscaling_hack"};
 
     // Miscellaneous
-    Setting<std::string> log_filter{"*:Trace", "log_filter"};
+    // v389 : "*:Warning" au lieu de "*:Trace" -- journal complet trop couteux en CPU sur le Pi 5.
+    // Les lignes de diagnostic du projet (V38x) sont en Warning et restent visibles.
+    Setting<std::string> log_filter{"*:Warning", "log_filter"};
     Setting<std::string> log_regex_filter{"", "log_regex_filter"};
 
     // Video Dumping
