@@ -23,40 +23,30 @@ function depends_borked3ds() {
 function sources_borked3ds() {
 
     ################################
-    # SOURCE DES SOURCES
+    # SOURCE SELECTION
     #
-    # DEFAUT = clone GitHub. Le depot DTEAM-1/Borked3DS-rpi est la source de verite du
-    # projet : le flux normal est editer -> pousser -> compiler. Ne PAS privilegier un
-    # arbre local automatiquement, sinon un build compilerait silencieusement une copie
-    # en retard sur le depot -- exactement le meme genre de piege, en sens inverse.
+    # Default: clone DTEAM-1/Borked3DS-rpi from GitHub. The repository is the source of
+    # truth; a local tree is never picked up automatically, so a build can never silently
+    # compile a stale copy.
     #
-    # Pour compiler un arbre local (test rapide sans pousser), le demander EXPLICITEMENT :
+    # To build a local tree (quick test without pushing), ask for it explicitly:
     #     BORKED3DS_LOCAL_SRC=/home/pi/Borked3DS-rpi-master sudo -E ./retropie_setup.sh
     #
-    # Dans les deux cas la source retenue est affichee en clair. Ne jamais lancer un build
-    # sans avoir lu cette ligne.
+    # The selected source is printed in both cases.
     ################################
 
     local local_src="${BORKED3DS_LOCAL_SRC:-}"
 
     ################################
-    # NETTOYAGE DU REPERTOIRE DE BUILD
+    # BUILD DIRECTORY CLEANUP
     #
-    # Probleme d'origine : "rm -rf $md_build/*" utilise un glob, qui n'inclut PAS les
-    # fichiers caches. Le .git du clone precedent survivait au nettoyage, et le
-    # "git clone" suivant echouait avec :
-    #     fatal: destination path '...' already exists and is not an empty directory
-    #
-    # PIEGE (rencontre v157) : ne PAS corriger avec "rm -rf $md_build". RetroPie-Setup
-    # fait un pushd DANS $md_build avant d'appeler cette fonction : supprimer le
-    # repertoire detruit le repertoire courant du shell. Symptomes observes :
-    #     fatal: Unable to read current working directory: No such file or directory
-    #     fatal: remote helper 'https' aborted session
-    #   puis "git -C" remonte au depot RetroPie-Setup (faux numero de commit affiche),
-    #   puis CMake echoue : "does not appear to contain CMakeLists.txt".
-    #
-    # Solution : VIDER le repertoire sans le supprimer. find -mindepth 1 traite aussi
-    # les fichiers caches (.git inclus) et laisse le repertoire -- donc le CWD -- intact.
+    # Empty $md_build without deleting it:
+    #   - "rm -rf $md_build/*" skips hidden files, so the previous .git survived and the
+    #     next "git clone" failed ("destination path already exists").
+    #   - "rm -rf $md_build" is wrong too: RetroPie-Setup has already pushd'ed into
+    #     $md_build, so deleting it removes the shell's working directory (git then fails
+    #     and "git -C" reports the RetroPie-Setup commit instead of ours).
+    # find -mindepth 1 also removes hidden files and keeps the directory itself.
     ################################
 
     mkdir -p "$md_build"
@@ -83,19 +73,12 @@ function sources_borked3ds() {
         echo "SOURCES: clone GitHub DTEAM-1/Borked3DS-rpi (defaut)"
         echo "=========================================================="
         ################################
-        # CLONE AVEC REESSAIS ET ARRET IMMEDIAT EN CAS D'ECHEC
+        # CLONE WITH RETRIES, STOP ON FAILURE
         #
-        # PIEGE AVERE (03/08/2026) : un echec reseau ("Recv failure: Connection reset
-        # by peer") laissait le script CONTINUER. Consequences observees dans le log :
-        #   - les sed -Werror et les fixes source s'appliquaient dans le vide ;
-        #   - "git -C $md_build rev-parse" remontait au depot PARENT (RetroPie-Setup)
-        #     et affichait "Commit compile : dd6475c2", un commit qui n'a rien a voir
-        #     avec le fork -- donc un faux numero de commit dans les traces de test.
-        # Seule la garde de sortie en fin de fonction arretait finalement le build.
-        #
-        # Correctif : verifier le code de retour du clone, reessayer (les coupures
-        # GitHub sont souvent transitoires), et SORTIR si les tentatives echouent.
-        # Le repertoire est vide entre deux tentatives, sinon git refuse de cloner.
+        # A network error used to let the script continue: the patches below ran on an
+        # empty tree and "git -C" reported the parent RetroPie-Setup commit. The clone is
+        # now retried 3 times (GitHub outages are often transient) and the build stops if
+        # it still fails. The directory is emptied between attempts.
         ################################
 
         local clone_ok=0
@@ -126,7 +109,7 @@ function sources_borked3ds() {
 
         cd "$md_build" || exit 1
 
-        # Garde : sans CMakeLists.txt, le clone est incomplet meme s'il a "reussi".
+        # Guard: without CMakeLists.txt the clone is incomplete even if git succeeded.
         if [ ! -f "$md_build/CMakeLists.txt" ]; then
             echo "!! Clone incomplet : CMakeLists.txt absent. Abandon."
             exit 1
@@ -134,9 +117,8 @@ function sources_borked3ds() {
 
         git submodule update --init --recursive
 
-        # Le commit est lu DANS le depot clone. Si -C echouait, on remonterait au
-        # depot parent et on afficherait un commit etranger : on verifie donc que le
-        # repertoire est bien la racine d'un depot git avant de s'y fier.
+        # Read the commit only if $md_build is the root of a git repository; otherwise
+        # "git -C" would climb to the parent repository and report a foreign commit.
         if [ ! -d "$md_build/.git" ]; then
             echo "!! $md_build n'est pas la racine d'un depot git -- commit non fiable. Abandon."
             exit 1
@@ -156,21 +138,14 @@ function sources_borked3ds() {
 
     ################################
     # FIX CLANG -Werror INCOMPATIBILITY
-    # Le fork pose -Werror dans CMakeLists.txt / fichiers cmake, ce qui fait rejeter par
-    # Clang du code que GCC tolere. CMAKE_CXX_FLAGS ne peut pas annuler un -Werror pose
-    # par target_compile_options() : les flags de cible priment sur la ligne de commande.
     #
-    # Fix 1 : retirer -Werror de TOUS les fichiers cmake apres le clone.
-    # Fix 2 : patcher directement les deux fichiers source problematiques.
+    # The fork sets -Werror in its cmake files, so Clang rejects code that GCC accepts.
+    # CMAKE_CXX_FLAGS cannot override a -Werror set by target_compile_options().
+    #   Fix 1: strip bare -Werror from every cmake file (-Werror=... forms are kept).
+    #   Fix 2: patch the two offending source files directly.
     #
-    # CORRECTIF (etape 2) : le troisieme sed etait "s/-Werror//g", trop agressif -- il
-    # transformait "-Werror=return-type" en "=return-type", c'est-a-dire un flag corrompu
-    # passe au compilateur. Le motif epargne desormais les formes "-Werror=...".
-    #
-    # DETTE (etape 6 / packaging) : les deux fixes source ci-dessous sont appliques par
-    # sed APRES clone, donc absents du depot -- le depot ne compile pas seul. Pire, si le
-    # motif change en amont, le sed devient un no-op SILENCIEUX. A pousser dans le depot,
-    # puis retirer d'ici.
+    # TODO (packaging): the two source fixes should be committed to the repository and
+    # removed from here; if the upstream pattern changes, the sed silently does nothing.
     ################################
 
     find "$md_build" \( -name "CMakeLists.txt" -o -name "*.cmake" \) | \
@@ -181,7 +156,7 @@ function sources_borked3ds() {
         sed -i 's/-Werror\([^=]\)/\1/g; s/-Werror$//' "$f"
     done
 
-    # Controle : plus aucun -Werror "nu" ne doit subsister (les -Werror=... sont legitimes).
+    # Check: no bare -Werror may remain (-Werror=... is legitimate).
     local werror_left
     werror_left="$(grep -rn -- "-Werror" "$md_build" --include="CMakeLists.txt" --include="*.cmake" 2>/dev/null | grep -v -- "-Werror=" | wc -l)"
     if [ "$werror_left" -ne 0 ]; then
@@ -191,8 +166,8 @@ function sources_borked3ds() {
     fi
 
     # Source fix 1: glsl_fs_shader_gen.cpp
-    # logical '||' with constant operand — GL_SHADER_IMAGE_ATOMIC est une constante int.
-    # Clang le rejette ; '|' bitwise est semantiquement identique ici.
+    # Logical '||' with a constant operand (GL_SHADER_IMAGE_ATOMIC is an int constant).
+    # Clang rejects it; bitwise '|' is equivalent here.
     local fs_gen="$md_build/src/video_core/shader/generator/glsl_fs_shader_gen.cpp"
     if [ -f "$fs_gen" ]; then
         if grep -q "GLAD_GL_ARB_shader_image_load_store || GL_SHADER_IMAGE_ATOMIC" "$fs_gen"; then
@@ -204,7 +179,7 @@ function sources_borked3ds() {
     fi
 
     # Source fix 2: texture_decode.cpp
-    # fonction 'MakeBlackAlpha' inutilisee — [[nodiscard]] -> [[maybe_unused]]
+    # Unused function 'MakeBlackAlpha': [[nodiscard]] -> [[maybe_unused]]
     local tex_decode="$md_build/src/video_core/texture/texture_decode.cpp"
     if [ -f "$tex_decode" ]; then
         if grep -q "\[\[nodiscard\]\] constexpr Common::Vec4<u8> MakeBlackAlpha" "$tex_decode"; then
@@ -216,12 +191,10 @@ function sources_borked3ds() {
     fi
 
     ################################
-    # GARDE DE SORTIE
+    # EXIT GUARD
     #
-    # Verifie que l'arbre source est reellement en place AVANT de rendre la main a
-    # build_borked3ds(). Sans cela, un clone avorte se manifeste plus tard par une erreur
-    # CMake obscure ("does not appear to contain CMakeLists.txt"), plusieurs etapes apres
-    # la vraie cause.
+    # Make sure the source tree is in place before build_borked3ds() runs; otherwise a
+    # failed clone only shows up later as an obscure CMake error.
     ################################
 
     if [ ! -f "$md_build/CMakeLists.txt" ] || [ ! -d "$md_build/src" ]; then
@@ -241,10 +214,8 @@ function build_borked3ds() {
     mkdir -p build
     cd build || exit 1
 
-    # BUG FIX: Borked3DS Vulkan plante s'il est compile avec GCC sur Pi5.
-    # Note amont : "Vulkan may crash if the executable was compiled with GCC."
-    # On utilise Clang. Installation : sudo apt install clang
-    # Note : -Werror est retire des fichiers cmake dans sources_borked3ds() ci-dessus.
+    # Build with Clang: upstream notes that "Vulkan may crash if the executable was
+    # compiled with GCC". -Werror is stripped in sources_borked3ds() above.
     cmake .. \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
@@ -274,7 +245,7 @@ function install_borked3ds() {
 
     mkdir -p "$md_inst"
 
-    # BUG FIX: le binaire CLI s'appelle borked3ds, pas borked3ds-qt
+    # The Qt executable is named borked3ds (not borked3ds-qt).
     if [ -f "$md_build/build/bin/Release/borked3ds" ]; then
         cp "$md_build/build/bin/Release/borked3ds" "$md_inst/borked3ds"
         chmod +x "$md_inst/borked3ds"
@@ -284,24 +255,22 @@ function install_borked3ds() {
     fi
 
     ################################
-    # HOME UTILISATEUR
+    # USER HOME
     #
-    # Le scriptmodule s'execute sous root : $HOME vaut /root, pas /home/pi. Les fichiers
-    # crees plus bas doivent aller dans le home de l'utilisateur, sinon l'emulateur ne
-    # les trouve jamais. RetroPie-Setup expose $home et $__user pour ca.
+    # The scriptmodule runs as root ($HOME is /root). Files created below must go to the
+    # user's home; RetroPie-Setup provides $home and $__user for that.
     ################################
     local user_home="${home:-/home/${__user:-pi}}"
 
     ################################
-    # NAND/SaveData minimal requis
-    # archive_source_sd_savedata.cpp monte le SaveData dans :
-    # sdmc/.../title/{high}/{low}/data/00000001/
-    # Certains jeux (ex: Sonic Lost World) lisent network_id.dat au demarrage.
-    # Si absent -> FILE_NOT_FOUND non gere -> crash silencieux dans le thread ARM.
+    # MINIMAL SAVEDATA
     #
-    # DETTE (etape 6 / packaging) : ce bloc est specifique aux jeux de test du projet.
-    # Il n'a rien a faire dans un package RetroPie distribuable -- a sortir avant
-    # publication (ou a conditionner a une variable de developpement).
+    # archive_source_sd_savedata.cpp mounts SaveData from
+    # sdmc/.../title/{high}/{low}/data/00000001/. Sonic Lost World reads network_id.dat
+    # at startup; if it is missing, the unhandled FILE_NOT_FOUND crashes the ARM thread.
+    #
+    # TODO (packaging): this is specific to the project's test games and does not belong
+    # in a distributable package.
     ################################
 
     local sdmc_base="$user_home/.local/share/borked3ds-emu/sdmc/Nintendo 3DS"
@@ -310,7 +279,7 @@ function install_borked3ds() {
     local sdmc="$sdmc_base/$sdmc_id0/$sdmc_id1"
 
     # Sonic Lost World US (00040000000C8C00) — network_id.dat
-    # 16 octets : LocalFriendCodeSeed (8 octets non nuls) + NetworkID (8 octets)
+    # 16 bytes: LocalFriendCodeSeed (8 non-zero bytes) + NetworkID (8 bytes)
     local sonic_us_data="$sdmc/title/00040000/000c8c00/data/00000001"
     if [ ! -f "$sonic_us_data/network_id.dat" ]; then
         mkdir -p "$sonic_us_data"
@@ -322,7 +291,7 @@ open('$sonic_us_data/network_id.dat', 'wb').write(data)
           || echo "WARNING: failed to create network_id.dat"
     fi
 
-    # Sonic Lost World EU (00040000000C8D00) — meme structure
+    # Sonic Lost World EU (00040000000C8D00) — same layout
     local sonic_eu_data="$sdmc/title/00040000/000c8d00/data/00000001"
     if [ ! -f "$sonic_eu_data/network_id.dat" ]; then
         mkdir -p "$sonic_eu_data"
@@ -335,69 +304,22 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     fi
 
     ################################
-    # VERIFICATION POST-INSTALLATION
+    # POST-INSTALL VERIFICATION
     #
-    # But : rendre impossible un releve fait sur un binaire perime. Chaque marqueur
-    # attendu est cherche dans le binaire installe. Un seul ABSENT invalide le cycle
-    # de test -- ne pas lancer le jeu, reprendre au push.
+    # Every expected marker string is searched for in the installed binary, so that no
+    # test is ever run on a stale binary. A single ABSENT marker invalidates the test
+    # cycle: do not launch a game, re-upload the files and rebuild.
     #
-    # Pour ajouter un marqueur au fil des sessions, l'ecrire dans borked3ds_markers.
-    #
-    # v158 : A7Z12_FRAME_CENSUS avait ete ajoute au code SANS entrer ici -- la
-    # verification post-installation ne le couvrait donc pas, et un binaire perime
-    # serait passe "conforme" en ne produisant simplement aucun recensement.
-    # Deux marqueurs sont poses plutot qu'un :
-    #   BORKED3DS_V3DV_A7Z12_FRAME_CENSUS -> la sonde existe (depuis 9f7b67e) ;
-    #   swhist_le8=                       -> c'est bien la version v158 du census
-    #                                        (sommets + histogramme + frame_us).
-    # Le second est le seul discriminant : sans lui, un binaire 342556a repondrait
-    # OK au premier et le releve serait fait avec une sonde a 9 champs.
-    #
-    # TB14/TB15 : "rp_switch=" atteste du census enrichi des compteurs de render pass
-    # (rp_begin/rp_switch/rp_area/rp_end/rp_flush). Les deux variables MIN_DRAWS_TO_FLUSH
-    # et DISABLE_RENDERPASS_FLUSH attestent du seuil de flush rendu reglable dans
-    # vk_render_manager.cpp. Sans "rp_switch=", le binaire est anterieur a TB14 et
-    # le releve ne produirait aucun compteur -- silencieusement.
-    #
-    # TB16 : "cpu_pct=" atteste de la sonde d'occupation CPU de l'EmuThread
-    # (cpu_us/wall_us/cpu_pct/pframes/tid). Elle tranche CPU-bound vs attente.
-    #
-    # TB24 : "sub_lag=" atteste des compteurs de soumission GPU
-    # (sub_n/sub_us/sub_max_us/sub_lag), poses dans vk_master_semaphore.cpp.
-    #
-    # TB26 : "f_fb=" atteste de la decomposition des causes de bascule de render pass
-    # (d_fb/d_rp/d_ar/d_cl, f_fb/f_rp/f_ar/f_cl, fbn), posee dans vk_render_manager.cpp.
-    #
-    # TB27 : "seq_count=" atteste de la mesure de faisabilite du regroupement -- longueur
-    # des runs consecutifs par cible (seq_count/seq_draws) et histogramme par framebuffer
-    # (fbh0..fbh5), pose dans vk_render_manager.cpp. Sans lui, le binaire est anterieur a
-    # TB27 et le releve ne produirait aucun de ces champs -- silencieusement.
-    #
-    # TB28a/b : "A7Z12_FB_IDENT" atteste de l'identification des cibles de rendu
-    # (color_id/depth_id/shadow/dimensions/formats par framebuffer), posee dans
-    # vk_render_manager.cpp et emise par le census. C'est elle qui dit si les cibles
-    # jumelles de TB27 sont la meme surface ou deux cibles distinctes. "c_addr=" atteste
-    # de TB28b : adresses physiques 3DS par cible (discriminant stereo gauche/droite).
-    #
-    # TB32 : "A7Z12_RP_END_SITE" atteste du comptage des fermetures de render pass PAR
-    # SITE D'APPEL. Cette sonde a montre que les 168 bascules "f_rp" ne sont pas des
-    # changements de cible mais des fermetures forcees par du code hors chemin de draw.
-    # Toujours actif avec le census, cout negligeable (quelques lignes par periode).
-    #
-    # TB33 : "BORKED3DS_V3DV_DISABLE_LAZY_COPY_VIEW" atteste du correctif MAJEUR de
-    # l'axe B, desormais actif PAR DEFAUT (la chaine n'est plus qu'une echappatoire).
-    # Surface::CopyImageView() ferme le render pass et blitte l'image entiere ; elle
-    # etait appelee pour CHAQUE texture de CHAQUE draw alors que son resultat n'est
-    # utilise qu'en cas de feedback direct. TB32 : 303 fermetures/frame sur 315.
-    # Mesure : Metroid 49,3 % -> 88,7 %, garde-fou non-regression passe sur les trois
-    # temoins. Si ce marqueur disparait, le correctif a ete perdu par un re-upload.
-    #
-    # TB34 : "BORKED3DS_V3DV_TRACE_BLEND" et "BORKED3DS_V3DV_TRACE_DISPLAY_TRANSFER"
-    # attestent que les deux traces lourdes sont desormais OPT-IN. Elles etaient
-    # inconditionnelles (~266 lignes/s, 11 Mo/session). Depuis TB33 le CPU est le mur
-    # (cpu_pct=99), donc toute charge CPU retiree se lit directement en vitesse.
-    # Gater l'emission ne retire pas les chaines du binaire : le marqueur
-    # "TRACE_DISPLAY_TRANSFER src=" ci-dessus reste valide.
+    # Each marker proves that a given fix or probe is present, e.g.:
+    #   A7Z12_FRAME_CENSUS / swhist_le8= / rp_switch= / cpu_pct= / sub_lag= / f_fb= /
+    #     seq_count= / A7Z12_FB_IDENT / c_addr= / A7Z12_RP_END_SITE : frame census fields
+    #   BORKED3DS_V3DV_DISABLE_LAZY_COPY_VIEW : escape hatch of the TB33 fix (no image copy
+    #     on every draw, on by default); if it disappears, the fix was lost
+    #   BORKED3DS_V3DV_TRACE_BLEND / TRACE_DISPLAY_TRANSFER : heavy traces are opt-in (TB34)
+    #   V385_SPECIALISATION : vertex shader specialization (v385)
+    #   V387_FS_NO_ROBUST / BORKED3DS_V3DV_V387_FS_ROBUST : non-robust fragment shaders (v388)
+    #   V389_DEFAUTS_VULKAN : Vulkan defaults set by the program (v389)
+    # To add a marker, append it to borked3ds_markers.
     ################################
 
     echo ""
@@ -460,20 +382,7 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         fi
     done
 
-    ################################
-    # Sondes retirees : leur presence signale un binaire perime.
-    #
-    # ETAPE 3 (nettoyage) -- a deplacer ICI une fois le code nettoye :
-    #   BORKED3DS_V3DV_A7Z8_DUMP_ALL_SPIRV      (piste precision fp16 : close)
-    #   BORKED3DS_V3DV_A7Z9_DUMP_COMPILESPV     (piste precision fp16 : close)
-    #   BORKED3DS_V3DV_A7Z10_CLEAR_NEW_SURFACES (flash : parque, sonde sans effet)
-    #   BORKED3DS_V3DV_A7Z11_TRACE_COLOR_ALLOC  (flash : parque, sonde sans effet)
-    #   BORKED3DS_V3DV_DIRA_WIDE / DIRA_ALL     (a retirer aussi des marqueurs ci-dessus)
-    # Tant qu'elles sont dans le code, elles doivent RESTER hors de cette liste, sinon
-    # chaque build sera declare non conforme.
-    ################################
-    # v389 : diagnostics v382 (TEXSYNC) et options v386 (early-Z, lumieres eteintes,
-    # recensement) retires du code -- leur presence signale un binaire anterieur a v389.
+    # Removed code: finding any of these strings means the binary predates v389.
     local borked3ds_removed=(
         "BORKED3DS_V3DV_V382_TEXSYNC"
         "BORKED3DS_V3DV_V386_EZ"
@@ -500,8 +409,8 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     fi
 
     ################################
-    # PURGE DU CACHE SHADER VULKAN
-    # Systematique : un cache issu du binaire precedent fausse le premier lancement.
+    # VULKAN SHADER CACHE PURGE
+    # Always done: a cache built by the previous binary would skew the first launch.
     ################################
     rm -rf "$user_home/.local/share/borked3ds-emu/shaders/vulkan"
     echo "Cache shader Vulkan purge."
@@ -514,31 +423,31 @@ function configure_borked3ds() {
     mkRomDir "3ds"
 
     ################################
-    # LIGNES DE LANCEMENT -- v389 (fermeture du projet)
+    # LAUNCH LINES (v389)
     #
-    # Les reglages de la configuration gagnante (v388) ne vivent PLUS dans emulators.cfg :
-    #   - variables BORKED3DS_V3DV_* : posees par le programme au demarrage d'un jeu, SEULEMENT
-    #     quand l'API choisie est Vulkan (en OpenGL elles font fermer l'emulateur) -- voir
-    #     V389ApplyV3dvDefaults() dans src/borked3ds_qt/main.cpp, journal V389_DEFAUTS_VULKAN ;
-    #   - environnement du lanceur (xcb, SDL, GL_OES_texture_buffer, couches Vulkan) : pose au
-    #     debut de main() ;
-    #   - reglages : graphics_api=Vulkan et use_disk_shader_cache=true sont les defauts du code
-    #     (settings.h) ; geometry_shader l'etait deja.
-    # Une variable posee a la main sur une ligne garde la priorite (tests). Echappatoire :
-    # BORKED3DS_V3DV_NO_DEFAULTS=1.
+    # The tuned settings no longer live in emulators.cfg:
+    #   - BORKED3DS_V3DV_* variables are set by the program when a game starts, only when
+    #     the selected API is Vulkan (under OpenGL they make the emulator exit); see
+    #     V389ApplyV3dvDefaults() in src/borked3ds_qt/main.cpp, log line V389_DEFAUTS_VULKAN;
+    #   - launcher environment (xcb, SDL, GL_OES_texture_buffer, Vulkan layers) is set at
+    #     the start of main();
+    #   - graphics_api=Vulkan and use_disk_shader_cache=true are code defaults (settings.h).
+    # A variable set by hand on a line still takes priority (tests).
+    # Escape hatch: BORKED3DS_V3DV_NO_DEFAULTS=1.
     #
-    # NE JAMAIS remettre V3D_DEBUG=opt_compile_time : avec les fragment shaders non robustes
-    # (v388), il fait deborder les registres V3D (Luigi's Mansion 2 : 38 -> 126 ms/image).
+    # Never add V3D_DEBUG=opt_compile_time back: with non-robust fragment shaders (v388)
+    # it makes V3D spill registers (Luigi's Mansion 2: 38 -> 126 ms per frame).
     #
-    # Sondes de mesure (plus posees par defaut) a ajouter a la main sur une ligne de test :
+    # Measurement probes (no longer set by default), to add by hand on a test line:
     #   BORKED3DS_V3DV_A7Z12_FRAME_CENSUS=1 BORKED3DS_V3DV_A7Z12_CENSUS_PERIOD=61
     #   BORKED3DS_V3DV_TRACE_PIPELINE_BUILD=1
+    # The census is logged at Info level: log_filter must include Render.Vulkan:Info.
     #
-    # Trois lignes seulement :
-    #   borked3ds          : jeu, OpenGL ou Vulkan selon le reglage (defaut)
-    #   borked3ds-ui       : interface Qt seule
-    #   borked3ds-ui-qt06  : interface Qt seule, echelle 0,6
-    # Les anciennes lignes de test (borked3ds_*) sont retirees.
+    # Three lines:
+    #   borked3ds          : game, OpenGL or Vulkan depending on the setting (default)
+    #   borked3ds-ui       : Qt interface only
+    #   borked3ds-ui-qt06  : Qt interface only, 0.6 scale (small screens)
+    # Old test lines (borked3ds_*) are removed.
     ################################
 
     addEmulator 1 "$md_id" "3ds" "XINIT-WM:$md_inst/borked3ds -f %ROM%"
