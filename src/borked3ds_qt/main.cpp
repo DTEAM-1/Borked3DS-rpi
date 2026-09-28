@@ -347,7 +347,7 @@ void V389ApplyV3dvDefaults() {
 // eclairage a 8 lumieres par pixel (TB90 : 40 -> 26 ms/image sans eclairage). Pour ce titre
 // seulement, on ne calcule qu'une partie des lumieres (voir WriteLighting,
 // glsl_fs_shader_gen.cpp). Les autres jeux ne sont jamais touches.
-//   BORKED3DS_V3DV_V391_LITE_LIGHTS=N : nombre de lumieres calculees (1-7), pose ici a 4 pour
+//   BORKED3DS_V3DV_V391_LITE_LIGHTS=N : nombre de lumieres calculees (1-7), pose ici a 6 pour
 //                                       les titres de la liste ; une valeur manuelle prime.
 //   BORKED3DS_V3DV_V391_LITE_SPEC=K   : lumieres avec speculaire parmi celles calculees (option).
 //   BORKED3DS_V3DV_V391_NO_LITE=1     : desactive l'allegement meme pour Luigi.
@@ -371,7 +371,7 @@ void V391ApplyPerGameLighting(u64 title_id) {
         return;
     }
     if (std::getenv("BORKED3DS_V3DV_V391_LITE_LIGHTS") == nullptr) {
-        setenv("BORKED3DS_V3DV_V391_LITE_LIGHTS", "4", 0);
+        setenv("BORKED3DS_V3DV_V391_LITE_LIGHTS", "6", 0);
         posee_par_nous = true;
     }
     LOG_WARNING(Frontend, "V391_ECLAIRAGE_ALLEGE titre={:016X} actif=1 lumieres={} speculaire={}",
