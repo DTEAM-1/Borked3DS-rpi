@@ -2041,7 +2041,7 @@ u16 CyclicJumpBoolMaskCached(const ProgramCode& program_code, const SwizzleData&
 // Masque par programme (compilation a blanc, en cache) = booleens lus par IFU / CALLU / JMPU et
 // compteurs lus par LOOP. Le masque ne change jamais le resultat : les valeurs figees sont celles du
 // draw courant et font partie de la cle du VS. Il ne change que le nombre de variantes, borne par
-// un plafond par programme (BORKED3DS_V3DV_V385_MAX_VARIANTS, defaut 4) : au-dela, les nouvelles
+// un plafond par programme (BORKED3DS_V3DV_V385_MAX_VARIANTS, defaut 64) : au-dela, les nouvelles
 // combinaisons prennent la forme generique (seuls restent figes les JMPU cycliques de v380).
 // Echappatoire (A/B) : BORKED3DS_V3DV_V385_NO_SPEC=1.
 // ---------------------------------------------------------------------------------------------
@@ -2067,7 +2067,7 @@ V385Spec V385ComputeSpec(const ProgramCode& program_code, const SwizzleData& swi
     }();
     static const std::size_t max_variants = [] {
         const char* v = std::getenv("BORKED3DS_V3DV_V385_MAX_VARIANTS");
-        const unsigned long n = (v != nullptr && v[0] != '\0') ? std::strtoul(v, nullptr, 10) : 4;
+        const unsigned long n = (v != nullptr && v[0] != '\0') ? std::strtoul(v, nullptr, 10) : 64;
         return static_cast<std::size_t>(n == 0 ? 1 : n);
     }();
     static std::mutex mutex;
