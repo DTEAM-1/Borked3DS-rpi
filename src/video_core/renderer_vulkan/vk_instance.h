@@ -168,7 +168,7 @@ public:
         return pipeline_creation_cache_control;
     }
 
-    /// V387 : vrai si BORKED3DS_V3DV_V387_FS_NO_ROBUST est demande ET que
+    /// V387/v388 : vrai (par defaut, sauf BORKED3DS_V3DV_V387_FS_ROBUST=1) quand
     /// VK_EXT_pipeline_robustness est active : les fragment shaders sont alors compiles sans
     /// robustesse d'acces aux buffers (voir vk_graphics_pipeline.cpp, Build).
     bool IsV387FsNoRobust() const {

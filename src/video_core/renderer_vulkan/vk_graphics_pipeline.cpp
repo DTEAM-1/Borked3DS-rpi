@@ -845,7 +845,7 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
     }
     u32 shader_count = 0;
     std::array<vk::PipelineShaderStageCreateInfo, MAX_SHADER_STAGES> shader_stages;
-    // V387 (BORKED3DS_V3DV_V387_FS_NO_ROBUST=1) : fragment shader compile sans robustesse
+    // V387/v388 (defaut ; BORKED3DS_V3DV_V387_FS_ROBUST=1 pour revenir) : fragment shader compile sans robustesse
     // d'acces aux buffers ; les autres etages gardent celle du peripherique. Voir vk_instance.cpp.
     const vk::PipelineRobustnessCreateInfoEXT v387_fs_robustness = {
         .storageBuffers = vk::PipelineRobustnessBufferBehavior::eDisabled,

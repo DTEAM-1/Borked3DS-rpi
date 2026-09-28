@@ -569,7 +569,7 @@ bool Instance::CreateDevice() {
         }
     }
 
-    // V387 -- ROBUSTESSE PAR ETAGE (BORKED3DS_V3DV_V387_FS_NO_ROBUST=1, inactif par defaut).
+    // V387 -- ROBUSTESSE PAR ETAGE (actif par defaut depuis v388 ; voir plus bas).
     // Mesure banc v387c/d (Luigi's Mansion 2, FS d'eclairage a 8 lumieres, V3DV Mesa 26.1.2) :
     //   robustBufferAccess actif (comme ici)       : 1278 instructions, 16:27 spills:fills
     //   robustesse coupee pour le seul FS          :  839 instructions,  2:2 spills:fills
@@ -579,9 +579,14 @@ bool Instance::CreateDevice() {
     // ne lisent le bloc d'uniformes qu'a des positions fixes et les LUT a des index bornes par
     // le generateur. VK_EXT_pipeline_robustness permet de couper la robustesse pour eux seuls.
     {
+        // v388 : ACTIF PAR DEFAUT (TB80 Luigi 54,3 -> 38,4 ms/image ; TB82/TB83 Sonic, Metroid,
+        // Kid Icarus pleine vitesse, rendu normal, 0 poison avec plafond V385 64 et sans
+        // V3D_DEBUG=opt_compile_time -- option a retirer : avec elle, les FS non robustes
+        // debordent massivement, TB81 = 126 ms/image). Echappatoire A/B :
+        // BORKED3DS_V3DV_V387_FS_ROBUST=1 (ne jamais poser =0).
         static const bool v387_requested = [] {
-            const char* v = std::getenv("BORKED3DS_V3DV_V387_FS_NO_ROBUST");
-            return v != nullptr && v[0] != '\0';
+            const char* v = std::getenv("BORKED3DS_V3DV_V387_FS_ROBUST");
+            return !(v != nullptr && v[0] != '\0');
         }();
         const bool v387_available =
             std::find(available_extensions.begin(), available_extensions.end(),
