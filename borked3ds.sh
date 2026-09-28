@@ -413,11 +413,35 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     fi
 
     ################################
-    # VULKAN SHADER CACHE PURGE
-    # Always done: a cache built by the previous binary would skew the first launch.
+    # VULKAN SHADER CACHE (v392): KEPT ACROSS REBUILDS
+    #
+    # The caches survive a rebuild, so areas already visited in a game never recompile
+    # (Luigi's Mansion 2 needs 1-2 s per new pipeline):
+    #   - <cache>/*.bin      : VkPipelineCache, validated by the driver itself (vendor, device,
+    #                          pipelineCacheUUID); a Mesa update simply invalidates it.
+    #   - <cache>/spirv/*.spv: GLSL -> SPIR-V results, keyed by a hash of the GLSL text, so a
+    #                          change in the shader generators produces new keys, never stale hits.
+    # Only the GLSL -> SPIR-V conversion itself can make old .spv files wrong (glslang version or
+    # vk_shader_util.cpp options). The spirv/ directory is therefore purged only when that key
+    # changes. BORKED3DS_PURGE_SHADER_CACHE=1 forces a full purge (cold measurements).
     ################################
-    rm -rf "$user_home/.local/share/borked3ds-emu/shaders/vulkan"
-    echo "Cache shader Vulkan purge."
+    local vk_cache="$user_home/.local/share/borked3ds-emu/shaders/vulkan"
+    local spirv_key
+    spirv_key="$(git -C "$md_build" rev-parse HEAD:externals/glslang 2>/dev/null)-$(md5sum "$md_build/src/video_core/renderer_vulkan/vk_shader_util.cpp" 2>/dev/null | cut -c1-32)"
+    if [ -n "${BORKED3DS_PURGE_SHADER_CACHE:-}" ]; then
+        rm -rf "$vk_cache"
+        echo "Vulkan shader cache: full purge (BORKED3DS_PURGE_SHADER_CACHE)."
+    elif [ -d "$vk_cache" ]; then
+        if [ "$(cat "$vk_cache/.spirv_key" 2>/dev/null)" != "$spirv_key" ]; then
+            rm -rf "$vk_cache/spirv"
+            echo "Vulkan shader cache: kept, SPIR-V part purged (GLSL -> SPIR-V conversion changed)."
+        else
+            echo "Vulkan shader cache: kept ($(ls "$vk_cache"/spirv 2>/dev/null | wc -l) SPIR-V files)."
+        fi
+    fi
+    mkdir -p "$vk_cache"
+    echo "$spirv_key" > "$vk_cache/.spirv_key"
+    chown -R "${__user:-pi}": "$user_home/.local/share/borked3ds-emu/shaders" 2>/dev/null
     echo "=========================================================="
     echo ""
 }
