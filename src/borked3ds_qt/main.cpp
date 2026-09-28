@@ -3,7 +3,10 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <array>
 #include <clocale>
+#include <cstdlib>
+#include <utility>
 #include <atomic>
 #include <csignal>
 #include <iostream>
@@ -257,6 +260,88 @@ static QString PrettyProductName() {
 #endif
     return QSysInfo::prettyProductName();
 }
+
+// ---------------------------------------------------------------------------------------------
+// v389 -- REGLAGES PI 5 / V3DV INTEGRES AU CODE (etape 3 de fermeture du projet).
+//
+// Jusqu'a v388, la configuration gagnante vivait dans la ligne de lancement d'emulators.cfg
+// (borked3ds_test4 : une vingtaine de variables d'environnement). Elles sont maintenant posees
+// par le programme lui-meme, ce qui permet une ligne de lancement simple, commune a OpenGL et
+// Vulkan.
+//
+// Regles :
+//   - setenv(..., 0) : une variable deja presente dans l'environnement GARDE la priorite. Les
+//     tests futurs peuvent donc toujours surcharger une valeur sur la ligne de lancement.
+//   - Les variables BORKED3DS_V3DV_* ne sont posees que si l'API choisie est Vulkan : en
+//     OpenGL elles font fermer l'emulateur. Elles sont posees au demarrage du jeu (apres la
+//     lecture des reglages et du fichier de reglages par jeu), avant le chargement du systeme.
+//     Changer d'API en cours de session demande de relancer l'emulateur.
+//   - Les sondes de mesure (A7Z12_FRAME_CENSUS, A7Z12_CENSUS_PERIOD, TRACE_PIPELINE_BUILD) ne
+//     sont PAS posees : elles se remettent a la main sur une ligne de test.
+//   - Echappatoire : BORKED3DS_V3DV_NO_DEFAULTS=1 (aucune variable V3DV posee).
+// Journal : V389_DEFAUTS_VULKAN.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+void V389ApplyPlatformDefaults() {
+#if defined(__linux__) && defined(__aarch64__)
+    // Environnement du lanceur RetroPie (XINIT-WM) : X11 via xcb, SDL ne minimise pas la
+    // fenetre a la perte de focus, extension GLES des buffers de textures pour OpenGL, aucune
+    // couche Vulkan externe.
+    setenv("QT_QPA_PLATFORM", "xcb", 0);
+    setenv("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0", 0);
+    setenv("MESA_EXTENSION_OVERRIDE", "GL_OES_texture_buffer", 0);
+    setenv("VK_INSTANCE_LAYERS", "", 0);
+    setenv("VK_LAYER_PATH", "", 0);
+#endif
+}
+
+void V389ApplyV3dvDefaults() {
+#if defined(__linux__) && defined(__aarch64__)
+    if (Settings::values.graphics_api.GetValue() != Settings::GraphicsAPI::Vulkan) {
+        return;
+    }
+    const char* opt_out = std::getenv("BORKED3DS_V3DV_NO_DEFAULTS");
+    if (opt_out != nullptr && opt_out[0] != '\0') {
+        LOG_WARNING(Frontend, "V389_DEFAUTS_VULKAN ignores (BORKED3DS_V3DV_NO_DEFAULTS)");
+        return;
+    }
+    // Ligne de reference v388 (ligne12_reference.txt), sondes de mesure retirees.
+    static constexpr std::array<std::pair<const char*, const char*>, 17> defaults{{
+        {"BORKED3DS_V3DV_STRICT_COMPAT", "1"},
+        {"BORKED3DS_V3DV_ALLOW_PICA_ACCEL", "1"},
+        {"BORKED3DS_V3DV_ALLOW_SOFTWARE_TEXTURES", "1"},
+        {"BORKED3DS_V3DV_DISABLE_SOFTWARE_QUARANTINE", "1"},
+        {"BORKED3DS_V3DV_A7Z71_PICA_TRIGGER_SILENT_DRAWARRAYS", "1"},
+        {"BORKED3DS_V3DV_A7Z72_PICA_DRAWARRAYS_SILENT_EARLY_BACKEND", "1"},
+        {"BORKED3DS_V3DV_A7Z73_SUPPRESS_RAW_ENTER_SIMPLE_LOG", "1"},
+        {"BORKED3DS_V3DV_A7Z74_SILENT_OUTER_ENTRY_TO_STAGE", "1"},
+        {"BORKED3DS_V3DV_DISABLE_ACCEL_INTERNAL_DRY_RUN", "1"},
+        {"BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF", "1"},
+        {"BORKED3DS_V3DV_DIRECT_SAFE_HW_HANDOFF_NO_PRELOG", "1"},
+        {"BORKED3DS_V3DV_ALLOW_SAFE_PICA_HW_DRAWS", "1"},
+        {"BORKED3DS_V3DV_ENTER_SAFE_PICA_HW_DRAWS", "1"},
+        {"BORKED3DS_V3DV_SAFE_PICA_HW_DRAW_BUDGET", "9999"},
+        {"BORKED3DS_V3DV_SAFE_PICA_HW_MAX_VERTICES", "65536"},
+        {"BORKED3DS_V3DV_PIPELINE_WORKER_THREADS", "6"},
+        {"BORKED3DS_V3DV_A7Z41_PIPELINE_FORCE_NOWAIT_ON_WAIT", "1"},
+    }};
+    u32 posees = 0;
+    u32 deja = 0;
+    for (const auto& [name, value] : defaults) {
+        if (std::getenv(name) != nullptr) {
+            ++deja;
+            continue;
+        }
+        setenv(name, value, 0);
+        ++posees;
+    }
+    LOG_WARNING(Frontend, "V389_DEFAUTS_VULKAN posees={} deja_presentes={} total={}", posees,
+                deja, defaults.size());
+#endif
+}
+
+} // namespace
 
 GMainWindow::GMainWindow(Core::System& system_)
     : ui{std::make_unique<Ui::MainWindow>()}, system{system_}, movie{system.Movie()},
@@ -1745,6 +1830,9 @@ void GMainWindow::BootGame(const QString& filename) {
     if (!loader->SupportsMultipleInstancesForSameFile()) {
         system.RegisterAppLoaderEarly(loader);
     }
+
+    // v389 : reglages Pi 5 / V3DV (voir V389ApplyV3dvDefaults), avant le chargement du systeme.
+    V389ApplyV3dvDefaults();
 
     system.ApplySettings();
 
@@ -4268,6 +4356,9 @@ static void PrintVersion() {
 }
 
 int main(int argc, char* argv[]) {
+    // v389 : environnement du lanceur RetroPie, avant toute creation Qt/SDL/GL.
+    V389ApplyPlatformDefaults();
+
     int option_index = 0;
 
     static struct option long_options[] = {
