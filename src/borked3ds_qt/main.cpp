@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <array>
 #include <clocale>
 #include <cstdlib>
@@ -339,6 +340,45 @@ void V389ApplyV3dvDefaults() {
     }
     LOG_WARNING(Frontend, "V389_DEFAUTS_VULKAN posees={} deja_presentes={} total={}", posees,
                 deja, defaults.size());
+#endif
+}
+
+// v391 : eclairage allege PAR JEU (Vulkan seulement). Luigi's Mansion 2 est limite par son
+// eclairage a 8 lumieres par pixel (TB90 : 40 -> 26 ms/image sans eclairage). Pour ce titre
+// seulement, on ne calcule qu'une partie des lumieres (voir WriteLighting,
+// glsl_fs_shader_gen.cpp). Les autres jeux ne sont jamais touches.
+//   BORKED3DS_V3DV_V391_LITE_LIGHTS=N : nombre de lumieres calculees (1-7), pose ici a 4 pour
+//                                       les titres de la liste ; une valeur manuelle prime.
+//   BORKED3DS_V3DV_V391_LITE_SPEC=K   : lumieres avec speculaire parmi celles calculees (option).
+//   BORKED3DS_V3DV_V391_NO_LITE=1     : desactive l'allegement meme pour Luigi.
+void V391ApplyPerGameLighting(u64 title_id) {
+#if defined(__linux__) && defined(__aarch64__)
+    static bool posee_par_nous = false;
+    if (posee_par_nous) {
+        unsetenv("BORKED3DS_V3DV_V391_LITE_LIGHTS");
+        posee_par_nous = false;
+    }
+    if (Settings::values.graphics_api.GetValue() != Settings::GraphicsAPI::Vulkan) {
+        return;
+    }
+    static constexpr std::array<u64, 1> titres{{
+        0x0004000000076500ULL, // Luigi's Mansion 2 (version testee par David)
+    }};
+    const bool listee = std::find(titres.begin(), titres.end(), title_id) != titres.end();
+    const char* non = std::getenv("BORKED3DS_V3DV_V391_NO_LITE");
+    if (!listee || (non != nullptr && non[0] != '\0')) {
+        LOG_WARNING(Frontend, "V391_ECLAIRAGE_ALLEGE titre={:016X} actif=0", title_id);
+        return;
+    }
+    if (std::getenv("BORKED3DS_V3DV_V391_LITE_LIGHTS") == nullptr) {
+        setenv("BORKED3DS_V3DV_V391_LITE_LIGHTS", "4", 0);
+        posee_par_nous = true;
+    }
+    LOG_WARNING(Frontend, "V391_ECLAIRAGE_ALLEGE titre={:016X} actif=1 lumieres={} speculaire={}",
+                title_id, std::getenv("BORKED3DS_V3DV_V391_LITE_LIGHTS"),
+                std::getenv("BORKED3DS_V3DV_V391_LITE_SPEC") != nullptr
+                    ? std::getenv("BORKED3DS_V3DV_V391_LITE_SPEC")
+                    : "toutes");
 #endif
 }
 
@@ -1834,6 +1874,7 @@ void GMainWindow::BootGame(const QString& filename) {
 
     // v389 : reglages Pi 5 / V3DV (voir V389ApplyV3dvDefaults), avant le chargement du systeme.
     V389ApplyV3dvDefaults();
+    V391ApplyPerGameLighting(title_id);
 
     system.ApplySettings();
 
