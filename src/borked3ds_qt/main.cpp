@@ -323,7 +323,8 @@ void V389ApplyV3dvDefaults() {
         {"BORKED3DS_V3DV_ENTER_SAFE_PICA_HW_DRAWS", "1"},
         {"BORKED3DS_V3DV_SAFE_PICA_HW_DRAW_BUDGET", "9999"},
         {"BORKED3DS_V3DV_SAFE_PICA_HW_MAX_VERTICES", "65536"},
-        {"BORKED3DS_V3DV_PIPELINE_WORKER_THREADS", "6"},
+        // v390: 3 compile threads (one core left to emulation), at background priority.
+        {"BORKED3DS_V3DV_PIPELINE_WORKER_THREADS", "3"},
         {"BORKED3DS_V3DV_A7Z41_PIPELINE_FORCE_NOWAIT_ON_WAIT", "1"},
     }};
     u32 posees = 0;
