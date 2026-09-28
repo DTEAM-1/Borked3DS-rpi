@@ -541,7 +541,7 @@ function configure_borked3ds() {
     # Les anciennes lignes de test (borked3ds_*) sont retirees.
     ################################
 
-    addEmulator 1 "$md_id" "3ds" "XINIT-WM:QT_SCALE_FACTOR=0.6 $md_inst/borked3ds -f %ROM%"
+    addEmulator 1 "$md_id" "3ds" "XINIT-WM:$md_inst/borked3ds -f %ROM%"
     addEmulator 0 "${md_id}-ui" "3ds" "XINIT-WMC:$md_inst/borked3ds"
     addEmulator 0 "${md_id}-ui-qt06" "3ds" "XINIT-WMC:QT_SCALE_FACTOR=0.6 $md_inst/borked3ds"
 
