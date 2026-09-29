@@ -23,6 +23,17 @@
 
 namespace Pica::Shader::Generator::GLSL {
 
+// v393 : ombres PICA en Vulkan (carte d'ombre ecrite par imageAtomicCompSwap dans une image r32ui,
+// lue par texelFetch). Les anciens contournements Pi 5 coupaient ecriture ET lecture : les jeux a
+// ombres projetees (Super Mario 3D Land) dessinaient alors tout le volume d'ombre en noir.
+// Actif par defaut ; BORKED3DS_V3DV_V393_NO_SHADOWS=1 retablit l'ancien comportement (le
+// rasterizer le pose aussi si le pilote n'offre pas fragmentStoresAndAtomics ou les atomiques
+// sur R32_UINT). Lu a chaque generation : la valeur est fixee avant le premier shader.
+bool V393VulkanShadowsEnabled() {
+    const char* v = std::getenv("BORKED3DS_V3DV_V393_NO_SHADOWS");
+    return v == nullptr || v[0] == '\0';
+}
+
 // ---------------------------------------------------------------------------------------------
 // TG13 (BORKED3DS_TG13_FS_HASH=1) -- sonde de MESURE, inerte hors variable d'environnement.
 //
@@ -273,7 +284,7 @@ FragmentModule::FragmentModule(const FSConfig& config_, const Profile& profile_)
     // Pi 5 / V3DV Vulkan compatibility:
     // keep the Vulkan GLSL fragment path free of shadow helper code that can
     // trigger glslang to emit SPV_EXT_shader_stencil_export.
-    if (!profile.is_vulkan) {
+    if (!profile.is_vulkan || V393VulkanShadowsEnabled()) {
         DefineShadowHelpers();
     }
     DefineLightingHelpers();
@@ -383,7 +394,7 @@ vec4 secondary_fragment_color = vec4(0.0);
     // short-circuit the Vulkan shadow-rendering path completely. This avoids
     // re-entering older shadow code paths that were still leading to
     // SPV_EXT_shader_stencil_export through glslang on V3DV.
-    if (profile.is_vulkan && config.framebuffer.shadow_rendering) {
+    if (profile.is_vulkan && config.framebuffer.shadow_rendering && !V393VulkanShadowsEnabled()) {
         out += "gl_FragDepth = depth;\n";
         out += "color = vec4(primary_color.rgb, primary_color.a);\n";
         out += "}";
@@ -579,7 +590,8 @@ vec4 secondary_fragment_color = vec4(0.0);
     }
 
     if (config.framebuffer.shadow_rendering) {
-        if ((GLAD_GL_ARB_shader_image_load_store || GL_SHADER_IMAGE_ATOMIC)) { //gvx64 - apply guards to executing WriteShadow() only when running gles renderer
+        if (profile.is_vulkan ? V393VulkanShadowsEnabled()
+                              : (GLAD_GL_ARB_shader_image_load_store || GL_SHADER_IMAGE_ATOMIC)) { //gvx64 - apply guards to executing WriteShadow() only when running gles renderer ; v393 : Vulkan
             WriteShadow(); //gvx64
         }
     } else {
@@ -2615,6 +2627,10 @@ void FragmentModule::DefineBindingsVK() {
     // do not declare Vulkan shadow_buffer for the Vulkan shadow-rendering path,
     // because the shader now exits early and we want to avoid dragging any of the
     // older shadow-image machinery back into compilation.
+    if (config.framebuffer.shadow_rendering && V393VulkanShadowsEnabled()) {
+        // v393 : carte d'ombre ecrite pendant la passe d'ombre (UTILITY_BINDINGS, binding 0).
+        out += "layout(set = 2, binding = 0, r32ui) uniform uimage2D shadow_buffer;\n\n";
+    }
     if (config.user.use_custom_normal) {
         out += "layout(set = 2, binding = 1) uniform sampler2D tex_normal;\n";
     }
@@ -3589,7 +3605,7 @@ void FragmentModule::DefineTexUnitSampler(u32 texture_unit) {
             break;
         case TexturingRegs::TextureConfig::Shadow2D:
         case TexturingRegs::TextureConfig::ShadowCube:
-            if (profile.is_vulkan) {
+            if (profile.is_vulkan && !V393VulkanShadowsEnabled()) {
                 // v379b : sur Vulkan, DefineShadowHelpers() n'est pas emis (compatibilite
                 // Pi 5 / V3DV, voir plus haut), donc shadowTexture / shadowTextureCube
                 // n'existent pas dans le source. L'appel faisait echouer glslang
