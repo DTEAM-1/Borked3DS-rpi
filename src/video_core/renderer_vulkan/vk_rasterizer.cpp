@@ -137,6 +137,26 @@ struct DrawParams {
     return cached;
 }
 
+// v394 -- LOGIC OP NoOp EN STRICT-COMPAT (ombres noires de Mario 3D Land).
+//
+// Sous strict-compat, le logic op materiel est coupe (vk_graphics_pipeline.cpp :
+// logicOpEnable = !pi5_strict_compat) et le generateur de fragment shaders l'emule
+// (vk_pipeline_cache.cpp : has_logic_op = !pi5_strict_compat). Mais NoOp ne s'emule pas
+// dans le shader : il faut couper l'ecriture couleur (masque 0) en gardant profondeur et
+// stencil, comme le fait GLES avec glColorMask. Le code amont ne le fait que si
+// instance.NeedsLogicOpEmulation(), qui vaut faux sur V3DV : les volumes d'ombre de
+// Mario 3D Land (passe stencil en NoOp) etaient donc peints en noir.
+// Echappatoire : BORKED3DS_V3DV_V394_NO_LOGICOP_FIX=1 retablit l'ancien comportement.
+[[nodiscard]] bool V394LogicOpFixEnabled() {
+    static const bool cached = !IsEnvEnabled("BORKED3DS_V3DV_V394_NO_LOGICOP_FIX");
+    return cached;
+}
+
+[[nodiscard]] bool V394LogicOpEmulated(const Instance& instance) {
+    return instance.NeedsLogicOpEmulation() ||
+           (V394LogicOpFixEnabled() && IsStrictCompatEnabled());
+}
+
 // ---------------------------------------------------------------------------------------------
 // SONDE FS_SHOW_FORCE_OPAQUE (session du 04/09/2026) -- reparation du canal de sondes fragment
 // mort (v175 §7), INERTE par defaut.
@@ -2482,14 +2502,25 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
         const bool supported = stores && r32_atomic && r32_sampled && rgba8_storage;
         const char* opt_out = std::getenv("BORKED3DS_V3DV_V393_NO_SHADOWS");
         const bool refused = opt_out != nullptr && opt_out[0] != '\0';
-        if (!supported && !refused) {
+        // v394 : les ombres v393 deviennent OPTIONNELLES (TB96 : Luigi 26 -> 35,4 ms, et
+        // Mario 3D Land n'utilise pas les cartes d'ombre PICA). Activees seulement par
+        // BORKED3DS_V3DV_V393_SHADOWS=1 ; sinon on pose NO_SHADOWS, ce qui rend des shaders
+        // identiques octet pour octet a ceux d'avant v393 et l'ancienne barriere.
+        const char* opt_in = std::getenv("BORKED3DS_V3DV_V393_SHADOWS");
+        const bool wanted = opt_in != nullptr && opt_in[0] != '\0';
+        if ((!supported || !wanted) && !refused) {
             setenv("BORKED3DS_V3DV_V393_NO_SHADOWS", "1", 1);
         }
         LOG_WARNING(Render_Vulkan,
-                    "V393_OMBRES actif={} fragment_stores_atomics={} r32ui_atomique={} "
+                    "V393_OMBRES actif={} demande={} fragment_stores_atomics={} r32ui_atomique={} "
                     "r32ui_echantillonnable={} rgba8_stockage={} echappatoire={}",
-                    supported && !refused ? 1 : 0, stores ? 1 : 0, r32_atomic ? 1 : 0,
-                    r32_sampled ? 1 : 0, rgba8_storage ? 1 : 0, refused ? 1 : 0);
+                    supported && wanted && !refused ? 1 : 0, wanted ? 1 : 0, stores ? 1 : 0,
+                    r32_atomic ? 1 : 0, r32_sampled ? 1 : 0, rgba8_storage ? 1 : 0,
+                    refused ? 1 : 0);
+        LOG_WARNING(Render_Vulkan, "V394_LOGICOP actif={} strict_compat={} logicop_materiel={}",
+                    V394LogicOpEmulated(instance) && !instance.NeedsLogicOpEmulation() ? 1 : 0,
+                    IsStrictCompatEnabled() ? 1 : 0,
+                    instance.NeedsLogicOpEmulation() ? 0 : 1);
     }
 
     if (IsV115DA7Z73SuppressRawEnterSimpleLogEnabled()) {
@@ -9999,18 +10030,25 @@ void RasterizerVulkan::SyncBlendColor() {
 }
 
 void RasterizerVulkan::SyncLogicOp() {
-    if (instance.NeedsLogicOpEmulation()) {
+    // v394 : l'emulation vaut aussi sous strict-compat (voir V394LogicOpEmulated).
+    const bool logic_op_emulation = V394LogicOpEmulated(instance);
+    if (logic_op_emulation) {
         shader_dirty = true;
     }
 
     pipeline_info.blending.logic_op = regs.framebuffer.output_merger.logic_op;
 
     const bool is_logic_op_emulated =
-        instance.NeedsLogicOpEmulation() && !regs.framebuffer.output_merger.alphablend_enable;
+        logic_op_emulation && !regs.framebuffer.output_merger.alphablend_enable;
     const bool is_logic_op_noop =
         regs.framebuffer.output_merger.logic_op == Pica::FramebufferRegs::LogicOp::NoOp;
     if (is_logic_op_emulated && is_logic_op_noop) {
         pipeline_info.blending.color_write_mask = 0;
+        static bool v394_logged = false;
+        if (!v394_logged && !instance.NeedsLogicOpEmulation()) {
+            v394_logged = true;
+            LOG_WARNING(Render_Vulkan, "V394_LOGICOP_NOOP masque_couleur=0 premier_draw_noop=1");
+        }
     }
 }
 
@@ -10020,7 +10058,7 @@ void RasterizerVulkan::SyncColorWriteMask() {
                                : 0;
 
     const bool is_logic_op_emulated =
-        instance.NeedsLogicOpEmulation() && !regs.framebuffer.output_merger.alphablend_enable;
+        V394LogicOpEmulated(instance) && !regs.framebuffer.output_merger.alphablend_enable;
     const bool is_logic_op_noop =
         regs.framebuffer.output_merger.logic_op == Pica::FramebufferRegs::LogicOp::NoOp;
     if (is_logic_op_emulated && is_logic_op_noop) {
