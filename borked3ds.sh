@@ -321,7 +321,8 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     #   V389_DEFAUTS_VULKAN : Vulkan defaults set by the program (v389)
     #   V390_PRIORITE_COMPILATION : compile threads run at background priority (v390)
     #   V391_ECLAIRAGE_ALLEGE : reduced lighting for Luigi's Mansion 2 only (v391)
-    #   V393_OMBRES : PICA shadow maps rendered in Vulkan (v393)
+    #   V393_OMBRES : PICA shadow maps in Vulkan, opt-in with BORKED3DS_V3DV_V393_SHADOWS=1 (v393/v394)
+    #   V394_LOGICOP : logic op NoOp masks color writes in strict-compat (Mario 3D Land shadows) (v394)
     # To add a marker, append it to borked3ds_markers.
     ################################
 
@@ -375,6 +376,7 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         "V390_PRIORITE_COMPILATION"
         "V391_ECLAIRAGE_ALLEGE"
         "V393_OMBRES actif="
+        "V394_LOGICOP actif="
     )
 
     local borked3ds_missing=0
