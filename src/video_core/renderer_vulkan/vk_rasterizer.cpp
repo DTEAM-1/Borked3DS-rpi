@@ -92,6 +92,12 @@ struct DrawParams {
     return std::min(max_size, TEXTURE_BUFFER_SIZE);
 }
 
+// v393 : meme regle que le generateur de fragment shaders (valeur fixee au demarrage).
+[[nodiscard]] bool V393ShadowsActive() {
+    const char* v = std::getenv("BORKED3DS_V3DV_V393_NO_SHADOWS");
+    return v == nullptr || v[0] == '\0';
+}
+
 [[nodiscard]] bool IsValidImageView(const vk::ImageView view) {
     return static_cast<bool>(view);
 }
@@ -2457,6 +2463,34 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
       async_shaders{Settings::values.async_shader_compilation.GetValue()} {
 
     vertex_buffers.fill(stream_buffer.Handle());
+
+    // v393 : ombres PICA en Vulkan (ecriture par atomiques dans une image r32ui, lecture en
+    // texelFetch). Si le pilote n'offre pas les ecritures/atomiques en fragment shader, on revient
+    // a l'ancien comportement AVANT la generation du premier shader (glsl_fs_shader_gen.cpp lit
+    // BORKED3DS_V3DV_V393_NO_SHADOWS a chaque generation).
+    {
+        const vk::PhysicalDevice pd = instance.GetPhysicalDevice();
+        const bool stores = pd.getFeatures().fragmentStoresAndAtomics != VK_FALSE;
+        const vk::FormatFeatureFlags r32 =
+            pd.getFormatProperties(vk::Format::eR32Uint).optimalTilingFeatures;
+        const bool r32_atomic =
+            static_cast<bool>(r32 & vk::FormatFeatureFlagBits::eStorageImageAtomic);
+        const bool r32_sampled = static_cast<bool>(r32 & vk::FormatFeatureFlagBits::eSampledImage);
+        const bool rgba8_storage = static_cast<bool>(
+            pd.getFormatProperties(vk::Format::eR8G8B8A8Unorm).optimalTilingFeatures &
+            vk::FormatFeatureFlagBits::eStorageImage);
+        const bool supported = stores && r32_atomic && r32_sampled && rgba8_storage;
+        const char* opt_out = std::getenv("BORKED3DS_V3DV_V393_NO_SHADOWS");
+        const bool refused = opt_out != nullptr && opt_out[0] != '\0';
+        if (!supported && !refused) {
+            setenv("BORKED3DS_V3DV_V393_NO_SHADOWS", "1", 1);
+        }
+        LOG_WARNING(Render_Vulkan,
+                    "V393_OMBRES actif={} fragment_stores_atomics={} r32ui_atomique={} "
+                    "r32ui_echantillonnable={} rgba8_stockage={} echappatoire={}",
+                    supported && !refused ? 1 : 0, stores ? 1 : 0, r32_atomic ? 1 : 0,
+                    r32_sampled ? 1 : 0, rgba8_storage ? 1 : 0, refused ? 1 : 0);
+    }
 
     if (IsV115DA7Z73SuppressRawEnterSimpleLogEnabled()) {
         LOG_WARNING(Render_Vulkan,
@@ -9412,7 +9446,10 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
                 Surface& surface = res_cache.GetTextureSurface(texture);
                 Sampler& sampler = res_cache.GetSampler(texture.config);
                 surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
-                const vk::ImageView view = surface.ImageView();
+                // v393 : le fragment shader lit la carte en usampler2D (texelFetch) ; il lui faut
+                // la vue R32_UINT de l'image RGBA8, pas la vue couleur.
+                const vk::ImageView view =
+                    V393ShadowsActive() ? surface.StorageView() : surface.ImageView();
                 update_queue.AddImageSampler(texture_set, texture_index, 0,
                                              IsValidImageView(view) ? view : null_view,
                                              IsValidImageView(view) ? sampler.Handle() : null_handle);
@@ -9544,7 +9581,11 @@ void RasterizerVulkan::BindShadowCube(const Pica::TexturingRegs::FullTextureConf
         const VideoCore::SurfaceId surface_id = res_cache.GetTextureSurface(info);
         Surface& surface = res_cache.GetSurface(surface_id);
         surface.flags |= VideoCore::SurfaceFlagBits::ShadowMap;
-        update_queue.AddImageSampler(texture_set, 0, binding, surface.ImageView(), sampler.Handle());
+        const vk::ImageView view =
+            V393ShadowsActive() ? surface.StorageView() : surface.ImageView(); // v393
+        update_queue.AddImageSampler(texture_set, 0, binding, IsValidImageView(view) ? view
+                                                                         : surface.ImageView(),
+                                     sampler.Handle());
     }
 }
 

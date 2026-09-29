@@ -226,6 +226,7 @@ private:
     std::mutex cache_mutex;
     std::array<vk::Image, 2> images;
     std::array<vk::ImageAspectFlags, 2> aspects;
+    bool v393_shadow_pass{}; ///< v393 : passe d'ombre (ecritures en image de stockage)
     RenderPass pass{};
     u32 num_draws{};
 };

@@ -284,6 +284,15 @@ void RenderManager::BeginRendering(const Framebuffer* framebuffer,
     };
     images = framebuffer->Images();
     aspects = framebuffer->Aspects();
+    {
+        // v393 : BORKED3DS_V3DV_V393_NO_SHADOWS=1 retablit aussi l'ancienne barriere.
+        // Lu une fois, apres le constructeur du rasterizer qui peut poser la variable.
+        static const bool v393_active = [] {
+            const char* no_shadows = std::getenv("BORKED3DS_V3DV_V393_NO_SHADOWS");
+            return no_shadows == nullptr || no_shadows[0] == '\0';
+        }();
+        v393_shadow_pass = framebuffer->shadow_rendering && v393_active;
+    }
     BeginRendering(new_pass);
 }
 
@@ -362,7 +371,8 @@ void RenderManager::EndRendering(const char* site_file, int site_line) {
 
     g_tb14_rp_end.fetch_add(1, std::memory_order_relaxed);
 
-    scheduler.Record([images = images, aspects = aspects](vk::CommandBuffer cmdbuf) {
+    scheduler.Record([images = images, aspects = aspects,
+                      shadow_pass = v393_shadow_pass](vk::CommandBuffer cmdbuf) {
         u32 num_barriers = 0;
         vk::PipelineStageFlags pipeline_flags{};
         std::array<vk::ImageMemoryBarrier, 2> barriers;
@@ -371,6 +381,30 @@ void RenderManager::EndRendering(const char* site_file, int site_line) {
                 continue;
             }
             const bool is_color = static_cast<bool>(aspects[i] & vk::ImageAspectFlagBits::eColor);
+            if (is_color && shadow_pass) {
+                // v393 : la carte d'ombre a ete ecrite par le fragment shader (image de stockage,
+                // disposition GENERAL), pas par la sortie couleur. Rendre ces ecritures visibles
+                // aux lectures suivantes sans changer de disposition (comme Azahar).
+                pipeline_flags |= vk::PipelineStageFlagBits::eFragmentShader;
+                barriers[num_barriers++] = vk::ImageMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
+                    .dstAccessMask =
+                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead,
+                    .oldLayout = vk::ImageLayout::eGeneral,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = images[i],
+                    .subresourceRange{
+                        .aspectMask = aspects[i],
+                        .baseMipLevel = 0,
+                        .levelCount = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount = VK_REMAINING_ARRAY_LAYERS,
+                    },
+                };
+                continue;
+            }
             if (is_color) {
                 pipeline_flags |= vk::PipelineStageFlagBits::eColorAttachmentOutput;
             } else {
