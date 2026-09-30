@@ -325,6 +325,7 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     #   V394_LOGICOP : logic op NoOp masks color writes in strict-compat (Mario 3D Land shadows) (v394)
     #   V395_AZAHAR_LOT_A : small Azahar fixes (KeepAll2 cull mode, zero-area draws, invalid vertex arrays, null cube units, malformed GS, FillScreen, present sampler) (v395)
     #   V396_LOT_C : identical PICA shader words no longer mark the program dirty; SIMD index min/max (v396)
+    #   V397_CHEMIN_CHAUD : env lookups cached without std::string; descriptor writes batched in strict-compat (v397)
     # To add a marker, append it to borked3ds_markers.
     ################################
 
@@ -381,6 +382,7 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         "V394_LOGICOP actif="
         "V395_AZAHAR_LOT_A actif="
         "V396_LOT_C actif="
+        "V397_CHEMIN_CHAUD actif="
     )
 
     local borked3ds_missing=0
