@@ -21,7 +21,9 @@ struct RasterizerRegs {
         KeepAll = 0,
         KeepClockWise = 1,
         KeepCounterClockWise = 2,
-        // TODO: What does the third value imply?
+        // v395 (Azahar 8245f033) : la valeur 3 existe et se comporte comme KeepAll.
+        // Avant, elle tombait dans UNREACHABLE_MSG -> Crash().
+        KeepAll2 = 3,
     };
 
     union {

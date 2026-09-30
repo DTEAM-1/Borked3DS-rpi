@@ -1755,7 +1755,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         } else {
             vs_setup.program_code[offset] = value;
             vs_setup.MarkProgramCodeDirty();
-            if (!regs.internal.pipeline.gs_unit_exclusive_configuration) {
+            // v395 (Azahar 0f9457e0) : ne pas recopier dans le GS quand il est utilise.
+            if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
+                regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) {
                 gs_setup.program_code[offset] = value;
                 gs_setup.MarkProgramCodeDirty();
             }
@@ -1778,7 +1780,8 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         } else {
             vs_setup.swizzle_data[offset] = value;
             vs_setup.MarkSwizzleDataDirty();
-            if (!regs.internal.pipeline.gs_unit_exclusive_configuration) {
+            if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
+                regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) { // v395
                 gs_setup.swizzle_data[offset] = value;
                 gs_setup.MarkSwizzleDataDirty();
             }
