@@ -13,6 +13,7 @@
 #include <string>
 #include <unordered_set>
 #include "common/alignment.h"
+#include "common/math_util.h"
 #include "common/logging/log.h"
 #include "core/memory.h"
 #include "video_core/pica/pica_core.h"
@@ -398,12 +399,22 @@ RasterizerAccelerated::VertexArrayInfo RasterizerAccelerated::AnalyzeVertexArray
 
         vertex_min = 0xFFFF;
         vertex_max = 0;
-        const u32 size = regs.pipeline.num_vertices * (index_u16 ? 2 : 1);
+        const u32 count = regs.pipeline.num_vertices;
+        const u32 size = count * (index_u16 ? 2 : 1);
         FlushRegion(address, size);
-        for (u32 index = 0; index < regs.pipeline.num_vertices; ++index) {
-            const u32 vertex = index_u16 ? index_address_16[index] : index_address_8[index];
-            vertex_min = std::min(vertex_min, vertex);
-            vertex_max = std::max(vertex_max, vertex);
+        // v396 (Azahar cf87efa3) : recherche min/max vectorisee (NEON sur le Pi).
+        if (count != 0) {
+            if (index_u16) {
+                const auto res =
+                    Common::FindMinMax({index_address_16, static_cast<std::size_t>(count)});
+                vertex_min = res.first;
+                vertex_max = res.second;
+            } else {
+                const auto res =
+                    Common::FindMinMax({index_address_8, static_cast<std::size_t>(count)});
+                vertex_min = res.first;
+                vertex_max = res.second;
+            }
         }
     } else {
         vertex_min = regs.pipeline.vertex_offset;
