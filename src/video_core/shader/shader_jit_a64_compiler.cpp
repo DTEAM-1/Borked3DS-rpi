@@ -900,7 +900,16 @@ void JitShader::Compile_NextInstr() {
 
     l(instruction_labels[program_counter]);
 
-    const Instruction instr = {(*program_code)[program_counter++]};
+    // v395 (Azahar 0f9457e0) : la derniere instruction du programme est toujours traitee comme
+    // END. Des geometry shaders malformes (Thunder Blade, After Burner II) n'ont pas de END et
+    // le compteur de programme partait hors du code genere.
+    Instruction instr{};
+    if (program_counter < MAX_PROGRAM_CODE_LENGTH - 1) {
+        instr.hex = (*program_code)[program_counter];
+    } else {
+        instr.opcode.Assign(OpCode::Id::END);
+    }
+    ++program_counter;
 
     const OpCode::Id opcode = instr.opcode.Value();
     const auto instr_func = instr_table[static_cast<std::size_t>(opcode)];
