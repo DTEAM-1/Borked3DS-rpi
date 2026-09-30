@@ -465,7 +465,12 @@ bool RasterizerOpenGL::AccelerateDrawBatch(bool is_indexed) {
 
 bool RasterizerOpenGL::AccelerateDrawBatchInternal(bool is_indexed) {
     const GLenum primitive_mode = MakePrimitiveMode(regs.pipeline.triangle_topology);
-    auto [vs_input_index_min, vs_input_index_max, vs_input_size] = AnalyzeVertexArray(is_indexed);
+    const auto vertex_array_info = AnalyzeVertexArray(is_indexed);
+    if (vertex_array_info.Invalid()) {
+        // v395 (Azahar dfb4b89e) : tableau de sommets a une adresse invalide -> rien a dessiner.
+        return true;
+    }
+    auto [vs_input_index_min, vs_input_index_max, vs_input_size] = vertex_array_info;
 
     if (vs_input_size > VERTEX_BUFFER_SIZE) {
         LOG_WARNING(Render_OpenGL, "Too large vertex input size {}", vs_input_size);
@@ -1062,6 +1067,7 @@ void RasterizerOpenGL::SyncClipEnabled() {
 void RasterizerOpenGL::SyncCullMode() {
     switch (regs.rasterizer.cull_mode) {
     case Pica::RasterizerRegs::CullMode::KeepAll:
+    case Pica::RasterizerRegs::CullMode::KeepAll2: // v395
         state.cull.enabled = false;
         break;
     case Pica::RasterizerRegs::CullMode::KeepClockWise:
