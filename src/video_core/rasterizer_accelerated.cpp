@@ -388,6 +388,11 @@ RasterizerAccelerated::VertexArrayInfo RasterizerAccelerated::AnalyzeVertexArray
         const auto& index_info = regs.pipeline.index_array;
         const PAddr address = vertex_attributes.GetPhysicalBaseAddress() + index_info.offset;
         const u8* index_address_8 = memory.GetPhysicalPointer(address);
+        if (index_address_8 == nullptr) {
+            // v395 (Azahar dfb4b89e) : Mario & Luigi: Superstar Saga pose une adresse de base
+            // invalide pour les attributs de sommets. On sort sans rien lire.
+            return {0, 0, 0};
+        }
         const u16* index_address_16 = reinterpret_cast<const u16*>(index_address_8);
         const bool index_u16 = index_info.format != 0;
 
