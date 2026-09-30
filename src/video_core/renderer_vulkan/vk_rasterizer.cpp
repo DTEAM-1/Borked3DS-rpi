@@ -108,7 +108,10 @@ struct DrawParams {
     // getenv() par-draw sur les dizaines de predicats Is*Enabled() du chemin chaud.
     // Comportement identique : les sondes repondent toujours a emulators.cfg.
     static std::mutex cache_mutex;
-    static std::unordered_map<std::string, bool> cache;
+    // v397 : cle = adresse du litteral (const char*), plus de std::string construite a chaque
+    // appel (malloc + hachage de chaine + free). Le profil perf de Luigi (TB103) montrait ~2 %
+    // du temps dans ces recherches. Tous les appels passent des litteraux constants.
+    static std::unordered_map<const char*, bool> cache;
     std::scoped_lock lock(cache_mutex);
     if (const auto it = cache.find(name); it != cache.end()) {
         return it->second;
@@ -933,7 +936,10 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     // Perf: meme logique de cache que IsEnvEnabled. Chaque nom est utilise avec un
     // fallback constant dans ce code, donc la mise en cache par nom est sans effet de bord.
     static std::mutex cache_mutex;
-    static std::unordered_map<std::string, u32> cache;
+    // v397 : cle = adresse du litteral (const char*), plus de std::string construite a chaque
+    // appel (malloc + hachage de chaine + free). Le profil perf de Luigi (TB103) montrait ~2 %
+    // du temps dans ces recherches. Tous les appels passent des litteraux constants.
+    static std::unordered_map<const char*, u32> cache;
     std::scoped_lock lock(cache_mutex);
     if (const auto it = cache.find(name); it != cache.end()) {
         return it->second;
@@ -2524,6 +2530,10 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
         LOG_WARNING(Render_Vulkan,
                     "V395_AZAHAR_LOT_A actif=1 (cull KeepAll2, draw zone vide, sommets invalides, "
                     "cube nul, GS malforme, FillScreen, echantillonneur de presentation)");
+        LOG_WARNING(Render_Vulkan,
+                    "V397_CHEMIN_CHAUD actif=1 descripteurs_groupes={} (caches d'environnement "
+                    "sans std::string)",
+                    IsEnvEnabled("BORKED3DS_V3DV_V397_FLUSH_EACH_DESCRIPTOR") ? 0 : 1);
     }
 
     if (IsV115DA7Z73SuppressRawEnterSimpleLogEnabled()) {

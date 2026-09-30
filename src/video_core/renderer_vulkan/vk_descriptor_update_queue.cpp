@@ -12,9 +12,26 @@ namespace Vulkan {
 
 namespace {
 
+// v397 : lu une seule fois (avant : un getenv a chaque descripteur ecrit, plusieurs par draw).
 [[nodiscard]] bool IsPi5StrictCompatEnabled() {
-    const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
+    static const bool cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return cached;
+}
+
+// v397 : en strict-compat, chaque descripteur ecrit etait envoye tout de suite au pilote
+// (un vkUpdateDescriptorSets par descripteur). On les regroupe comme le code amont : la file
+// est deja videe avant chaque draw (RasterizerVulkan::Draw) et a chaque soumission
+// (RegisterOnDispatch). Echappatoire : BORKED3DS_V3DV_V397_FLUSH_EACH_DESCRIPTOR=1.
+[[nodiscard]] bool FlushEachDescriptor() {
+    static const bool cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_V397_FLUSH_EACH_DESCRIPTOR");
+        return IsPi5StrictCompatEnabled() && value != nullptr && value[0] != '\0' &&
+               value[0] != '0';
+    }();
+    return cached;
 }
 
 } // namespace
@@ -54,7 +71,7 @@ void DescriptorUpdateQueue::AddStorageImage(vk::DescriptorSet target, u8 binding
         .pImageInfo = &image_info,
     };
 
-    if (IsPi5StrictCompatEnabled()) {
+    if (FlushEachDescriptor()) {
         Flush();
     }
 }
@@ -87,7 +104,7 @@ void DescriptorUpdateQueue::AddImageSampler(vk::DescriptorSet target, u8 binding
         .pImageInfo = &image_info,
     };
 
-    if (IsPi5StrictCompatEnabled()) {
+    if (FlushEachDescriptor()) {
         Flush();
     }
 }
@@ -113,7 +130,7 @@ void DescriptorUpdateQueue::AddBuffer(vk::DescriptorSet target, u8 binding, vk::
         .pBufferInfo = &buffer_info,
     };
 
-    if (IsPi5StrictCompatEnabled()) {
+    if (FlushEachDescriptor()) {
         Flush();
     }
 }
@@ -135,7 +152,7 @@ void DescriptorUpdateQueue::AddTexelBuffer(vk::DescriptorSet target, u8 binding,
         .pTexelBufferView = &buffer_info,
     };
 
-    if (IsPi5StrictCompatEnabled()) {
+    if (FlushEachDescriptor()) {
         Flush();
     }
 }

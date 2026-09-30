@@ -31,8 +31,12 @@ namespace Vulkan {
 namespace {
 
 [[nodiscard]] bool IsPi5StrictCompatEnabled() {
-    const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
+    // v397 : lu une seule fois.
+    static const bool cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_STRICT_COMPAT");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return cached;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,30 +59,49 @@ namespace {
 }
 
 [[nodiscard]] bool IsDrawTraceEnabled() {
-    const char* value = std::getenv("BORKED3DS_V3DV_TRACE_DRAW");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
+    // v397 : lu une seule fois.
+    static const bool cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_TRACE_DRAW");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return cached;
 }
 
 
 [[nodiscard]] bool IsV115DA7Z48GraphicsPipelineTraceEnabled() {
-    const char* value = std::getenv("BORKED3DS_V3DV_A7Z48_GRAPHICS_PIPELINE_TRACE");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
+    // v397 : lu une seule fois.
+    static const bool cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_A7Z48_GRAPHICS_PIPELINE_TRACE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z51GraphicsPipelineForceTraceEnabled() {
-    const char* value = std::getenv("BORKED3DS_V3DV_A7Z51_GRAPHICS_PIPELINE_FORCE_TRACE");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
+    // v397 : lu une seule fois.
+    static const bool cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_A7Z51_GRAPHICS_PIPELINE_FORCE_TRACE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z57GraphicsPipelineMainLogOnlyEnabled() {
-    const char* value = std::getenv("BORKED3DS_V3DV_A7Z57_GRAPHICS_PIPELINE_MAINLOG_ONLY");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
+    // v397 : lu une seule fois.
+    static const bool cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_A7Z57_GRAPHICS_PIPELINE_MAINLOG_ONLY");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return cached;
 }
 
 [[nodiscard]] bool IsV115DA7Z61GraphicsPipelineUltraQuietTryBuildEnabled() {
-    const char* value =
-        std::getenv("BORKED3DS_V3DV_A7Z61_GRAPHICS_PIPELINE_ULTRA_QUIET_TRYBUILD");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
+    // v397 : lu une seule fois.
+    static const bool cached = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_A7Z61_GRAPHICS_PIPELINE_ULTRA_QUIET_TRYBUILD");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return cached;
 }
 
 // ---------------------------------------------------------------------------
