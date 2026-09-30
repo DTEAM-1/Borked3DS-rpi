@@ -283,7 +283,8 @@ void RasterizerSoftware::ProcessTriangle(const Vertex& v0, const Vertex& v1, con
         screen_to_rasterizer_coords(v2.screenpos),
     };
 
-    if (regs.rasterizer.cull_mode == RasterizerRegs::CullMode::KeepAll) {
+    if (regs.rasterizer.cull_mode == RasterizerRegs::CullMode::KeepAll ||
+        regs.rasterizer.cull_mode == RasterizerRegs::CullMode::KeepAll2) { // v395
         // Make sure we always end up with a triangle wound counter-clockwise
         if (!reversed && SignedArea(vtxpos[0].xy(), vtxpos[1].xy(), vtxpos[2].xy()) <= 0) {
             ProcessTriangle(v0, v2, v1, true);
