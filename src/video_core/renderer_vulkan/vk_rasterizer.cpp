@@ -2521,6 +2521,9 @@ RasterizerVulkan::RasterizerVulkan(Memory::MemorySystem& memory, Pica::PicaCore&
                     V394LogicOpEmulated(instance) && !instance.NeedsLogicOpEmulation() ? 1 : 0,
                     IsStrictCompatEnabled() ? 1 : 0,
                     instance.NeedsLogicOpEmulation() ? 0 : 1);
+        LOG_WARNING(Render_Vulkan,
+                    "V395_AZAHAR_LOT_A actif=1 (cull KeepAll2, draw zone vide, sommets invalides, "
+                    "cube nul, GS malforme, FillScreen, echantillonneur de presentation)");
     }
 
     if (IsV115DA7Z73SuppressRawEnterSimpleLogEnabled()) {
@@ -4185,6 +4188,10 @@ bool RasterizerVulkan::AccelerateDrawBatch(bool is_indexed) {
         V114ShaderMultiplexFileTraceRaw("v115d_mux before_analyze_vertex_array");
     }
     vertex_info = AnalyzeVertexArray(is_indexed, instance.GetMinVertexStrideAlignment());
+    if (vertex_info.Invalid()) {
+        // v395 (Azahar dfb4b89e) : tableau de sommets a une adresse invalide -> rien a dessiner.
+        return true;
+    }
     V115DA7Z2ShaderTraceRaw("v115d_a7z2 after_analyze_vertex_array");
     if (v114_file_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_mux after_analyze_vertex_array");
@@ -8130,6 +8137,16 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         return true;
     }
 
+    // v395 (Azahar d260a99e + 4034f6c1) : si le viewport ne recoupe pas du tout la surface, la
+    // zone de dessin est vide. On saute le draw plutot que d'ouvrir une render pass de surface
+    // nulle (inutile, et mal definie pour certains pilotes).
+    if (fb_helper.DrawRect().GetArea() == 0) {
+        if (IsDrawTraceEnabled()) {
+            LOG_INFO(Render_Vulkan, "TRACE_DRAW skipped: zero-area draw rect");
+        }
+        return true;
+    }
+
     // v82: hard descriptorless proof path for Pi5/V3DV strict software fallback.
     // v77 proved that small descriptorless tiles can keep the render target/present path
     // alive and visible. v82 keeps that stable bridge, but periodically lets one very
@@ -9371,6 +9388,10 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
     const Sampler& null_sampler = res_cache.GetSampler(VideoCore::NULL_SAMPLER_ID);
     const vk::ImageView null_view = null_surface.ImageView();
     const vk::Sampler null_handle = null_sampler.Handle();
+    // v395 (Azahar 66731715) : une unite cube desactivee recoit une surface nulle CUBE ; une
+    // vue 2D sur un samplerCube n'est pas valide.
+    const vk::ImageView null_cube_view =
+        res_cache.GetSurface(VideoCore::NULL_SURFACE_CUBE_ID).ImageView();
     const vk::ImageView color_view =
         framebuffer ? framebuffer->ImageView(SurfaceType::Color) : vk::ImageView{};
 
@@ -9451,7 +9472,15 @@ void RasterizerVulkan::SyncTextureUnits(const Framebuffer* framebuffer) {
                                 static_cast<u32>(texture.format));
                 }
             }
-            bind_null("disabled");
+            const auto disabled_type = texture.config.type.Value();
+            if ((disabled_type == TextureType::TextureCube ||
+                 disabled_type == TextureType::ShadowCube) &&
+                IsValidImageView(null_cube_view)) {
+                update_queue.AddImageSampler(texture_set, texture_index, 0, null_cube_view,
+                                             null_handle); // v395
+            } else {
+                bind_null("disabled");
+            }
             continue;
         }
 

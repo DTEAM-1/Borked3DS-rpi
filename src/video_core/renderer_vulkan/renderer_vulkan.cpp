@@ -722,19 +722,25 @@ void main() {
     present_shaders[3] = Compile(HostShaders::VULKAN_PRESENT_INTERLACED_FRAG,
                                  vk::ShaderStageFlagBits::eFragment, device, preamble);
 
-    auto properties = instance.GetPhysicalDevice().getProperties();
     for (std::size_t i = 0; i < present_samplers.size(); i++) {
-        const vk::Filter filter_mode = i == 0 ? vk::Filter::eLinear : vk::Filter::eNearest;
+        // v395 (Azahar 22d3241a) : l'echantillonneur "plus proche voisin" de presentation ne doit
+        // pas devenir lineaire via l'anisotropie ou le mipmap lineaire (certains pilotes).
+        const bool linear = i == 0;
+        const vk::Filter filter_mode = linear ? vk::Filter::eLinear : vk::Filter::eNearest;
+        const vk::SamplerMipmapMode mipmap_mode =
+            linear ? vk::SamplerMipmapMode::eLinear : vk::SamplerMipmapMode::eNearest;
         const vk::SamplerCreateInfo sampler_info = {
             .magFilter = filter_mode,
             .minFilter = filter_mode,
-            .mipmapMode = vk::SamplerMipmapMode::eLinear,
+            .mipmapMode = mipmap_mode,
             .addressModeU = vk::SamplerAddressMode::eClampToEdge,
             .addressModeV = vk::SamplerAddressMode::eClampToEdge,
-            .anisotropyEnable = instance.IsAnisotropicFilteringSupported(),
-            .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+            .anisotropyEnable = VK_FALSE,
+            .maxAnisotropy = 1.0f,
             .compareEnable = false,
             .compareOp = vk::CompareOp::eAlways,
+            .minLod = 0.0f,
+            .maxLod = 0.0f,
             .borderColor = vk::BorderColor::eIntOpaqueBlack,
             .unnormalizedCoordinates = false,
         };
@@ -957,6 +963,11 @@ bool RendererVulkan::ConfigureFramebufferTexture(TextureInfo& texture,
 
 
 void RendererVulkan::FillScreen(Common::Vec3<u8> color, const TextureInfo& texture) {
+    // v395 (Azahar 384913be) : certaines extensions 3GX appellent FillScreen avant que l'image
+    // de l'ecran existe.
+    if (!texture.image) {
+        return;
+    }
     const vk::ClearColorValue clear_color = {
         .float32 =
             std::array{

@@ -181,6 +181,7 @@ inline vk::PrimitiveTopology PrimitiveTopology(Pica::PipelineRegs::TriangleTopol
 inline vk::CullModeFlags CullMode(Pica::RasterizerRegs::CullMode mode) {
     switch (mode) {
     case Pica::RasterizerRegs::CullMode::KeepAll:
+    case Pica::RasterizerRegs::CullMode::KeepAll2: // v395
         return vk::CullModeFlagBits::eNone;
     case Pica::RasterizerRegs::CullMode::KeepClockWise:
     case Pica::RasterizerRegs::CullMode::KeepCounterClockWise:
@@ -194,6 +195,7 @@ inline vk::CullModeFlags CullMode(Pica::RasterizerRegs::CullMode mode) {
 inline vk::FrontFace FrontFace(Pica::RasterizerRegs::CullMode mode) {
     switch (mode) {
     case Pica::RasterizerRegs::CullMode::KeepAll:
+    case Pica::RasterizerRegs::CullMode::KeepAll2: // v395
     case Pica::RasterizerRegs::CullMode::KeepClockWise:
         return vk::FrontFace::eCounterClockwise;
     case Pica::RasterizerRegs::CullMode::KeepCounterClockWise:
