@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -155,6 +156,53 @@ static_assert(sizeof(CommandHeader) == sizeof(u32), "CommandHeader has incorrect
     const bool enabled = value != nullptr && value[0] != '\0' && value[0] != '0';
     cache.emplace(name, enabled);
     return enabled;
+}
+
+// v396 (Azahar 7de2d7b8, partie "ShaderSetup") : les jeux re-televersent souvent le MEME
+// programme de shader PICA. Chaque mot ecrit marquait le programme "sale", ce qui forcait un
+// hachage complet (16 Kio de code + 4 Kio de swizzle) au draw suivant. On n'ecrit et ne marque
+// plus rien si le mot est identique. Le hachage lui-meme est inchange (meme fonction, meme
+// taille) : les caches de shaders restent valides.
+// Echappatoire : BORKED3DS_V3DV_V396_NO_SKIP_SAME=1.
+[[nodiscard]] bool V396SkipSameEnabled() {
+    static const bool cached = !IsEnvEnabled("BORKED3DS_V3DV_V396_NO_SKIP_SAME");
+    return cached;
+}
+
+u64 g_v396_writes = 0;
+u64 g_v396_same = 0;
+
+void V396MaybeReport() {
+    if (!V396ShaderStatsEnabled()) {
+        return;
+    }
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds(10)) {
+        return;
+    }
+    const double window_s = std::chrono::duration<double>(now - last).count();
+    last = now;
+    u64 hash_calls = 0;
+    u64 hash_ns = 0;
+    V396ShaderStatsTake(hash_calls, hash_ns);
+    LOG_WARNING(HW_GPU,
+                "V396_SHADER_STATS ecritures={} identiques={} hachages={} hachage_ms={:.2f} "
+                "fenetre_s={:.1f}",
+                g_v396_writes, g_v396_same, hash_calls, hash_ns / 1.0e6, window_s);
+    g_v396_writes = 0;
+    g_v396_same = 0;
+}
+
+// Retourne vrai si le mot a change (et doit etre marque sale).
+inline bool V396Store(u32& slot, u32 value) {
+    ++g_v396_writes;
+    if (slot == value && V396SkipSameEnabled()) {
+        ++g_v396_same;
+        return false;
+    }
+    slot = value;
+    return true;
 }
 
 [[nodiscard]] bool IsInterestingPicaStateReg(u32 id) {
@@ -944,6 +992,8 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
       geometry_pipeline{regs.internal, gs_unit, gs_setup},
       shader_engine{CreateEngine(Settings::values.use_shader_jit.GetValue())} {
     InitializeRegs();
+    LOG_WARNING(HW_GPU, "V396_LOT_C actif=1 ecritures_identiques_ignorees={} minmax_simd=1 stats={}",
+                V396SkipSameEnabled() ? 1 : 0, V396ShaderStatsEnabled() ? 1 : 0);
 
     V114C6PicaGateFileTraceReset();
     V114C6PicaGateFileTraceRaw("v115d_mux pica_core_constructor_first_vkcmd_draw_zero_count_real_vertex_bind_ultra_quiet_marker");
@@ -1656,8 +1706,10 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         if (offset >= 4096) {
             LOG_ERROR(HW_GPU, "Invalid GS program offset {}", offset);
         } else {
-            gs_setup.program_code[offset] = value;
-            gs_setup.MarkProgramCodeDirty();
+            if (V396Store(gs_setup.program_code[offset], value)) {
+                gs_setup.MarkProgramCodeDirty();
+            }
+            V396MaybeReport();
             offset++;
         }
         break;
@@ -1675,8 +1727,9 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         if (offset >= gs_setup.swizzle_data.size()) {
             LOG_ERROR(HW_GPU, "Invalid GS swizzle pattern offset {}", offset);
         } else {
-            gs_setup.swizzle_data[offset] = value;
-            gs_setup.MarkSwizzleDataDirty();
+            if (V396Store(gs_setup.swizzle_data[offset], value)) {
+                gs_setup.MarkSwizzleDataDirty();
+            }
             offset++;
         }
         break;
@@ -1753,13 +1806,16 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         if (offset >= 512) {
             LOG_ERROR(HW_GPU, "Invalid VS program offset {}", offset);
         } else {
-            vs_setup.program_code[offset] = value;
-            vs_setup.MarkProgramCodeDirty();
+            if (V396Store(vs_setup.program_code[offset], value)) {
+                vs_setup.MarkProgramCodeDirty();
+            }
+            V396MaybeReport();
             // v395 (Azahar 0f9457e0) : ne pas recopier dans le GS quand il est utilise.
             if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
                 regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) {
-                gs_setup.program_code[offset] = value;
-                gs_setup.MarkProgramCodeDirty();
+                if (V396Store(gs_setup.program_code[offset], value)) {
+                    gs_setup.MarkProgramCodeDirty();
+                }
             }
             offset++;
         }
@@ -1778,12 +1834,14 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
         if (offset >= vs_setup.swizzle_data.size()) {
             LOG_ERROR(HW_GPU, "Invalid VS swizzle pattern offset {}", offset);
         } else {
-            vs_setup.swizzle_data[offset] = value;
-            vs_setup.MarkSwizzleDataDirty();
+            if (V396Store(vs_setup.swizzle_data[offset], value)) {
+                vs_setup.MarkSwizzleDataDirty();
+            }
             if (!regs.internal.pipeline.gs_unit_exclusive_configuration &&
                 regs.internal.pipeline.use_gs == PipelineRegs::UseGS::No) { // v395
-                gs_setup.swizzle_data[offset] = value;
-                gs_setup.MarkSwizzleDataDirty();
+                if (V396Store(gs_setup.swizzle_data[offset], value)) {
+                    gs_setup.MarkSwizzleDataDirty();
+                }
             }
             offset++;
         }

@@ -47,6 +47,11 @@ private:
 
 struct ShaderRegs;
 
+// v396 -- statistiques de hachage des programmes PICA (sonde, active seulement si
+// BORKED3DS_V3DV_V396_SHADER_STATS est pose). Definies dans shader_setup.cpp.
+bool V396ShaderStatsEnabled();
+void V396ShaderStatsTake(u64& hash_calls, u64& hash_ns);
+
 /**
  * This structure contains the state information common for all shader units such as uniforms.
  * The geometry shaders has a unique configuration so when enabled it has its own setup.
