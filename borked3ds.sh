@@ -1,23 +1,154 @@
 #!/usr/bin/env bash
 
 rp_module_id="borked3ds"
-rp_module_desc="Borked3DS – Nintendo 3DS Emulator (Pi5 Vulkan V3DV + Qt)"
+rp_module_desc="Borked3DS – Nintendo 3DS Emulator (Pi5: DTEAM-1 Vulkan V3DV / Pi4: gvx64 OpenGL-GLES)"
 rp_module_help="ROM Extensions: .3ds .cia .cxi"
 rp_module_licence="GPL3 https://github.com/DTEAM-1/Borked3DS-rpi"
 rp_module_repo=""
 rp_module_section="exp"
-rp_module_flags="!all rpi5"
+rp_module_flags="!all rpi4 rpi5 !32bit"
+
+################################
+# TARGET DETECTION (v398)
+#
+# One scriptmodule, two forks:
+#   - Raspberry Pi 5 (and Pi 500 / CM5): DTEAM-1/Borked3DS-rpi, Vulkan V3DV by default
+#     (code defaults, settings.h), built with Clang.
+#   - Raspberry Pi 4 (and Pi 400 / CM4): gvx64/Borked3DS-rpi, OpenGL with GLES, built
+#     exactly like RetroPie-Extra (system compiler, RetroPie CFLAGS,
+#     DYNARMIC_USE_BUNDLED_EXTERNALS=OFF), the build gvx64 tests on his Pi4s.
+# Supported OS: Raspberry Pi OS / Debian Bookworm (12) and Trixie (13), 64-bit only.
+#
+# Overrides (tests only), passed through sudo -E:
+#   BORKED3DS_TARGET=pi4|pi5   force the target instead of detecting it
+#   BORKED3DS_REPO=<git url>   force the repository (default chosen by target)
+#   BORKED3DS_LOCAL_SRC=<dir>  build a local tree (see sources_borked3ds)
+################################
+
+function _target_borked3ds() {
+    case "${BORKED3DS_TARGET:-}" in
+        pi4|pi5) echo "$BORKED3DS_TARGET"; return ;;
+    esac
+    # Device tree first: it names the board exactly, whatever the RetroPie-Setup version.
+    local model
+    model="$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null )"
+    case "$model" in
+        *"Raspberry Pi 5"*|*"Compute Module 5"*) echo "pi5"; return ;;
+        *"Raspberry Pi 4"*|*"Compute Module 4"*) echo "pi4"; return ;;
+    esac
+    # Fallback: RetroPie-Setup platform detection.
+    if isPlatform "rpi5"; then echo "pi5"; return; fi
+    if isPlatform "rpi4"; then echo "pi4"; return; fi
+    echo "inconnu"
+}
+
+function _codename_borked3ds() {
+    local VERSION_CODENAME=""
+    [ -r /etc/os-release ] && . /etc/os-release
+    echo "${VERSION_CODENAME:-inconnu}"
+}
+
+function _repo_borked3ds() {
+    if [ -n "${BORKED3DS_REPO:-}" ]; then
+        echo "$BORKED3DS_REPO"
+    elif [ "$(_target_borked3ds)" = "pi4" ]; then
+        echo "https://github.com/gvx64/Borked3DS-rpi"
+    else
+        echo "https://github.com/DTEAM-1/Borked3DS-rpi"
+    fi
+}
+
+# Clang used for the Pi5 build. Trixie: system clang (19), unchanged from earlier builds.
+# Bookworm: system clang is 14, too old for this C++23 tree with libstdc++ 12; clang-16 is
+# in Bookworm's own repository and is installed by depends_borked3ds().
+function _clang_borked3ds() {
+    local v
+    if [ "$(_codename_borked3ds)" = "bookworm" ]; then
+        for v in 19 18 17 16 15; do
+            if command -v "clang++-$v" >/dev/null 2>&1; then
+                echo "$v"
+                return
+            fi
+        done
+    fi
+    echo ""
+}
+
+# CMake: the tree requires 3.26 or newer. Trixie ships 3.31; Bookworm ships 3.25, so a
+# Kitware binary is downloaded once into RetroPie-Setup's tmp directory (nothing is
+# installed system-wide, apt sources are not touched).
+BORKED3DS_CMAKE_VERSION="3.31.6"
+
+function _cmake_borked3ds() {
+    local sys_ver
+    sys_ver="$(cmake --version 2>/dev/null | head -1 | awk '{print $3}')"
+    if [ -n "$sys_ver" ] && dpkg --compare-versions "$sys_ver" ge 3.26; then
+        echo "cmake"
+    else
+        echo "${__tmpdir:-/tmp}/borked3ds-cmake-$BORKED3DS_CMAKE_VERSION/bin/cmake"
+    fi
+}
 
 function depends_borked3ds() {
-    getDepends \
-        cmake ninja-build build-essential git pkg-config \
-        clang \
-        libx11-dev libxrandr-dev libxi-dev \
-        libgl1-mesa-dev libglu1-mesa-dev \
-        libsdl2-dev libevdev-dev \
-        libpulse-dev libasound2-dev \
-        qt6-base-dev qt6-base-dev-tools qt6-tools-dev \
+    local target codename
+    target="$(_target_borked3ds)"
+    codename="$(_codename_borked3ds)"
+
+    echo "=========================================================="
+    echo "CIBLE : $target | OS : $codename | arch : $(uname -m)"
+    echo "DEPOT : $(_repo_borked3ds)"
+    echo "=========================================================="
+
+    if [ "$(uname -m)" != "aarch64" ]; then
+        md_ret_errors+=("Borked3DS-rpi exige un systeme 64 bits (aarch64) ; detecte : $(uname -m).")
+        return 1
+    fi
+    if [ "$target" = "inconnu" ]; then
+        md_ret_errors+=("Carte non reconnue (ni Pi4 ni Pi5). Forcer avec BORKED3DS_TARGET=pi4 ou pi5.")
+        return 1
+    fi
+    case "$codename" in
+        bookworm|trixie) ;;
+        *) echo "ATTENTION : OS '$codename' non teste (Bookworm et Trixie seulement)." ;;
+    esac
+
+    local depends=(
+        cmake ninja-build build-essential git pkg-config python3 binutils
+        clang
+        libx11-dev libxrandr-dev libxi-dev libxext-dev libxcb-cursor-dev
+        libgl1-mesa-dev libglu1-mesa-dev
+        libsdl2-dev libevdev-dev
+        libpulse-dev libasound2-dev
+        qt6-base-dev qt6-base-private-dev qt6-base-dev-tools
+        qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools qt6-multimedia-dev
         libboost-all-dev libcrypto++-dev
+        robin-map-dev
+    )
+    # robin-map-dev: dynarmic uses the system tsl::robin_map unless
+    # DYNARMIC_USE_BUNDLED_EXTERNALS=ON (externals/CMakeLists.txt). It was missing from the
+    # list: builds only worked on machines that already had it.
+
+    if [ "$target" = "pi4" ]; then
+        # Extra packages of the RetroPie-Extra module used by gvx64.
+        depends+=(libssl-dev libfdk-aac-dev)
+    else
+        # Pi5: Vulkan driver (already present when Mesa comes from trixie-backports).
+        depends+=(mesa-vulkan-drivers)
+        [ "$codename" = "bookworm" ] && depends+=(clang-16)
+    fi
+
+    getDepends "${depends[@]}"
+
+    # Pi5: report the Mesa version. The fork is tuned on Mesa 26.1.2 (trixie-backports);
+    # Raspberry Pi OS Bookworm ships Mesa 24.x, which runs V3DV Vulkan 1.3 but is untested.
+    if [ "$target" = "pi5" ]; then
+        local mesa_ver
+        mesa_ver="$(dpkg-query -W -f='${Version}' mesa-vulkan-drivers 2>/dev/null)"
+        echo "Mesa (mesa-vulkan-drivers) : ${mesa_ver:-absent}"
+        if [ -n "$mesa_ver" ] && dpkg --compare-versions "$mesa_ver" lt 24.1; then
+            echo "ATTENTION : Mesa < 24.1 -- Vulkan V3DV non teste ; OpenGL-GLES reste disponible."
+        fi
+    fi
 }
 
 function sources_borked3ds() {
@@ -25,9 +156,9 @@ function sources_borked3ds() {
     ################################
     # SOURCE SELECTION
     #
-    # Default: clone DTEAM-1/Borked3DS-rpi from GitHub. The repository is the source of
-    # truth; a local tree is never picked up automatically, so a build can never silently
-    # compile a stale copy.
+    # Default: clone the fork chosen by the target (Pi5: DTEAM-1, Pi4: gvx64, see
+    # _repo_borked3ds). The repository is the source of truth; a local tree is never picked
+    # up automatically, so a build can never silently compile a stale copy.
     #
     # To build a local tree (quick test without pushing), ask for it explicitly:
     #     BORKED3DS_LOCAL_SRC=/home/pi/Borked3DS-rpi-master sudo -E ./retropie_setup.sh
@@ -36,6 +167,9 @@ function sources_borked3ds() {
     ################################
 
     local local_src="${BORKED3DS_LOCAL_SRC:-}"
+    local target repo
+    target="$(_target_borked3ds)"
+    repo="$(_repo_borked3ds)"
 
     ################################
     # BUILD DIRECTORY CLEANUP
@@ -70,7 +204,7 @@ function sources_borked3ds() {
         fi
     else
         echo "=========================================================="
-        echo "SOURCES: clone GitHub DTEAM-1/Borked3DS-rpi (defaut)"
+        echo "SOURCES: clone GitHub $repo (cible $target)"
         echo "=========================================================="
         ################################
         # CLONE WITH RETRIES, STOP ON FAILURE
@@ -85,7 +219,7 @@ function sources_borked3ds() {
         local attempt
         for attempt in 1 2 3; do
             echo "Clone du depot -- tentative $attempt/3..."
-            if git clone --recursive https://github.com/DTEAM-1/Borked3DS-rpi "$md_build"; then
+            if git clone --recursive "$repo" "$md_build"; then
                 clone_ok=1
                 break
             fi
@@ -102,7 +236,7 @@ function sources_borked3ds() {
             echo "!! CLONE IMPOSSIBLE apres 3 tentatives."
             echo "!! Cause typique : coupure reseau ou GitHub temporairement injoignable."
             echo "!! Verifier la connexion puis relancer :"
-            echo "!!     git ls-remote https://github.com/DTEAM-1/Borked3DS-rpi HEAD"
+            echo "!!     git ls-remote $repo HEAD"
             echo "!! Ne pas poursuivre : le build compilerait autre chose."
             exit 1
         fi
@@ -125,6 +259,40 @@ function sources_borked3ds() {
         fi
         git -C "$md_build" rev-parse --short HEAD > "$md_build/.borked3ds_commit"
         echo "Commit compile : $(cat "$md_build/.borked3ds_commit") $(git -C "$md_build" log -1 --format=%s)"
+    fi
+
+    echo "$target" > "$md_build/.borked3ds_target"
+
+    ################################
+    # CMAKE >= 3.26 (Bookworm ships 3.25)
+    ################################
+
+    local cmake_bin
+    cmake_bin="$(_cmake_borked3ds)"
+    if [ "$cmake_bin" != "cmake" ] && [ ! -x "$cmake_bin" ]; then
+        local cmake_dir="${cmake_bin%/bin/cmake}"
+        echo "CMake systeme < 3.26 : telechargement de CMake $BORKED3DS_CMAKE_VERSION (aarch64) dans $cmake_dir"
+        mkdir -p "$cmake_dir"
+        downloadAndExtract "https://github.com/Kitware/CMake/releases/download/v$BORKED3DS_CMAKE_VERSION/cmake-$BORKED3DS_CMAKE_VERSION-linux-aarch64.tar.gz" "$cmake_dir" --strip-components 1
+        if [ ! -x "$cmake_bin" ]; then
+            echo "!! Telechargement de CMake echoue. Abandon."
+            exit 1
+        fi
+    fi
+    echo "CMake utilise : $cmake_bin ($("$cmake_bin" --version | head -1))"
+
+    ################################
+    # PI4 (gvx64): no source patching. The tree is built exactly as RetroPie-Extra builds
+    # it (system compiler), so the fixes below, which target Clang, are not needed.
+    ################################
+
+    if [ "$target" = "pi4" ]; then
+        if [ ! -f "$md_build/CMakeLists.txt" ] || [ ! -d "$md_build/src" ]; then
+            echo "!! ARBRE SOURCE INCOMPLET dans $md_build -- abandon."
+            exit 1
+        fi
+        echo "Arbre source verifie (cible pi4, aucun correctif applique)."
+        return 0
     fi
 
     ################################
@@ -211,29 +379,73 @@ function build_borked3ds() {
 
     cd "$md_build" || exit 1
 
+    local target codename cmake_bin
+    target="$(cat "$md_build/.borked3ds_target" 2>/dev/null || _target_borked3ds)"
+    codename="$(_codename_borked3ds)"
+    cmake_bin="$(_cmake_borked3ds)"
+
     mkdir -p build
     cd build || exit 1
 
-    # Build with Clang: upstream notes that "Vulkan may crash if the executable was
-    # compiled with GCC". -Werror is stripped in sources_borked3ds() above.
-    cmake .. \
-        -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_CXX_COMPILER=clang++ \
-        -DCMAKE_C_FLAGS="-march=armv8.2-a+crc+crypto -O3" \
-        -DCMAKE_CXX_FLAGS="-march=armv8.2-a+crc+crypto -O3" \
-        -DENABLE_QT=ON \
-        -DENABLE_SDL2=ON \
-        -DENABLE_TESTS=OFF \
-        -DUSE_SYSTEM_LIBS=ON
+    # USE_SYSTEM_QT=ON: without it CMake tries to download an x86_64 Qt with pip/aqt. That
+    # only fails harmlessly today because Debian blocks pip (PEP 668); make it explicit.
+
+    if [ "$target" = "pi4" ]; then
+        ################################
+        # PI4 / gvx64: OpenGL-GLES build, as in RetroPie-Extra: system compiler (GCC) and
+        # RetroPie's CFLAGS for the Cortex-A72. No +crypto: the Pi4 SoC has no ARMv8
+        # crypto extension (illegal instruction).
+        ################################
+        "$cmake_bin" .. \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_SYSTEM_QT=ON \
+            -DDYNARMIC_USE_BUNDLED_EXTERNALS=OFF
+    else
+        ################################
+        # PI5 / DTEAM-1: Clang, upstream notes that "Vulkan may crash if the executable was
+        # compiled with GCC". -Werror is stripped in sources_borked3ds() above.
+        # Bookworm: clang-16 (system clang 14 is too old), see _clang_borked3ds().
+        ################################
+        local cv cc="clang" cxx="clang++"
+        cv="$(_clang_borked3ds)"
+        if [ -n "$cv" ]; then
+            cc="clang-$cv"
+            cxx="clang++-$cv"
+        elif [ "$codename" = "bookworm" ]; then
+            echo "!! Bookworm : aucun clang >= 15 trouve (clang-16 attendu). Abandon."
+            exit 1
+        fi
+        echo "Compilateur : $cxx"
+
+        "$cmake_bin" .. \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="$cc" \
+            -DCMAKE_CXX_COMPILER="$cxx" \
+            -DCMAKE_C_FLAGS="-march=armv8.2-a+crc+crypto -O3" \
+            -DCMAKE_CXX_FLAGS="-march=armv8.2-a+crc+crypto -O3" \
+            -DENABLE_QT=ON \
+            -DENABLE_SDL2=ON \
+            -DENABLE_TESTS=OFF \
+            -DUSE_SYSTEM_QT=ON \
+            -DUSE_SYSTEM_LIBS=ON
+    fi
 
     if [ $? -ne 0 ]; then
         echo "CMake configuration failed"
         exit 1
     fi
 
-    ninja -j$(nproc)
+    # Pi4 4 GB: one job per core can run out of RAM on the big translation units.
+    local jobs
+    jobs="$(nproc)"
+    if [ "$target" = "pi4" ] && [ "$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)" -lt 6000 ]; then
+        jobs=2
+        echo "Pi4 avec moins de 6 Go de RAM : compilation sur $jobs coeurs."
+    fi
+
+    ninja -j"$jobs"
 
     if [ $? -ne 0 ]; then
         echo "Build failed"
@@ -326,18 +538,32 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     #   V395_AZAHAR_LOT_A : small Azahar fixes (KeepAll2 cull mode, zero-area draws, invalid vertex arrays, null cube units, malformed GS, FillScreen, present sampler) (v395)
     #   V396_LOT_C : identical PICA shader words no longer mark the program dirty; SIMD index min/max (v396)
     #   V397_CHEMIN_CHAUD : env lookups cached without std::string; descriptor writes batched in strict-compat (v397)
+    #   V398_GVX64 / V398_AUDIO_BORNE : gvx64 ports (idle surface eviction, realtime-audio clamp,
+    #     memory hot path, GLES copy_image/CopyTextures fixes) (v398)
     # To add a marker, append it to borked3ds_markers.
     ################################
 
+    local target
+    target="$(cat "$md_build/.borked3ds_target" 2>/dev/null || _target_borked3ds)"
+    echo "$target" > "$md_inst/.borked3ds_target"
+
     echo ""
     echo "=========================================================="
-    echo "VERIFICATION DU BINAIRE INSTALLE"
+    echo "VERIFICATION DU BINAIRE INSTALLE (cible $target)"
     echo "=========================================================="
     if [ -f "$md_build/.borked3ds_commit" ]; then
         echo "Commit compile : $(cat "$md_build/.borked3ds_commit")"
         cp "$md_build/.borked3ds_commit" "$md_inst/.borked3ds_commit"
     else
         echo "Commit compile : INCONNU"
+    fi
+
+    # The markers and the Vulkan cache below belong to the DTEAM-1 fork (Pi5) only.
+    if [ "$target" = "pi4" ]; then
+        echo "Cible pi4 (gvx64, OpenGL-GLES) : verification des marqueurs DTEAM-1 sans objet."
+        echo "=========================================================="
+        echo ""
+        return 0
     fi
 
     local borked3ds_markers=(
@@ -383,6 +609,9 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         "V395_AZAHAR_LOT_A actif="
         "V396_LOT_C actif="
         "V397_CHEMIN_CHAUD actif="
+        "V398_GVX64 actif="
+        "V398_AUDIO_BORNE time_scale="
+        "BORKED3DS_V3DV_V398_NO_IDLE_EVICT"
     )
 
     local borked3ds_missing=0
@@ -498,6 +727,65 @@ function configure_borked3ds() {
     fi
 
     addSystem "3ds"
+
+    ################################
+    # PI4 STARTING SETTINGS (v398): OpenGL with GLES
+    #
+    # The Pi4 GPU (V3D 4.2) has no usable desktop OpenGL nor Vulkan for this emulator: the
+    # renderer must start as OpenGL (graphics_api=1) with "Use OpenGL ES" ticked
+    # (use_gles=true). Both keys need the double write key=value + key\default=false,
+    # otherwise the code default wins.
+    # A key the user already set by hand (key\default=false) is left alone, and nothing
+    # else is touched (never the gamepad). The Pi5 needs nothing here: Vulkan is the code
+    # default of the DTEAM-1 fork.
+    ################################
+    local target
+    target="$(cat "$md_inst/.borked3ds_target" 2>/dev/null || _target_borked3ds)"
+    if [ "$target" = "pi4" ]; then
+        local user_home="${home:-/home/${__user:-pi}}"
+        local qtcfg="$user_home/.config/borked3ds-emu/qt-config.ini"
+        mkdir -p "$(dirname "$qtcfg")"
+        python3 - "$qtcfg" <<'_EOF_'
+import os, sys
+path = sys.argv[1]
+wanted = [("graphics_api", "1"), ("use_gles", "true")]
+lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
+
+# Locate the [Renderer] section (create it if absent).
+start = next((i for i, l in enumerate(lines) if l.strip() == "[Renderer]"), None)
+if start is None:
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append("[Renderer]")
+    start = len(lines) - 1
+end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+
+def find(key):
+    for i in range(start + 1, end):
+        if lines[i].split("=", 1)[0] == key:
+            return i
+    return None
+
+for key, value in wanted:
+    d = find(key + "\\default")
+    if d is not None and lines[d].split("=", 1)[1].strip() == "false":
+        cur = find(key)
+        print("  %s : choix de l'utilisateur garde (%s)" % (key, lines[cur] if cur is not None else "?"))
+        continue
+    for k, v in ((key + "\\default", "false"), (key, value)):
+        i = find(k)
+        if i is None:
+            lines.insert(end, k + "=" + v)
+            end += 1
+        else:
+            lines[i] = k + "=" + v
+    print("  %s=%s (defaut Pi4)" % (key, value))
+
+open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+_EOF_
+        chown -R "${__user:-pi}": "$user_home/.config/borked3ds-emu" 2>/dev/null
+        echo "Pi4 : reglages de depart OpenGL + GLES verifies dans $qtcfg"
+    fi
 
     echo ""
     echo "Ligne de lancement installee :"
