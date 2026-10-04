@@ -540,6 +540,8 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     #   V397_CHEMIN_CHAUD : env lookups cached without std::string; descriptor writes batched in strict-compat (v397)
     #   V398_GVX64 / V398_AUDIO_BORNE : gvx64 ports (idle surface eviction, realtime-audio clamp,
     #     memory hot path, GLES copy_image/CopyTextures fixes) (v398)
+    #   V399_SVC_TIMING : per-SVC hardware cycle counts (gvx64 99a0d7e / Azahar #1093); escape hatch
+    #     BORKED3DS_V3DV_V399_NO_SVC_TIMING=1 restores the old +150 ticks in GetSystemTick (v399)
     # To add a marker, append it to borked3ds_markers.
     ################################
 
@@ -612,6 +614,8 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         "V398_GVX64 actif="
         "V398_AUDIO_BORNE time_scale="
         "BORKED3DS_V3DV_V398_NO_IDLE_EVICT"
+        "V399_SVC_TIMING actif="
+        "BORKED3DS_V3DV_V399_NO_SVC_TIMING"
     )
 
     local borked3ds_missing=0
