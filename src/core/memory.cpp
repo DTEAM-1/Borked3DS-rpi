@@ -105,6 +105,23 @@ public:
     std::shared_ptr<BackingMem> n3ds_extra_ram_mem;
     std::shared_ptr<BackingMem> dsp_mem;
 
+    // Cached PLG_LDR pointer to avoid expensive named_ports string lookup on every
+    // rasterizer flush (RasterizerFlushVirtualRegion is called on every JIT memory
+    // read/write, making GetService() a ~40% CPU overhead during FMV playback).
+    mutable std::shared_ptr<Service::PLGLDR::PLG_LDR> cached_plg_ldr;
+    mutable bool plg_ldr_cache_valid = false;
+
+    //gvx64: return a raw pointer instead of a shared_ptr copy. cached_plg_ldr still owns the
+    //gvx64: object; the by-value copy cost two atomic refcount ops per call, and this is called
+    //gvx64: from RasterizerFlushVirtualRegion on every rasterizer-cached guest memory access.
+    Service::PLGLDR::PLG_LDR* GetCachedPLGLDR() const { //gvx64
+        if (!plg_ldr_cache_valid && system.KernelRunning()) {
+            cached_plg_ldr = Service::PLGLDR::GetService(system);
+            plg_ldr_cache_valid = true;
+        }
+        return cached_plg_ldr.get(); //gvx64
+    }
+
     Impl(Core::System& system_);
 
     const u8* GetPtr(Region r) const {
@@ -191,7 +208,7 @@ public:
                     RasterizerFlushVirtualRegion(current_vaddr, static_cast<u32>(copy_amount),
                                                  FlushMode::Flush);
                 }
-                std::memcpy(dest_buffer, GetPointerForRasterizerCache(current_vaddr), copy_amount);
+                std::memcpy(dest_buffer, GetRawPointerForRasterizerCache(current_vaddr), copy_amount); //gvx64
                 break;
             }
             default:
@@ -237,7 +254,7 @@ public:
                     RasterizerFlushVirtualRegion(current_vaddr, static_cast<u32>(copy_amount),
                                                  FlushMode::Invalidate);
                 }
-                std::memcpy(GetPointerForRasterizerCache(current_vaddr), src_buffer, copy_amount);
+                std::memcpy(GetRawPointerForRasterizerCache(current_vaddr), src_buffer, copy_amount); //gvx64
                 break;
             }
             default:
@@ -262,7 +279,7 @@ public:
             return {vram_mem, addr - VRAM_VADDR};
         }
         if (addr >= PLUGIN_3GX_FB_VADDR && addr < PLUGIN_3GX_FB_VADDR_END) {
-            auto plg_ldr = Service::PLGLDR::GetService(system);
+            auto plg_ldr = GetCachedPLGLDR();
             if (plg_ldr) {
                 return {fcram_mem,
                         addr - PLUGIN_3GX_FB_VADDR + plg_ldr->GetPluginFBAddr() - FCRAM_PADDR};
@@ -271,6 +288,25 @@ public:
 
         UNREACHABLE();
         return MemoryRef{};
+    }
+
+    //gvx64: raw-pointer twin of GetPointerForRasterizerCache for per-access hot paths
+    //gvx64: (Read/Write/WriteExclusive/ReadBlock/WriteBlock). Building a MemoryRef costs a
+    //gvx64: shared_ptr copy+release (2 atomics, outlined on A72) plus 3 virtual calls per access.
+    //gvx64: fcram/vram are unique_ptr<u8[]> members that serialize() loads in place, so these
+    //gvx64: base pointers are stable for the MemorySystem lifetime, including savestate loads.
+    u8* GetRawPointerForRasterizerCache(VAddr addr) const {
+        if (addr >= LINEAR_HEAP_VADDR && addr < LINEAR_HEAP_VADDR_END) {
+            return fcram.get() + (addr - LINEAR_HEAP_VADDR);
+        }
+        if (addr >= NEW_LINEAR_HEAP_VADDR && addr < NEW_LINEAR_HEAP_VADDR_END) {
+            return fcram.get() + (addr - NEW_LINEAR_HEAP_VADDR);
+        }
+        if (addr >= VRAM_VADDR && addr < VRAM_VADDR_END) {
+            return vram.get() + (addr - VRAM_VADDR);
+        }
+        //gvx64: rare plugin-FB region (and error path) keep the original MemoryRef route
+        return GetPointerForRasterizerCache(addr).GetPtr();
     }
 
     void RasterizerFlushVirtualRegion(VAddr start, u32 size, FlushMode mode) {
@@ -305,7 +341,7 @@ public:
         CheckRegion(LINEAR_HEAP_VADDR, LINEAR_HEAP_VADDR_END, FCRAM_PADDR);
         CheckRegion(NEW_LINEAR_HEAP_VADDR, NEW_LINEAR_HEAP_VADDR_END, FCRAM_PADDR);
         CheckRegion(VRAM_VADDR, VRAM_VADDR_END, VRAM_PADDR);
-        auto plg_ldr = Service::PLGLDR::GetService(system);
+        auto plg_ldr = GetCachedPLGLDR();
         if (plg_ldr && plg_ldr->GetPluginFBAddr()) {
             CheckRegion(PLUGIN_3GX_FB_VADDR, PLUGIN_3GX_FB_VADDR_END, plg_ldr->GetPluginFBAddr());
         }
@@ -484,7 +520,7 @@ T MemorySystem::Read(const VAddr vaddr) {
         RasterizerFlushVirtualRegion(vaddr, sizeof(T), FlushMode::Flush);
 
         T value;
-        std::memcpy(&value, GetPointerForRasterizerCache(vaddr), sizeof(T));
+        std::memcpy(&value, impl->GetRawPointerForRasterizerCache(vaddr), sizeof(T)); //gvx64
         return value;
     }
     default:
@@ -531,7 +567,7 @@ void MemorySystem::Write(const VAddr vaddr, const T data) {
         break;
     case PageType::RasterizerCachedMemory: {
         RasterizerFlushVirtualRegion(vaddr, sizeof(T), FlushMode::Invalidate);
-        std::memcpy(GetPointerForRasterizerCache(vaddr), &data, sizeof(T));
+        std::memcpy(impl->GetRawPointerForRasterizerCache(vaddr), &data, sizeof(T)); //gvx64
         break;
     }
     default:
@@ -561,7 +597,7 @@ bool MemorySystem::WriteExclusive(const VAddr vaddr, const T data, const T expec
     case PageType::RasterizerCachedMemory: {
         RasterizerFlushVirtualRegion(vaddr, sizeof(T), FlushMode::Invalidate);
         const auto volatile_pointer =
-            reinterpret_cast<volatile T*>(GetPointerForRasterizerCache(vaddr).GetPtr());
+            reinterpret_cast<volatile T*>(impl->GetRawPointerForRasterizerCache(vaddr)); //gvx64
         return Common::AtomicCompareAndSwap(volatile_pointer, data, expected);
     }
     default:
@@ -698,7 +734,7 @@ std::vector<VAddr> MemorySystem::PhysicalToVirtualAddressForRasterizer(PAddr add
         return {addr - VRAM_PADDR + VRAM_VADDR};
     }
     // NOTE: Order matters here.
-    auto plg_ldr = Service::PLGLDR::GetService(impl->system);
+    auto plg_ldr = impl->GetCachedPLGLDR();
     if (plg_ldr) {
         auto fb_addr = plg_ldr->GetPluginFBAddr();
         if (addr >= fb_addr && addr < fb_addr + PLUGIN_3GX_FB_SIZE) {
