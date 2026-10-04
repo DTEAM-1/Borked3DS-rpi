@@ -418,12 +418,32 @@ void DspHle::Impl::AudioTickCallback(s64 cycles_late) {
     }
 
     // Reschedule recurrent event
-    const double time_scale =
+    // gvx64: Realtime-audio fatal hang fix. time_scale = (avg of last two host frame
+    // gvx64: lengths) / 16.7ms, with no upper bound. A burst of HW-shader glLinkProgram
+    // gvx64: stalls (~0.4s each) can make one frame last seconds, spiking time_scale to
+    // gvx64: 100x+ and driving adjusted_ticks to <= 0. The DSP event then refires
+    // gvx64: back-to-back until two more frames complete, flooding the guest with hundreds
+    // gvx64: of audio-pipe interrupts and desyncing the game's audio thread (symptom:
+    // gvx64: Speed ~125%, Game 0 FPS, game threads blocked). Clamp time_scale and floor
+    // gvx64: the reschedule delay so a stall can never produce an interrupt flood.
+    constexpr double kMaxRealtimeTimeScale = 3.0; // gvx64: covers games at >= 33% speed
+    constexpr s64 kMinAudioTickDelay = static_cast<s64>(audio_frame_ticks / 8); // gvx64
+    const double raw_time_scale =
         Settings::values.enable_realtime_audio
             ? std::max(0.01, // Arbitrary small value to prevent time_scale from approaching zero
                        Core::System::GetInstance().GetStableFrameTimeScale())
             : 1.0;
+    const double time_scale = std::min(raw_time_scale, kMaxRealtimeTimeScale); // gvx64
+    // v398 : marqueur unique quand la borne joue (diagnostic du gel audio temps reel).
+    static bool v398_clamp_logged = false;
+    if (!v398_clamp_logged && raw_time_scale > kMaxRealtimeTimeScale) {
+        v398_clamp_logged = true;
+        LOG_WARNING(Audio_DSP, "V398_AUDIO_BORNE time_scale={:.1f} borne={:.1f}", raw_time_scale,
+                    kMaxRealtimeTimeScale);
+    }
+
     s64 adjusted_ticks = static_cast<s64>(audio_frame_ticks / time_scale - cycles_late);
+    adjusted_ticks = std::max(adjusted_ticks, kMinAudioTickDelay); // gvx64: never at/before "now"
     core_timing.ScheduleEvent(adjusted_ticks, tick_event);
 }
 
