@@ -281,11 +281,25 @@ static QString PrettyProductName() {
 //     sont PAS posees : elles se remettent a la main sur une ligne de test.
 //   - Echappatoire : BORKED3DS_V3DV_NO_DEFAULTS=1 (aucune variable V3DV posee).
 // Journal : V389_DEFAUTS_VULKAN.
+//
+// v400 : les memes reglages s'appliquent sur PC x86_64 Linux (cible x86_64 de borked3ds.sh).
+// Les valeurs ont ete mises au point sur Pi 5 / V3DV ; sur un GPU de PC elles n'ont jamais ete
+// mesurees. Echappatoire inchangee : BORKED3DS_V3DV_NO_DEFAULTS=1. Le journal V389 indique
+// l'architecture (V400_ARCH=).
 // ---------------------------------------------------------------------------------------------
+#if defined(__linux__) && (defined(__aarch64__) || defined(__x86_64__))
+#define BORKED3DS_V389_PLATFORM_DEFAULTS 1
+#if defined(__x86_64__)
+#define BORKED3DS_V400_ARCH "x86_64"
+#else
+#define BORKED3DS_V400_ARCH "aarch64"
+#endif
+#endif
+
 namespace {
 
 void V389ApplyPlatformDefaults() {
-#if defined(__linux__) && defined(__aarch64__)
+#if defined(BORKED3DS_V389_PLATFORM_DEFAULTS)
     // Environnement du lanceur RetroPie (XINIT-WM) : X11 via xcb, SDL ne minimise pas la
     // fenetre a la perte de focus, extension GLES des buffers de textures pour OpenGL, aucune
     // couche Vulkan externe.
@@ -298,7 +312,7 @@ void V389ApplyPlatformDefaults() {
 }
 
 void V389ApplyV3dvDefaults() {
-#if defined(__linux__) && defined(__aarch64__)
+#if defined(BORKED3DS_V389_PLATFORM_DEFAULTS)
     if (Settings::values.graphics_api.GetValue() != Settings::GraphicsAPI::Vulkan) {
         return;
     }
@@ -338,8 +352,8 @@ void V389ApplyV3dvDefaults() {
         setenv(name, value, 0);
         ++posees;
     }
-    LOG_WARNING(Frontend, "V389_DEFAUTS_VULKAN posees={} deja_presentes={} total={}", posees,
-                deja, defaults.size());
+    LOG_WARNING(Frontend, "V389_DEFAUTS_VULKAN posees={} deja_presentes={} total={} V400_ARCH={}",
+                posees, deja, defaults.size(), BORKED3DS_V400_ARCH);
 #endif
 }
 
@@ -352,7 +366,7 @@ void V389ApplyV3dvDefaults() {
 //   BORKED3DS_V3DV_V391_LITE_SPEC=K   : lumieres avec speculaire parmi celles calculees (option).
 //   BORKED3DS_V3DV_V391_NO_LITE=1     : desactive l'allegement meme pour Luigi.
 void V391ApplyPerGameLighting(u64 title_id) {
-#if defined(__linux__) && defined(__aarch64__)
+#if defined(BORKED3DS_V389_PLATFORM_DEFAULTS)
     static bool posee_par_nous = false;
     if (posee_par_nous) {
         unsetenv("BORKED3DS_V3DV_V391_LITE_LIGHTS");
