@@ -1,34 +1,40 @@
 #!/usr/bin/env bash
 
 rp_module_id="borked3ds"
-rp_module_desc="Borked3DS – Nintendo 3DS Emulator (Pi5: DTEAM-1 Vulkan V3DV / Pi4: gvx64 OpenGL-GLES)"
+rp_module_desc="Borked3DS – Nintendo 3DS Emulator (Pi5 / x86_64: DTEAM-1 Vulkan / Pi4: gvx64 OpenGL-GLES)"
 rp_module_help="ROM Extensions: .3ds .cia .cxi"
 rp_module_licence="GPL3 https://github.com/DTEAM-1/Borked3DS-rpi"
 rp_module_repo=""
 rp_module_section="exp"
-rp_module_flags="!all rpi4 rpi5 !32bit"
+rp_module_flags="!all rpi4 rpi5 x86 !32bit"
 
 ################################
-# TARGET DETECTION (v398)
+# TARGET DETECTION (v398, x86_64 added in v400)
 #
-# One scriptmodule, two forks:
+# One scriptmodule, two forks, three targets:
 #   - Raspberry Pi 5 (and Pi 500 / CM5): DTEAM-1/Borked3DS-rpi, Vulkan V3DV by default
 #     (code defaults, settings.h), built with Clang.
 #   - Raspberry Pi 4 (and Pi 400 / CM4): gvx64/Borked3DS-rpi, OpenGL with GLES, built
 #     exactly like RetroPie-Extra (system compiler, RetroPie CFLAGS,
 #     DYNARMIC_USE_BUNDLED_EXTERNALS=OFF), the build gvx64 tests on his Pi4s.
+#   - x86_64 PC (v400): DTEAM-1/Borked3DS-rpi with the Pi5 runtime defaults (Vulkan, same
+#     BORKED3DS_V3DV_* settings, see V389ApplyV3dvDefaults in main.cpp), built with the
+#     system compiler, no ARM flags, bundled libraries except Qt and SDL2.
 # Supported OS: Raspberry Pi OS / Debian Bookworm (12) and Trixie (13), 64-bit only.
+# x86_64: any Debian/Ubuntu RetroPie install; needs GCC >= 13 or Clang >= 16 (C++23).
 #
 # Overrides (tests only), passed through sudo -E:
-#   BORKED3DS_TARGET=pi4|pi5   force the target instead of detecting it
+#   BORKED3DS_TARGET=pi4|pi5|x86_64   force the target instead of detecting it
 #   BORKED3DS_REPO=<git url>   force the repository (default chosen by target)
 #   BORKED3DS_LOCAL_SRC=<dir>  build a local tree (see sources_borked3ds)
 ################################
 
 function _target_borked3ds() {
     case "${BORKED3DS_TARGET:-}" in
-        pi4|pi5) echo "$BORKED3DS_TARGET"; return ;;
+        pi4|pi5|x86_64) echo "$BORKED3DS_TARGET"; return ;;
     esac
+    # PC: no device tree, the CPU architecture is enough.
+    if [ "$(uname -m)" = "x86_64" ]; then echo "x86_64"; return; fi
     # Device tree first: it names the board exactly, whatever the RetroPie-Setup version.
     local model
     model="$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null )"
@@ -99,18 +105,23 @@ function depends_borked3ds() {
     echo "DEPOT : $(_repo_borked3ds)"
     echo "=========================================================="
 
-    if [ "$(uname -m)" != "aarch64" ]; then
-        md_ret_errors+=("Borked3DS-rpi exige un systeme 64 bits (aarch64) ; detecte : $(uname -m).")
-        return 1
-    fi
     if [ "$target" = "inconnu" ]; then
-        md_ret_errors+=("Carte non reconnue (ni Pi4 ni Pi5). Forcer avec BORKED3DS_TARGET=pi4 ou pi5.")
+        md_ret_errors+=("Machine non reconnue (ni Pi4, ni Pi5, ni x86_64). Forcer avec BORKED3DS_TARGET=pi4, pi5 ou x86_64.")
         return 1
     fi
-    case "$codename" in
-        bookworm|trixie) ;;
-        *) echo "ATTENTION : OS '$codename' non teste (Bookworm et Trixie seulement)." ;;
-    esac
+    # Each target is built for its own 64-bit architecture only (no cross-compilation).
+    local want_arch="aarch64"
+    [ "$target" = "x86_64" ] && want_arch="x86_64"
+    if [ "$(uname -m)" != "$want_arch" ]; then
+        md_ret_errors+=("Cible $target : systeme 64 bits $want_arch exige ; detecte : $(uname -m).")
+        return 1
+    fi
+    if [ "$target" != "x86_64" ]; then
+        case "$codename" in
+            bookworm|trixie) ;;
+            *) echo "ATTENTION : OS '$codename' non teste (Bookworm et Trixie seulement)." ;;
+        esac
+    fi
 
     local depends=(
         cmake ninja-build build-essential git pkg-config python3 binutils
@@ -131,6 +142,9 @@ function depends_borked3ds() {
     if [ "$target" = "pi4" ]; then
         # Extra packages of the RetroPie-Extra module used by gvx64.
         depends+=(libssl-dev libfdk-aac-dev)
+    elif [ "$target" = "x86_64" ]; then
+        # x86_64: Mesa Vulkan drivers (Intel, AMD); an NVIDIA card uses its own driver.
+        depends+=(mesa-vulkan-drivers)
     else
         # Pi5: Vulkan driver (already present when Mesa comes from trixie-backports).
         depends+=(mesa-vulkan-drivers)
@@ -138,6 +152,19 @@ function depends_borked3ds() {
     fi
 
     getDepends "${depends[@]}"
+
+    # x86_64: the tree is C++23 (upstream builds Linux with Clang 19 or GCC 14). Report the
+    # system compiler and stop early if it is clearly too old, rather than after an hour.
+    if [ "$target" = "x86_64" ]; then
+        local cxx_bin="${CXX:-c++}" cxx_id cxx_major
+        cxx_id="$("$cxx_bin" --version 2>/dev/null | head -1)"
+        cxx_major="$("$cxx_bin" -dumpversion 2>/dev/null | cut -d. -f1)"
+        echo "Compilateur systeme : ${cxx_id:-introuvable}"
+        case "$cxx_id" in
+            *clang*) [ "${cxx_major:-0}" -lt 16 ] && { md_ret_errors+=("Clang $cxx_major trop ancien pour cet arbre C++23 (16 minimum)."); return 1; } ;;
+            *)       [ "${cxx_major:-0}" -lt 13 ] && { md_ret_errors+=("GCC $cxx_major trop ancien pour cet arbre C++23 (13 minimum ; Ubuntu 24.04 ou Debian Trixie)."); return 1; } ;;
+        esac
+    fi
 
     # Pi5: report the Mesa version. The fork is tuned on Mesa 26.1.2 (trixie-backports);
     # Raspberry Pi OS Bookworm ships Mesa 24.x, which runs V3DV Vulkan 1.3 but is untested.
@@ -271,9 +298,12 @@ function sources_borked3ds() {
     cmake_bin="$(_cmake_borked3ds)"
     if [ "$cmake_bin" != "cmake" ] && [ ! -x "$cmake_bin" ]; then
         local cmake_dir="${cmake_bin%/bin/cmake}"
-        echo "CMake systeme < 3.26 : telechargement de CMake $BORKED3DS_CMAKE_VERSION (aarch64) dans $cmake_dir"
+        # Kitware names its Linux tarballs after uname -m (aarch64 or x86_64).
+        local cmake_arch
+        cmake_arch="$(uname -m)"
+        echo "CMake systeme < 3.26 : telechargement de CMake $BORKED3DS_CMAKE_VERSION ($cmake_arch) dans $cmake_dir"
         mkdir -p "$cmake_dir"
-        downloadAndExtract "https://github.com/Kitware/CMake/releases/download/v$BORKED3DS_CMAKE_VERSION/cmake-$BORKED3DS_CMAKE_VERSION-linux-aarch64.tar.gz" "$cmake_dir" --strip-components 1
+        downloadAndExtract "https://github.com/Kitware/CMake/releases/download/v$BORKED3DS_CMAKE_VERSION/cmake-$BORKED3DS_CMAKE_VERSION-linux-$cmake_arch.tar.gz" "$cmake_dir" --strip-components 1
         if [ ! -x "$cmake_bin" ]; then
             echo "!! Telechargement de CMake echoue. Abandon."
             exit 1
@@ -390,7 +420,31 @@ function build_borked3ds() {
     # USE_SYSTEM_QT=ON: without it CMake tries to download an x86_64 Qt with pip/aqt. That
     # only fails harmlessly today because Debian blocks pip (PEP 668); make it explicit.
 
-    if [ "$target" = "pi4" ]; then
+    if [ "$target" = "x86_64" ]; then
+        ################################
+        # x86_64 / DTEAM-1 (v400): system compiler (CC/CXX respected if set), no -march at
+        # all: no ARM option, and a binary that runs on any x86_64 CPU (dynarmic and the
+        # shader JIT detect SSE/AVX at run time). The top CMakeLists computes its own
+        # SIMD_FLAGS before project(), so they are empty and add nothing.
+        # Libraries: the bundled submodules (what upstream ships for desktop Linux), except
+        # Qt and SDL2 which come from the system like on the Pi. USE_SYSTEM_LIBS=ON would
+        # require system dynarmic, glslang, cubeb, Catch2... that x86 distributions lack.
+        # -Werror is stripped in sources_borked3ds() and disabled here for GCC.
+        ################################
+        echo "Compilateur : ${CXX:-c++} ($("${CXX:-c++}" --version 2>/dev/null | head -1))"
+        "$cmake_bin" .. \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-O3" \
+            -DCMAKE_CXX_FLAGS="-O3" \
+            -DENABLE_QT=ON \
+            -DENABLE_SDL2=ON \
+            -DENABLE_TESTS=OFF \
+            -DBORKED3DS_WARNINGS_AS_ERRORS=OFF \
+            -DUSE_SYSTEM_LIBS=OFF \
+            -DUSE_SYSTEM_QT=ON \
+            -DUSE_SYSTEM_SDL2=ON
+    elif [ "$target" = "pi4" ]; then
         ################################
         # PI4 / gvx64: OpenGL-GLES build, as in RetroPie-Extra: system compiler (GCC) and
         # RetroPie's CFLAGS for the Cortex-A72. No +crypto: the Pi4 SoC has no ARMv8
@@ -438,11 +492,18 @@ function build_borked3ds() {
     fi
 
     # Pi4 4 GB: one job per core can run out of RAM on the big translation units.
-    local jobs
+    local jobs mem_mb
     jobs="$(nproc)"
-    if [ "$target" = "pi4" ] && [ "$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)" -lt 6000 ]; then
+    mem_mb="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+    if [ "$target" = "pi4" ] && [ "$mem_mb" -lt 6000 ]; then
         jobs=2
         echo "Pi4 avec moins de 6 Go de RAM : compilation sur $jobs coeurs."
+    fi
+    # x86_64: GCC needs up to ~2 GB per job on the largest files; cap the jobs by RAM.
+    if [ "$target" = "x86_64" ] && [ $((mem_mb / 2000)) -lt "$jobs" ]; then
+        jobs=$((mem_mb / 2000))
+        [ "$jobs" -lt 1 ] && jobs=1
+        echo "x86_64 avec $mem_mb Mo de RAM : compilation sur $jobs coeurs."
     fi
 
     ninja -j"$jobs"
@@ -542,6 +603,7 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
     #     memory hot path, GLES copy_image/CopyTextures fixes) (v398)
     #   V399_SVC_TIMING : per-SVC hardware cycle counts (gvx64 99a0d7e / Azahar #1093); escape hatch
     #     BORKED3DS_V3DV_V399_NO_SVC_TIMING=1 restores the old +150 ticks in GetSystemTick (v399)
+    #   V400_ARCH= : the Pi5 runtime defaults (V389/V391) are compiled in on x86_64 too (v400)
     # To add a marker, append it to borked3ds_markers.
     ################################
 
@@ -560,7 +622,7 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         echo "Commit compile : INCONNU"
     fi
 
-    # The markers and the Vulkan cache below belong to the DTEAM-1 fork (Pi5) only.
+    # The markers and the Vulkan cache below belong to the DTEAM-1 fork (Pi5, x86_64) only.
     if [ "$target" = "pi4" ]; then
         echo "Cible pi4 (gvx64, OpenGL-GLES) : verification des marqueurs DTEAM-1 sans objet."
         echo "=========================================================="
@@ -616,12 +678,17 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         "BORKED3DS_V3DV_V398_NO_IDLE_EVICT"
         "V399_SVC_TIMING actif="
         "BORKED3DS_V3DV_V399_NO_SVC_TIMING"
+        "V400_ARCH="
     )
 
+    # strings runs once (the binary is ~90 MB) into a temporary file; grep reads the file,
+    # so no "strings | grep -q" pipe can be cut short (SIGPIPE under pipefail = false ABSENT).
     local borked3ds_missing=0
-    local m
+    local m bin_strings
+    bin_strings="$(mktemp)"
+    strings -a "$md_inst/borked3ds" > "$bin_strings"
     for m in "${borked3ds_markers[@]}"; do
-        if strings -a "$md_inst/borked3ds" | grep -aqF "$m"; then
+        if grep -aqF -- "$m" "$bin_strings"; then
             printf "  OK      %s\n" "$m"
         else
             printf "  ABSENT  %s\n" "$m"
@@ -640,11 +707,12 @@ open('$sonic_eu_data/network_id.dat', 'wb').write(data)
         "BORKED3DS_V3DV_DIRA_FORCE_DYNSTATE"
     )
     for m in "${borked3ds_removed[@]}"; do
-        if strings -a "$md_inst/borked3ds" | grep -aqF "$m"; then
+        if grep -aqF -- "$m" "$bin_strings"; then
             printf "  PERIME  %s (devrait avoir disparu)\n" "$m"
             borked3ds_missing=1
         fi
     done
+    rm -f "$bin_strings"
 
     if [ "$borked3ds_missing" -ne 0 ]; then
         echo ""
@@ -740,8 +808,8 @@ function configure_borked3ds() {
     # (use_gles=true). Both keys need the double write key=value + key\default=false,
     # otherwise the code default wins.
     # A key the user already set by hand (key\default=false) is left alone, and nothing
-    # else is touched (never the gamepad). The Pi5 needs nothing here: Vulkan is the code
-    # default of the DTEAM-1 fork.
+    # else is touched (never the gamepad). The Pi5 and x86_64 need nothing here: Vulkan is
+    # the code default of the DTEAM-1 fork.
     ################################
     local target
     target="$(cat "$md_inst/.borked3ds_target" 2>/dev/null || _target_borked3ds)"
