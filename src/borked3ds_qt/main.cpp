@@ -3674,6 +3674,19 @@ void GMainWindow::UpdateStatusBar() {
 
     auto results = system.GetAndResetPerfStats();
 
+    // V403 : sonde de vitesse dans le log, active seulement si BORKED3DS_V403_VITESSE est presente
+    // dans l'environnement. Une ligne par mise a jour de la barre d'etat (1 s), y compris en plein
+    // ecran ou la barre est cachee : vitesse d'emulation, FPS du jeu (echanges d'images GSP), FPS
+    // systeme (VBlank LCD) et travail par image hors attentes du limiteur.
+    static const bool v403_vitesse = std::getenv("BORKED3DS_V403_VITESSE") != nullptr;
+    if (v403_vitesse) {
+        LOG_WARNING(Frontend,
+                    "V403_VITESSE vitesse_pct={:.1f} fps_jeu={:.1f} fps_systeme={:.1f} "
+                    "travail_ms={:.2f}",
+                    results.emulation_speed * 100.0, results.game_fps, results.system_fps,
+                    results.frametime * 1000.0);
+    }
+
     if (show_artic_label) {
         const bool do_mb = results.artic_transmitted >= (1000.0 * 1000.0);
         const double value = do_mb ? (results.artic_transmitted / (1000.0 * 1000.0))
