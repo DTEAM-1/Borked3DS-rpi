@@ -8056,10 +8056,50 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     const bool using_color_fb =
         regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress() != 0 && write_color_fb;
-    const bool using_depth_fb =
+    const bool v404_depth_needed =
         !shadow_rendering && regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress() != 0 &&
         (write_depth_fb || regs.framebuffer.output_merger.depth_test_enable != 0 ||
          (has_stencil && pipeline_info.depth_stencil.stencil_test_enable));
+
+    // V404 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V404_KEEP_DEPTH=1.
+    // TB112A (Castlevania) : ~200 changements de framebuffer par image pour 404 draws. Le meme
+    // tampon couleur alterne entre un framebuffer "couleur + depth" (draws avec test ou ecriture
+    // de profondeur) et un framebuffer "couleur seule" (draws sans profondeur) : chaque
+    // alternance ferme et rouvre le render pass (vk_render_manager.cpp, BeginRendering), et sur
+    // V3D (GPU a tuiles) chaque reouverture recharge puis reecrit toutes les tuiles.
+    // Ici, un draw qui n'utilise pas la profondeur garde le depth attache SEULEMENT si le draw
+    // precedent qui l'utilisait visait le meme tampon couleur et le meme tampon depth (cas exact
+    // de l'alternance observee). Le pipeline de ce draw a deja le test et l'ecriture de
+    // profondeur coupes (SyncDepthTest : test_enabled = test || write = 0), donc rien n'est lu
+    // ni ecrit dans le depth : seul le framebuffer cesse de changer.
+    // Sans la variable : comportement strictement identique a v403.
+    static const bool v404_keep_depth = IsEnvEnabled("BORKED3DS_V3DV_V404_KEEP_DEPTH");
+    static PAddr v404_last_color_addr = 0;
+    static PAddr v404_last_depth_addr = 0;
+    const PAddr v404_color_addr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
+    const PAddr v404_depth_addr = regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress();
+    bool v404_kept = false;
+    if (v404_keep_depth) {
+        static bool v404_logged = false;
+        if (!v404_logged) {
+            v404_logged = true;
+            LOG_WARNING(Render_Vulkan,
+                        "V404_KEEP_DEPTH actif=1 (mesure : depth garde attache entre draws "
+                        "avec et sans profondeur sur le meme tampon couleur)");
+        }
+        if (v404_depth_needed) {
+            v404_last_color_addr = v404_color_addr;
+            v404_last_depth_addr = v404_depth_addr;
+        } else if (using_color_fb && !shadow_rendering && v404_color_addr != 0 &&
+                   v404_depth_addr != 0 &&
+                   v404_color_addr == v404_last_color_addr &&
+                   v404_depth_addr == v404_last_depth_addr &&
+                   regs.framebuffer.output_merger.depth_test_enable == 0 &&
+                   regs.framebuffer.output_merger.depth_write_enable == 0) {
+            v404_kept = true;
+        }
+    }
+    const bool using_depth_fb = v404_depth_needed || v404_kept;
 
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_get_framebuffer_surfaces");
