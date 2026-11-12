@@ -42,6 +42,13 @@
 #include "video_core/shader/generator/glsl_shader_gen.h"
 #include "video_core/texture/texture_decode.h"
 
+// V405 : reperage du tampon de l'oeil droit, fait dans video_core/gpu.cpp (display transfer).
+namespace VideoCore {
+extern std::atomic<u32> g_v405_right_src;
+extern std::atomic<u64> g_v405_transfer_seq;
+extern std::atomic<u64> g_v405_confirm_seq;
+} // namespace VideoCore
+
 namespace Vulkan {
 
 std::atomic<u64> g_vk_draw_counter{0};
@@ -7992,6 +7999,35 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             return true;
         }
     }
+    // V405 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE=1. Voir le bloc
+    // explicatif dans video_core/gpu.cpp. Saute un draw seulement si son tampon couleur est
+    // EXACTEMENT celui que le jeu vient de copier vers l'ecran droit (confirme dans les 12
+    // derniers display transfers), avec la 3D coupee et l'oeil gauche affiche. Meme sortie propre
+    // que les autres draws supprimes (vertex_batch.clear, return true). Hors census : la baisse
+    // de draws recenses mesure directement ce qui est saute.
+    {
+        static const bool v405_skip_right_eye = IsEnvEnabled("BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE");
+        if (v405_skip_right_eye) {
+            const u32 v405_right_src = VideoCore::g_v405_right_src.load(std::memory_order_relaxed);
+            const u64 v405_seq = VideoCore::g_v405_transfer_seq.load(std::memory_order_relaxed);
+            const u64 v405_confirm =
+                VideoCore::g_v405_confirm_seq.load(std::memory_order_relaxed);
+            if (v405_right_src != 0 && v405_seq >= v405_confirm && v405_seq - v405_confirm <= 12 &&
+                Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off &&
+                Settings::values.mono_render_option.GetValue() ==
+                    Settings::MonoRenderOption::LeftEye &&
+                !regs.framebuffer.IsShadowRendering() &&
+                regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress() == v405_right_src) {
+                static u64 v405_skipped = 0;
+                if ((++v405_skipped % 6000) == 1) {
+                    LOG_WARNING(Render_Vulkan, "V405_OEIL_DROIT draws_sautes={} tampon=0x{:08x}",
+                                v405_skipped, v405_right_src);
+                }
+                vertex_batch.clear();
+                return true;
+            }
+        }
+    }
     if (IsA7Z12FrameCensusEnabled()) {
         g_a7z12_draws_entered.fetch_add(1, std::memory_order_relaxed);
         // Repartition VS materiel / VS software : le chemin software execute le vertex
@@ -8056,50 +8092,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
 
     const bool using_color_fb =
         regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress() != 0 && write_color_fb;
-    const bool v404_depth_needed =
+    const bool using_depth_fb =
         !shadow_rendering && regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress() != 0 &&
         (write_depth_fb || regs.framebuffer.output_merger.depth_test_enable != 0 ||
          (has_stencil && pipeline_info.depth_stencil.stencil_test_enable));
-
-    // V404 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V404_KEEP_DEPTH=1.
-    // TB112A (Castlevania) : ~200 changements de framebuffer par image pour 404 draws. Le meme
-    // tampon couleur alterne entre un framebuffer "couleur + depth" (draws avec test ou ecriture
-    // de profondeur) et un framebuffer "couleur seule" (draws sans profondeur) : chaque
-    // alternance ferme et rouvre le render pass (vk_render_manager.cpp, BeginRendering), et sur
-    // V3D (GPU a tuiles) chaque reouverture recharge puis reecrit toutes les tuiles.
-    // Ici, un draw qui n'utilise pas la profondeur garde le depth attache SEULEMENT si le draw
-    // precedent qui l'utilisait visait le meme tampon couleur et le meme tampon depth (cas exact
-    // de l'alternance observee). Le pipeline de ce draw a deja le test et l'ecriture de
-    // profondeur coupes (SyncDepthTest : test_enabled = test || write = 0), donc rien n'est lu
-    // ni ecrit dans le depth : seul le framebuffer cesse de changer.
-    // Sans la variable : comportement strictement identique a v403.
-    static const bool v404_keep_depth = IsEnvEnabled("BORKED3DS_V3DV_V404_KEEP_DEPTH");
-    static PAddr v404_last_color_addr = 0;
-    static PAddr v404_last_depth_addr = 0;
-    const PAddr v404_color_addr = regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress();
-    const PAddr v404_depth_addr = regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress();
-    bool v404_kept = false;
-    if (v404_keep_depth) {
-        static bool v404_logged = false;
-        if (!v404_logged) {
-            v404_logged = true;
-            LOG_WARNING(Render_Vulkan,
-                        "V404_KEEP_DEPTH actif=1 (mesure : depth garde attache entre draws "
-                        "avec et sans profondeur sur le meme tampon couleur)");
-        }
-        if (v404_depth_needed) {
-            v404_last_color_addr = v404_color_addr;
-            v404_last_depth_addr = v404_depth_addr;
-        } else if (using_color_fb && !shadow_rendering && v404_color_addr != 0 &&
-                   v404_depth_addr != 0 &&
-                   v404_color_addr == v404_last_color_addr &&
-                   v404_depth_addr == v404_last_depth_addr &&
-                   regs.framebuffer.output_merger.depth_test_enable == 0 &&
-                   regs.framebuffer.output_merger.depth_write_enable == 0) {
-            v404_kept = true;
-        }
-    }
-    const bool using_depth_fb = v404_depth_needed || v404_kept;
 
     if (a7z40_draw_wrapper_trace) {
         V114ShaderMultiplexFileTraceRaw("v115d_a7z40 before_get_framebuffer_surfaces");
