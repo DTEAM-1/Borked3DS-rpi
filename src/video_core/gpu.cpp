@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <atomic>
 #include <cstdlib>
 
 #include "common/archives.h"
@@ -48,7 +49,33 @@ bool IsA7Z68GpuExecuteSubmitTraceEnabled() {
     return enabled;
 }
 
+bool IsV405SkipRightEyeEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
 } // namespace
+
+// V405 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE=1.
+// TB115 (Castlevania) : le jeu dessine chaque image deux fois, oeil gauche et oeil droit, draw par
+// draw en alternance, meme avec le curseur 3D annonce a 0 ; a chaque image, le tampon de l'oeil
+// droit est copie (display transfer) vers le framebuffer droit de l'ecran du haut. 3D coupee,
+// l'emulateur n'affiche que l'oeil gauche : tout le travail de l'oeil droit est perdu, et
+// l'alternance ferme et rouvre le render pass Vulkan ~240 fois par image (GPU a tuiles).
+// Ici on repere le tampon SOURCE d'un display transfer dont la destination est exactement l'une
+// des deux adresses droites de l'ecran du haut (et differente des adresses gauches). Le
+// rasterizer Vulkan saute ensuite les draws dont le tampon couleur est exactement ce tampon
+// (voir vk_rasterizer.cpp, Draw), seulement si la 3D est coupee, l'oeil affiche est le gauche,
+// et le reperage a ete confirme dans les 12 derniers transferts.
+// Ce n'est PAS le mecanisme d'Azahar (right_eye_disabler, qui bloque des listes de commandes
+// entieres et coupait la moitie de l'ecran de Kid Icarus) : ici, seuls les draws vers le tampon
+// exact de l'oeil droit sont sautes.
+std::atomic<u32> g_v405_right_src{0};
+std::atomic<u64> g_v405_transfer_seq{0};
+std::atomic<u64> g_v405_confirm_seq{0};
 
 GPU::GPU(Core::System& system, Frontend::EmuWindow& emu_window,
          Frontend::EmuWindow* secondary_window)
@@ -503,6 +530,45 @@ void GPU::MemoryTransfer() {
         }
     } else {
         BORKED3DS_PROFILE("GPU", "Display Transfer");
+        if (IsV405SkipRightEyeEnabled()) {
+            const u64 v405_seq = g_v405_transfer_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+            const auto& top = impl->pica.regs.framebuffer_config[0];
+            const PAddr v405_src = config.GetPhysicalInputAddress();
+            const PAddr v405_dst = config.GetPhysicalOutputAddress();
+            const bool v405_right1 = v405_dst != 0 && v405_dst == top.address_right1 &&
+                                     top.address_right1 != top.address_left1 &&
+                                     top.address_right1 != top.address_left2;
+            const bool v405_right2 = v405_dst != 0 && v405_dst == top.address_right2 &&
+                                     top.address_right2 != top.address_left1 &&
+                                     top.address_right2 != top.address_left2;
+            // Adresses de l'ecran du haut journalisees a chaque changement (8 fois au plus) :
+            // si le reperage echoue, le log dit pourquoi (droite = gauche, ou zero).
+            static u32 v405_lcd_last[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+            static u32 v405_lcd_logs = 0;
+            const u32 v405_lcd_now[4] = {top.address_left1, top.address_left2,
+                                         top.address_right1, top.address_right2};
+            if (v405_lcd_logs < 8 &&
+                (v405_lcd_now[0] != v405_lcd_last[0] || v405_lcd_now[1] != v405_lcd_last[1] ||
+                 v405_lcd_now[2] != v405_lcd_last[2] || v405_lcd_now[3] != v405_lcd_last[3])) {
+                ++v405_lcd_logs;
+                for (int i = 0; i < 4; ++i) {
+                    v405_lcd_last[i] = v405_lcd_now[i];
+                }
+                LOG_WARNING(HW_GPU,
+                            "V405_ECRAN_HAUT actif=1 gauche1=0x{:08x} gauche2=0x{:08x} "
+                            "droite1=0x{:08x} droite2=0x{:08x} transfert=0x{:08x}->0x{:08x}",
+                            v405_lcd_now[0], v405_lcd_now[1], v405_lcd_now[2], v405_lcd_now[3],
+                            v405_src, v405_dst);
+            }
+            if (v405_right1 || v405_right2) {
+                const u32 v405_old = g_v405_right_src.exchange(v405_src, std::memory_order_relaxed);
+                g_v405_confirm_seq.store(v405_seq, std::memory_order_relaxed);
+                if (v405_old != v405_src) {
+                    LOG_WARNING(HW_GPU, "V405_OEIL_DROIT reperage src=0x{:08x} dst=0x{:08x}",
+                                v405_src, v405_dst);
+                }
+            }
+        }
         if (right_eye_disabler->ShouldAllowDisplayTransfer(config.GetPhysicalInputAddress(),
                                                            config.input_height)) {
             if (!impl->rasterizer->AccelerateDisplayTransfer(config)) {
