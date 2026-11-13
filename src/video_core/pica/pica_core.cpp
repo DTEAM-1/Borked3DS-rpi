@@ -32,6 +32,23 @@
 namespace Pica {
 
 // ---------------------------------------------------------------------------------------------
+// V413 (MESURE) : travail GPU envoye par le jeu, compte au niveau PICA (AVANT toute optimisation
+// du rendu cote hote : un draw de l'oeil droit saute par V408 est compte, car la vraie console
+// le dessine). Lu et journalise par video_core/gpu.cpp (V413_TRAVAIL) sous
+// BORKED3DS_V3DV_V413_TRAVAIL=1. Simples additions sur l'EmuThread : cout negligeable.
+// But : estimer le temps qu'aurait mis le GPU de la vraie 3DS (le GPU emule s'execute en zero
+// temps emule, d'ou des jeux a cadence variable trop rapides, ex. Castlevania).
+// ---------------------------------------------------------------------------------------------
+u64 g_v413_listes = 0;        // listes de commandes traitees
+u64 g_v413_octets = 0;        // taille cumulee des listes
+u64 g_v413_draws = 0;         // draws (trigger_draw + trigger_draw_indexed)
+u64 g_v413_draws_indexes = 0; // dont indexes
+u64 g_v413_sommets = 0;       // somme de num_vertices
+u64 g_v413_eclaires = 0;      // draws avec eclairage par fragment
+u64 g_v413_lumieres = 0;      // somme des lumieres actives de ces draws
+u64 g_v413_irq = 0;           // ecritures de trigger_irq (interruption P3D)
+
+// ---------------------------------------------------------------------------------------------
 // v369 -- SONDE DE PROVENANCE des uniformes flottants du geometry shader.
 //
 // Run Z3 (V368) : la boucle 062..0b5 du GS (entree 0x59) ne se termine jamais parce que r0, r1,
@@ -1206,6 +1223,10 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     V115DA7Z82EmitProcessEntryWindow();
     V115DA7Z84EmitProcessEntryWindow();
     V115DA7Z88EmitProcessCmdListCount();
+    if (!ignore_list) {
+        ++g_v413_listes;
+        g_v413_octets += size;
+    }
 
     const bool trace_hotpath = IsPicaHotpathTraceEnabled();
     const bool trace_a7z62 = IsV115DA7Z62PicaPredrawLivenessEnabled();
@@ -1460,6 +1481,7 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
 
     switch (id) {
     case PICA_REG_INDEX(trigger_irq):
+        ++g_v413_irq;
         signal_interrupt(Service::GSP::InterruptId::P3D);
         break;
 
@@ -1512,6 +1534,13 @@ void PicaCore::WriteInternalReg(u32 id, u32 value, u32 mask) {
     case PICA_REG_INDEX(pipeline.trigger_draw):
     case PICA_REG_INDEX(pipeline.trigger_draw_indexed): {
         const bool is_indexed = (id == PICA_REG_INDEX(pipeline.trigger_draw_indexed));
+        ++g_v413_draws;
+        g_v413_draws_indexes += is_indexed ? 1 : 0;
+        g_v413_sommets += regs.internal.pipeline.num_vertices;
+        if (regs.internal.lighting.disable == 0) {
+            ++g_v413_eclaires;
+            g_v413_lumieres += regs.internal.lighting.max_light_index.Value() + 1u;
+        }
         if (IsV115DA7Z71PicaTriggerSilentDrawArraysEnabled()) {
             if (IsV115DA7Z78PicaTriggerSinglePreDrawArraysMarkerEnabled()) {
                 static std::atomic<u64> a7z78_trigger_pre_drawarrays_counter{0};
