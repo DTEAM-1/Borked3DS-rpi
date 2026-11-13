@@ -1102,8 +1102,9 @@ void V407Vider() {
 //  3. Les draws vers R ne sont sautes qu'apres 60 transferts de R vers l'ecran droit sans aucune
 //     violation, tant que R a ete confirme dans les 12 derniers transferts, 3D coupee, oeil
 //     gauche affiche, hors rendu d'ombre.
-// v410 : une violation remet la confiance a zero et double le seuil ; R n'est bloque pour la
-// session qu'a la 5e (V408_ANOMALIE, puis V408_BLOQUE). Au plus une image fausse par anomalie.
+// v411 : une violation remet la confiance a zero ; le seuil double a chaque EPISODE
+// d'anomalies (V408_ANOMALIE) ; bloque pour la session au 10e (V408_BLOQUE). Au plus une image
+// fausse par episode.
 // Journal : V408_CANDIDAT, V408_ACTIF, V408_BLOQUE (avec la raison), V408_SAUTES (toutes les
 // 6000).
 [[nodiscard]] bool IsV408OeilDroitEnabled() {
@@ -1123,7 +1124,8 @@ struct V408Etat {
     u32 r_hauteur = 0;
     u32 ok = 0;
     bool actif_annonce = false;
-    u32 anomalies = 0;            // v410 : anomalies de R (au plus une par transfert)
+    u32 anomalies = 0;            // v411 : EPISODES d'anomalies de R
+    u64 anomalies_total = 0;      // v411 : anomalies comptees (au plus une par transfert)
     u64 anomalie_seq = ~u64{0};   // v410 : transfert de la derniere anomalie comptee
     u64 seq = 0;
     u64 confirme_seq = 0;
@@ -1139,15 +1141,18 @@ struct V408Etat {
 V408Etat v408{};
 
 constexpr u32 kV408Seuil = 60;
-// v410 : une anomalie ne bloque plus R pour la session ; elle remet la confiance a zero, et le
-// seuil double a chaque anomalie (60, 120, 240, 480, 960 transferts propres). A la 5e, R est
-// bloque pour la session. TB123 et TB125 : une anomalie unique au demarrage (registres d'ecran
-// encore en transition) bloquait tout ; Metroid, qui relit la copie de l'oeil droit a CHAQUE
-// image, atteint les 5 anomalies en 5 images.
-constexpr u32 kV408AnomaliesMax = 5;
+// v410/v411 : une anomalie ne bloque plus R pour la session ; elle remet la confiance a zero.
+// v411 : on compte des EPISODES, pas des images. Un episode est une suite d'anomalies sans 60
+// transferts propres de R entre elles. Le seuil double a chaque episode (60, 120, 240...).
+// TB126 (Castlevania) : au demarrage, le tampon de l'oeil droit part vers 0x18300000 a chaque
+// image pendant plusieurs images ; compte image par image (v410), cela faisait 5 anomalies en
+// 0,14 s et un blocage pour la session, avant meme la cinematique. Metroid relit la copie de
+// l'oeil droit a CHAQUE image : son episode ne finit jamais, la confiance n'atteint jamais le
+// seuil, rien n'est saute. Bloque pour la session au 10e episode seulement.
+constexpr u32 kV408AnomaliesMax = 10;
 
 [[nodiscard]] u32 V408SeuilActuel() {
-    return kV408Seuil << v408.anomalies;
+    return kV408Seuil << (v408.anomalies < 10 ? v408.anomalies : 10);
 }
 
 [[nodiscard]] u32 V408OctetsTransfert(u32 format) {
@@ -1174,12 +1179,18 @@ void V408Bloquer(const char* raison, PAddr detail) {
     if (v408.r == 0 || V408EstBloque(v408.r)) {
         return;
     }
-    const bool nouvelle = v408.anomalie_seq != v408.seq;
-    if (nouvelle) {
-        v408.anomalie_seq = v408.seq;
+    if (v408.anomalie_seq == v408.seq) {
+        return; // au plus une anomalie par transfert
+    }
+    v408.anomalie_seq = v408.seq;
+    ++v408.anomalies_total;
+    const u32 ok_avant = v408.ok;
+    // Nouvel episode : premiere anomalie, ou au moins kV408Seuil transferts propres depuis la
+    // precedente. Sinon, l'anomalie prolonge l'episode en cours (le seuil ne change pas).
+    const bool nouvel_episode = v408.anomalies == 0 || ok_avant >= kV408Seuil;
+    if (nouvel_episode) {
         ++v408.anomalies;
     }
-    const u32 ok_avant = v408.ok;
     v408.ok = 0;
     v408.actif_annonce = false;
     if (v408.anomalies >= kV408AnomaliesMax) {
@@ -1187,18 +1198,19 @@ void V408Bloquer(const char* raison, PAddr detail) {
             v408.bloques[v408.nbloques++] = v408.r;
         }
         LOG_WARNING(Render_Vulkan,
-                    "V408_BLOQUE r=0x{:08x} raison=\"{}\" detail=0x{:08x} anomalies={} "
-                    "apres_transferts_ok={} draws_sautes={}",
-                    v408.r, raison, detail, v408.anomalies, ok_avant, v408.sautes);
+                    "V408_BLOQUE r=0x{:08x} raison=\"{}\" detail=0x{:08x} episodes={} "
+                    "anomalies={} apres_transferts_ok={} draws_sautes={}",
+                    v408.r, raison, detail, v408.anomalies, v408.anomalies_total, ok_avant,
+                    v408.sautes);
         v408.ncopies = 0;
         return;
     }
-    if (nouvelle) {
+    if (nouvel_episode || (v408.anomalies_total % 600) == 0) {
         LOG_WARNING(Render_Vulkan,
-                    "V408_ANOMALIE r=0x{:08x} raison=\"{}\" detail=0x{:08x} anomalies={} "
-                    "seuil_suivant={} apres_transferts_ok={} draws_sautes={}",
-                    v408.r, raison, detail, v408.anomalies, V408SeuilActuel(), ok_avant,
-                    v408.sautes);
+                    "V408_ANOMALIE r=0x{:08x} raison=\"{}\" detail=0x{:08x} episode={} "
+                    "anomalies={} seuil={} apres_transferts_ok={} draws_sautes={}",
+                    v408.r, raison, detail, v408.anomalies, v408.anomalies_total,
+                    V408SeuilActuel(), ok_avant, v408.sautes);
     }
 }
 
@@ -1285,6 +1297,7 @@ void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_
                 v408.ncopies = 0;
                 v408.actif_annonce = false;
                 v408.anomalies = 0;
+                v408.anomalies_total = 0;
                 v408.anomalie_seq = ~u64{0};
                 LOG_WARNING(Render_Vulkan,
                             "V408_CANDIDAT r=0x{:08x} taille=0x{:x} entree={}x{} sortie={}x{} "
