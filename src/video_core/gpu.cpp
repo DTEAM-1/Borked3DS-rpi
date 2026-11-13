@@ -3,7 +3,9 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdlib>
 
 #include "common/archives.h"
@@ -63,6 +65,32 @@ bool IsV408OeilDroitEnabled() {
         return value != nullptr && value[0] != '\0' && value[0] != '0';
     }();
     return enabled;
+}
+
+// V408 (v409) : adresses deja vues comme ecran du haut gauche / droit (8 par cote, anneau).
+std::array<PAddr, 8> g_v408_gauche{};
+std::size_t g_v408_ngauche = 0;
+std::array<PAddr, 8> g_v408_droite{};
+std::size_t g_v408_ndroite = 0;
+
+bool V408Connu(const std::array<PAddr, 8>& liste, PAddr a) {
+    if (a == 0) {
+        return false;
+    }
+    for (const PAddr x : liste) {
+        if (x == a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void V408Retenir(std::array<PAddr, 8>& liste, std::size_t& n, PAddr a) {
+    if (a == 0 || V408Connu(liste, a)) {
+        return;
+    }
+    liste[n % liste.size()] = a;
+    ++n;
 }
 
 } // namespace
@@ -584,14 +612,22 @@ void GPU::MemoryTransfer() {
             }
         }
         if (IsV408OeilDroitEnabled()) {
+            // V408 (v409) : classement par HISTORIQUE. TB123 (Metroid) : le premier transfert vers
+            // le second tampon de l'ecran droit (0x18370800, double tampon avec 0x183b6d00, TB118)
+            // a eu lieu avant que cette adresse paraisse dans les registres ; un classement sur les
+            // seuls registres du moment l'a pris pour une autre destination. Une adresse vue une
+            // fois comme ecran gauche (ou droit) le reste. Vue des deux cotes : classee gauche (le
+            // cas prudent, qui bloque si l'oeil droit y est envoye).
             const auto& v408_top = impl->pica.regs.framebuffer_config[0];
+            V408Retenir(g_v408_gauche, g_v408_ngauche, v408_top.address_left1);
+            V408Retenir(g_v408_gauche, g_v408_ngauche, v408_top.address_left2);
+            V408Retenir(g_v408_droite, g_v408_ndroite, v408_top.address_right1);
+            V408Retenir(g_v408_droite, g_v408_ndroite, v408_top.address_right2);
             const PAddr v408_dst = config.GetPhysicalOutputAddress();
             u32 v408_classe = 0;
-            if (v408_dst != 0 &&
-                (v408_dst == v408_top.address_left1 || v408_dst == v408_top.address_left2)) {
+            if (V408Connu(g_v408_gauche, v408_dst)) {
                 v408_classe = 1;
-            } else if (v408_dst != 0 && (v408_dst == v408_top.address_right1 ||
-                                         v408_dst == v408_top.address_right2)) {
+            } else if (V408Connu(g_v408_droite, v408_dst)) {
                 v408_classe = 2;
             }
             g_v408_classe.store(v408_classe, std::memory_order_relaxed);
