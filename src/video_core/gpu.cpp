@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -27,6 +28,18 @@
 #include "video_core/renderer_software/sw_blitter.h"
 #include "video_core/right_eye_disabler.h"
 #include "video_core/video_core.h"
+
+namespace Pica {
+// V413 (MESURE) : compteurs definis dans video_core/pica/pica_core.cpp.
+extern u64 g_v413_listes;
+extern u64 g_v413_octets;
+extern u64 g_v413_draws;
+extern u64 g_v413_draws_indexes;
+extern u64 g_v413_sommets;
+extern u64 g_v413_eclaires;
+extern u64 g_v413_lumieres;
+extern u64 g_v413_irq;
+} // namespace Pica
 
 namespace VideoCore {
 
@@ -93,6 +106,90 @@ void V408Retenir(std::array<PAddr, 8>& liste, std::size_t& n, PAddr a) {
     ++n;
 }
 
+} // namespace
+
+// V413 (MESURE) : BORKED3DS_V3DV_V413_TRAVAIL=1. Une ligne V413_TRAVAIL par seconde de temps
+// EMULE : nombre d'images du jeu (echanges d'images de l'ecran du haut), temps emule moyen par
+// image, et travail GPU moyen par image (listes, draws, sommets, eclairage, interruptions P3D,
+// transferts, copies, effacements) avec les maximums par image. Aucun effet sur le rendu.
+// But : calibrer une estimation du temps GPU de la vraie console (etape 2 du chantier
+// « temps GPU emule »).
+namespace {
+bool IsV413TravailEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_V413_TRAVAIL");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+u64 g_v413_transferts = 0;
+u64 g_v413_transfert_pixels = 0;
+u64 g_v413_copies = 0;
+u64 g_v413_copie_octets = 0;
+u64 g_v413_effacements = 0;
+u64 g_v413_effacement_octets = 0;
+
+struct V413Releve {
+    u64 listes, octets, draws, indexes, sommets, eclaires, lumieres, irq, transferts, pixels,
+        copies, copie_octets, effacements, effacement_octets;
+};
+
+V413Releve V413Lire() {
+    return V413Releve{Pica::g_v413_listes,    Pica::g_v413_octets,   Pica::g_v413_draws,
+                      Pica::g_v413_draws_indexes, Pica::g_v413_sommets, Pica::g_v413_eclaires,
+                      Pica::g_v413_lumieres,  Pica::g_v413_irq,      g_v413_transferts,
+                      g_v413_transfert_pixels, g_v413_copies,        g_v413_copie_octets,
+                      g_v413_effacements,     g_v413_effacement_octets};
+}
+
+// Appelee a chaque fin d'image du jeu (echange de l'ecran du haut), sur l'EmuThread.
+void V413FinImage(s64 ticks) {
+    static bool demarre = false;
+    static s64 debut = 0;
+    static u64 images = 0;
+    static V413Releve base{};
+    static V413Releve precedent{};
+    static u64 max_draws = 0, max_sommets = 0, max_listes = 0;
+    const V413Releve r = V413Lire();
+    if (!demarre) {
+        demarre = true;
+        debut = ticks;
+        base = r;
+        precedent = r;
+        return;
+    }
+    ++images;
+    max_draws = std::max<u64>(max_draws, r.draws - precedent.draws);
+    max_sommets = std::max<u64>(max_sommets, r.sommets - precedent.sommets);
+    max_listes = std::max<u64>(max_listes, r.listes - precedent.listes);
+    precedent = r;
+    const s64 duree = ticks - debut;
+    if (duree < static_cast<s64>(BASE_CLOCK_RATE_ARM11)) {
+        return;
+    }
+    const double n = static_cast<double>(images);
+    const auto par = [n](u64 a, u64 b) { return static_cast<double>(a - b) / n; };
+    LOG_WARNING(HW_GPU,
+                "V413_TRAVAIL images={} ms_emule_image={:.2f} listes={:.1f} octets={:.0f} "
+                "draws={:.1f} indexes={:.1f} sommets={:.0f} eclaires={:.1f} lumieres={:.1f} "
+                "irq={:.2f} transferts={:.2f} pixels={:.0f} copies={:.2f} copie_octets={:.0f} "
+                "effacements={:.2f} effacement_octets={:.0f} max_draws={} max_sommets={} "
+                "max_listes={}",
+                images, static_cast<double>(duree) * 1000.0 / BASE_CLOCK_RATE_ARM11 / n,
+                par(r.listes, base.listes), par(r.octets, base.octets), par(r.draws, base.draws),
+                par(r.indexes, base.indexes), par(r.sommets, base.sommets),
+                par(r.eclaires, base.eclaires), par(r.lumieres, base.lumieres),
+                par(r.irq, base.irq), par(r.transferts, base.transferts),
+                par(r.pixels, base.pixels), par(r.copies, base.copies),
+                par(r.copie_octets, base.copie_octets), par(r.effacements, base.effacements),
+                par(r.effacement_octets, base.effacement_octets), max_draws, max_sommets,
+                max_listes);
+    debut = ticks;
+    base = r;
+    images = 0;
+    max_draws = max_sommets = max_listes = 0;
+}
 } // namespace
 
 // V408 : classe de la destination du display transfer en cours, lue par le rasterizer Vulkan
@@ -350,6 +447,9 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
     }
 
     if (screen_id == 0) {
+        if (IsV413TravailEnabled()) {
+            V413FinImage(impl->timing.GetGlobalTicks());
+        }
         impl->system.perf_stats->EndGameFrame();
         right_eye_disabler->ReportEndFrame();
     }
@@ -530,6 +630,8 @@ void GPU::MemoryFill(u32 index) {
     if (!config.trigger) {
         return;
     }
+    ++g_v413_effacements; // V413 (mesure)
+    g_v413_effacement_octets += config.GetEndAddress() - config.GetStartAddress();
 
     // Perform memory fill.
     if (!impl->rasterizer->AccelerateFill(config)) {
@@ -562,6 +664,16 @@ void GPU::MemoryTransfer() {
     // Notify debugger about the display transfer.
     if (impl->debug_context) {
         impl->debug_context->OnEvent(Pica::DebugContext::Event::IncomingDisplayTransfer, nullptr);
+    }
+
+    // V413 (mesure)
+    if (config.is_texture_copy) {
+        ++g_v413_copies;
+        g_v413_copie_octets += config.texture_copy.size;
+    } else {
+        ++g_v413_transferts;
+        g_v413_transfert_pixels += static_cast<u64>(config.output_width.Value()) *
+                                   config.output_height.Value();
     }
 
     // Perform memory transfer
