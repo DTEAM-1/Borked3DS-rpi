@@ -57,7 +57,21 @@ bool IsV405SkipRightEyeEnabled() {
     return enabled;
 }
 
+bool IsV408OeilDroitEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_V408_OEIL_DROIT");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
 } // namespace
+
+// V408 : classe de la destination du display transfer en cours, lue par le rasterizer Vulkan
+// (vk_rasterizer.cpp, AccelerateDisplayTransfer) juste apres : 0 = autre, 1 = ecran du haut
+// gauche, 2 = ecran du haut droite. Une adresse droite egale a une adresse gauche (configuration
+// mono) est classee gauche.
+std::atomic<u32> g_v408_classe{0};
 
 // V405 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE=1.
 // TB115 (Castlevania) : le jeu dessine chaque image deux fois, oeil gauche et oeil droit, draw par
@@ -568,6 +582,19 @@ void GPU::MemoryTransfer() {
                                 v405_src, v405_dst);
                 }
             }
+        }
+        if (IsV408OeilDroitEnabled()) {
+            const auto& v408_top = impl->pica.regs.framebuffer_config[0];
+            const PAddr v408_dst = config.GetPhysicalOutputAddress();
+            u32 v408_classe = 0;
+            if (v408_dst != 0 &&
+                (v408_dst == v408_top.address_left1 || v408_dst == v408_top.address_left2)) {
+                v408_classe = 1;
+            } else if (v408_dst != 0 && (v408_dst == v408_top.address_right1 ||
+                                         v408_dst == v408_top.address_right2)) {
+                v408_classe = 2;
+            }
+            g_v408_classe.store(v408_classe, std::memory_order_relaxed);
         }
         if (right_eye_disabler->ShouldAllowDisplayTransfer(config.GetPhysicalInputAddress(),
                                                            config.input_height)) {
