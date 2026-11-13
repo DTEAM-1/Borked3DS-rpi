@@ -129,10 +129,16 @@ u64 g_v413_copies = 0;
 u64 g_v413_copie_octets = 0;
 u64 g_v413_effacements = 0;
 u64 g_v413_effacement_octets = 0;
+// v414 : images CALCULEES par le jeu = display transfers vers l'ecran du haut GAUCHE (registres
+// actuels, puis historique : meme classement que V408). TB134/TB135 : sans delai, Castlevania
+// calcule ~2 images par image AFFICHEE (20 listes, 6,75 transferts par echange contre 9 et 3 a
+// 2590 us) ; compter par echange melangeait donc plusieurs images du jeu.
+u64 g_v413_rendus_gauche = 0;
+u64 g_v413_rendus_droite = 0;
 
 struct V413Releve {
     u64 listes, octets, draws, indexes, sommets, eclaires, lumieres, irq, transferts, pixels,
-        copies, copie_octets, effacements, effacement_octets;
+        copies, copie_octets, effacements, effacement_octets, rendus_g, rendus_d;
 };
 
 V413Releve V413Lire() {
@@ -140,7 +146,8 @@ V413Releve V413Lire() {
                       Pica::g_v413_draws_indexes, Pica::g_v413_sommets, Pica::g_v413_eclaires,
                       Pica::g_v413_lumieres,  Pica::g_v413_irq,      g_v413_transferts,
                       g_v413_transfert_pixels, g_v413_copies,        g_v413_copie_octets,
-                      g_v413_effacements,     g_v413_effacement_octets};
+                      g_v413_effacements,     g_v413_effacement_octets,
+                      g_v413_rendus_gauche,   g_v413_rendus_droite};
 }
 
 // Appelee a chaque fin d'image du jeu (echange de l'ecran du haut), sur l'EmuThread.
@@ -170,6 +177,24 @@ void V413FinImage(s64 ticks) {
     }
     const double n = static_cast<double>(images);
     const auto par = [n](u64 a, u64 b) { return static_cast<double>(a - b) / n; };
+    const u64 rendus = r.rendus_g - base.rendus_g;
+    const double ms_rendu = rendus == 0 ? 0.0
+                                        : static_cast<double>(duree) * 1000.0 /
+                                              BASE_CLOCK_RATE_ARM11 / static_cast<double>(rendus);
+    // Travail par image CALCULEE (rendus_g) : la base de calibrage (v414).
+    const double nr = rendus == 0 ? 1.0 : static_cast<double>(rendus);
+    const auto parr = [nr](u64 a, u64 b) { return static_cast<double>(a - b) / nr; };
+    LOG_WARNING(HW_GPU,
+                "V414_RENDU rendus={} ms_emule_rendu={:.2f} rendus_d={} listes={:.1f} draws={:.1f} "
+                "sommets={:.0f} eclaires={:.1f} lumieres={:.1f} transferts={:.2f} pixels={:.0f} "
+                "copies={:.2f} copie_octets={:.0f} effacements={:.2f} effacement_octets={:.0f}",
+                rendus, ms_rendu, r.rendus_d - base.rendus_d, parr(r.listes, base.listes),
+                parr(r.draws, base.draws), parr(r.sommets, base.sommets),
+                parr(r.eclaires, base.eclaires), parr(r.lumieres, base.lumieres),
+                parr(r.transferts, base.transferts), parr(r.pixels, base.pixels),
+                parr(r.copies, base.copies), parr(r.copie_octets, base.copie_octets),
+                parr(r.effacements, base.effacements),
+                parr(r.effacement_octets, base.effacement_octets));
     LOG_WARNING(HW_GPU,
                 "V413_TRAVAIL images={} ms_emule_image={:.2f} listes={:.1f} octets={:.0f} "
                 "draws={:.1f} indexes={:.1f} sommets={:.0f} eclaires={:.1f} lumieres={:.1f} "
@@ -723,7 +748,7 @@ void GPU::MemoryTransfer() {
                 }
             }
         }
-        if (IsV408OeilDroitEnabled()) {
+        if (IsV408OeilDroitEnabled() || IsV413TravailEnabled()) {
             // V408 (v409) : classement par HISTORIQUE. TB123 (Metroid) : le premier transfert vers
             // le second tampon de l'ecran droit (0x18370800, double tampon avec 0x183b6d00, TB118)
             // a eu lieu avant que cette adresse paraisse dans les registres ; un classement sur les
@@ -757,6 +782,8 @@ void GPU::MemoryTransfer() {
                 v408_classe = 2;
             }
             g_v408_classe.store(v408_classe, std::memory_order_relaxed);
+            g_v413_rendus_gauche += v408_classe == 1 ? 1 : 0; // v414
+            g_v413_rendus_droite += v408_classe == 2 ? 1 : 0;
         }
         if (right_eye_disabler->ShouldAllowDisplayTransfer(config.GetPhysicalInputAddress(),
                                                            config.input_height)) {
