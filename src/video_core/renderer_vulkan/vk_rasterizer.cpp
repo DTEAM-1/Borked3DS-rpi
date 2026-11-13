@@ -990,6 +990,92 @@ void V406SignalerLecture(u32 origine, PAddr ecrit, PAddr lu, u32 unite) {
     }
 }
 
+// V407 (DIAGNOSTIC SEUL, aucun changement de rendu) : BORKED3DS_V3DV_V407_SEQUENCE=<secondes>.
+// Question : dans quel ORDRE, a l'interieur d'une image, le jeu dessine-t-il chaque oeil, copie-t-il
+// ses images (TextureCopy), relit-il ces copies (textures des draws), efface-t-il (MemoryFill) et
+// envoie-t-il ses tampons a l'ecran (display transfer) ? TB120/TB121 : Metroid et Castlevania
+// recopient chaque oeil dans un tampon commun puis le relisent ; selon l'ordre, sauter l'oeil droit
+// est sans danger (sa copie est ecrasee avant d'etre relue) ou casse l'image.
+// Pendant 0,30 s a partir de <secondes> (comptees depuis le premier draw), une ligne V407_SEQ par
+// evenement, dans l'ordre :
+//   D : groupe de draws consecutifs vers la meme cible (couleur, depth si test/ecriture actifs)
+//       avec les memes textures (adresses des 3 unites, 0 = unite inactive), n = nombre de draws ;
+//   C : copie de texture (source, destination, taille) ;
+//   T : display transfer (source, destination, largeur x hauteur de sortie) ;
+//   F : effacement (MemoryFill, debut et fin).
+// 2000 lignes au plus ; "V407_SEQ debut" et "V407_SEQ fin" encadrent la fenetre.
+[[nodiscard]] double V407Debut() {
+    static const double value = [] {
+        const char* s = std::getenv("BORKED3DS_V3DV_V407_SEQUENCE");
+        if (s == nullptr || s[0] == '\0') {
+            return -1.0;
+        }
+        char* fin = nullptr;
+        const double d = std::strtod(s, &fin);
+        return (fin == s || d < 0.0) ? -1.0 : d;
+    }();
+    return value;
+}
+
+struct V407Etat {
+    std::chrono::steady_clock::time_point t0{};
+    bool init = false;
+    bool ouvert = false;
+    bool termine = false;
+    u32 lignes = 0;
+    bool groupe = false;
+    PAddr cible = 0;
+    PAddr depth = 0;
+    std::array<PAddr, 3> tex{};
+    u32 n = 0;
+    double t_groupe = 0.0;
+};
+V407Etat v407{};
+
+constexpr double kV407Duree = 0.30;
+constexpr u32 kV407MaxLignes = 2000;
+
+void V407Vider() {
+    if (!v407.groupe) {
+        return;
+    }
+    v407.groupe = false;
+    ++v407.lignes;
+    LOG_WARNING(Render_Vulkan,
+                "V407_SEQ t={:.4f} D cible=0x{:08x} depth=0x{:08x} n={} "
+                "tex=0x{:08x},0x{:08x},0x{:08x}",
+                v407.t_groupe, v407.cible, v407.depth, v407.n, v407.tex[0], v407.tex[1],
+                v407.tex[2]);
+}
+
+// Temps (s) depuis le premier evenement si la fenetre est ouverte, sinon -1.
+[[nodiscard]] double V407Temps() {
+    const double debut = V407Debut();
+    if (debut < 0.0 || v407.termine) {
+        return -1.0;
+    }
+    const auto maintenant = std::chrono::steady_clock::now();
+    if (!v407.init) {
+        v407.init = true;
+        v407.t0 = maintenant;
+    }
+    const double t = std::chrono::duration<double>(maintenant - v407.t0).count();
+    if (t < debut) {
+        return -1.0;
+    }
+    if (t >= debut + kV407Duree || v407.lignes >= kV407MaxLignes) {
+        V407Vider();
+        v407.termine = true;
+        LOG_WARNING(Render_Vulkan, "V407_SEQ fin t={:.4f} lignes={}", t, v407.lignes);
+        return -1.0;
+    }
+    if (!v407.ouvert) {
+        v407.ouvert = true;
+        LOG_WARNING(Render_Vulkan, "V407_SEQ debut t={:.4f} duree={:.2f}s", t, kV407Duree);
+    }
+    return t;
+}
+
 /// Echappatoire : retablit l'appel inconditionnel a Surface::CopyImageView().
 /// Voir le bloc explicatif au site d'appel (liaison des textures). N'existe que pour
 /// pouvoir revenir a l'ancien comportement sans rebuild si un titre non teste
@@ -8182,6 +8268,38 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
                            v406_w, v406_h, 1);
         }
     }
+    // V407 (DIAGNOSTIC SEUL) : ordre des draws dans la fenetre choisie. Voir V407Debut().
+    {
+        const double v407_t = V407Temps();
+        if (v407_t >= 0.0) {
+            const auto& v407_fb = regs.framebuffer.framebuffer;
+            const PAddr v407_color = v407_fb.GetColorBufferPhysicalAddress();
+            const PAddr v407_depth =
+                (regs.framebuffer.output_merger.depth_test_enable != 0 ||
+                 regs.framebuffer.output_merger.depth_write_enable != 0)
+                    ? v407_fb.GetDepthBufferPhysicalAddress()
+                    : 0;
+            std::array<PAddr, 3> v407_tex{};
+            const auto v407_textures = regs.texturing.GetTextures();
+            for (u32 v407_unite = 0; v407_unite < 3; ++v407_unite) {
+                v407_tex[v407_unite] = v407_textures[v407_unite].enabled
+                                           ? v407_textures[v407_unite].config.GetPhysicalAddress()
+                                           : 0;
+            }
+            if (v407.groupe && v407.cible == v407_color && v407.depth == v407_depth &&
+                v407.tex == v407_tex) {
+                ++v407.n;
+            } else {
+                V407Vider();
+                v407.groupe = true;
+                v407.cible = v407_color;
+                v407.depth = v407_depth;
+                v407.tex = v407_tex;
+                v407.n = 1;
+                v407.t_groupe = v407_t;
+            }
+        }
+    }
     // V405 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE=1. Voir le bloc
     // explicatif dans video_core/gpu.cpp. Saute un draw seulement si son tampon couleur est
     // EXACTEMENT celui que le jeu vient de copier vers l'ecran droit (confirme dans les 12
@@ -9968,6 +10086,17 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
         // V406 : un display transfer lit sa source (diagnostic seul).
         V406SignalerLecture(2, dst_addr, src_addr, 0);
     }
+    {
+        const double v407_t = V407Temps();
+        if (v407_t >= 0.0) {
+            // V407 : un display transfer dans la sequence (diagnostic seul).
+            V407Vider();
+            ++v407.lignes;
+            LOG_WARNING(Render_Vulkan, "V407_SEQ t={:.4f} T src=0x{:08x} dst=0x{:08x} sortie={}x{}",
+                        v407_t, src_addr, dst_addr, config.output_width.Value(),
+                        config.output_height.Value());
+        }
+    }
     const bool result = res_cache.AccelerateDisplayTransfer(config);
     if (IsTraceDisplayTransferEnabled()) {
         LOG_WARNING(Render_Vulkan,
@@ -9989,10 +10118,34 @@ bool RasterizerVulkan::AccelerateTextureCopy(const Pica::DisplayTransferConfig& 
         V406SignalerLecture(1, config.GetPhysicalOutputAddress(),
                             config.GetPhysicalInputAddress(), 0);
     }
+    {
+        const double v407_t = V407Temps();
+        if (v407_t >= 0.0) {
+            // V407 : une copie de texture dans la sequence (diagnostic seul).
+            V407Vider();
+            ++v407.lignes;
+            LOG_WARNING(Render_Vulkan,
+                        "V407_SEQ t={:.4f} C src=0x{:08x} dst=0x{:08x} taille=0x{:x} "
+                        "largeur_in={} largeur_out={}",
+                        v407_t, config.GetPhysicalInputAddress(), config.GetPhysicalOutputAddress(),
+                        config.texture_copy.size, config.texture_copy.input_width.Value(),
+                        config.texture_copy.output_width.Value());
+        }
+    }
     return res_cache.AccelerateTextureCopy(config);
 }
 
 bool RasterizerVulkan::AccelerateFill(const Pica::MemoryFillConfig& config) {
+    {
+        const double v407_t = V407Temps();
+        if (v407_t >= 0.0) {
+            // V407 : un effacement dans la sequence (diagnostic seul).
+            V407Vider();
+            ++v407.lignes;
+            LOG_WARNING(Render_Vulkan, "V407_SEQ t={:.4f} F debut=0x{:08x} fin=0x{:08x}", v407_t,
+                        config.GetStartAddress(), config.GetEndAddress());
+        }
+    }
     return res_cache.AccelerateFill(config);
 }
 
