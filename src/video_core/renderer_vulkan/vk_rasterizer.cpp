@@ -47,6 +47,7 @@ namespace VideoCore {
 extern std::atomic<u32> g_v405_right_src;
 extern std::atomic<u64> g_v405_transfer_seq;
 extern std::atomic<u64> g_v405_confirm_seq;
+extern std::atomic<u32> g_v408_classe; // V408 : 0 autre, 1 haut gauche, 2 haut droite
 } // namespace VideoCore
 
 namespace Vulkan {
@@ -1074,6 +1075,224 @@ void V407Vider() {
         LOG_WARNING(Render_Vulkan, "V407_SEQ debut t={:.4f} duree={:.2f}s", t, kV407Duree);
     }
     return t;
+}
+
+// V408 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V408_OEIL_DROIT=1.
+// Sauter l'oeil droit quand la 3D est coupee, mais seulement si le jeu ne s'en sert pour RIEN
+// d'autre que l'ecran droit. Constats (12 nov. 2026) :
+//  - Castlevania et Metroid dessinent les deux yeux, curseur 3D a 0 ; l'emulateur n'affiche que
+//    le gauche (TB115, TB118).
+//  - Metroid recopie l'oeil droit (0x180ea600 -> 0x184b8a00) puis RELIT cette copie dans une
+//    chaine d'effets commune aux deux yeux (transfert 0x184b8a00 -> 0x185b8a00) : sauter l'oeil
+//    droit noircit l'ecran (TB118-TB120). v405, qui ne regardait que l'adresse, l'ignorait.
+//  - Castlevania recopie aussi l'oeil droit (-> 0x181d4c00), mais cette copie n'est relue que
+//    par un draw de l'oeil droit, puis effacee au debut de l'image suivante (TB122) : sans danger.
+//  - Castlevania envoie parfois l'image GAUCHE vers l'ecran droit (meme image des deux cotes,
+//    TB121 a 28 s) : ce tampon ne doit jamais etre pris pour l'oeil droit.
+// Regles (aucune liste de titres) :
+//  1. Candidat R = source d'un transfert vers une adresse droite de l'ecran du haut, qui n'est
+//     pas aussi partie vers une adresse gauche dans les 6 derniers transferts.
+//  2. R est BLOQUE pour la session (jamais saute) des que son contenu sert a autre chose qu'a
+//     l'ecran droit : R envoye a gauche ou ailleurs, R lu comme texture par un draw d'une autre
+//     cible, R dessine avec une autre taille que celle envoyee a l'ecran, ou une COPIE de R
+//     (TextureCopy) relue par autre chose qu'un draw de R (texture d'un draw, copie, transfert)
+//     avant d'etre effacee (MemoryFill) ou ecrasee (copie ou transfert vers la meme zone).
+//  3. Les draws vers R ne sont sautes qu'apres 60 transferts de R vers l'ecran droit sans aucune
+//     violation, tant que R a ete confirme dans les 12 derniers transferts, 3D coupee, oeil
+//     gauche affiche, hors rendu d'ombre.
+// Une violation decouverte apres coup bloque R pour toujours : au plus une image fausse.
+// Journal : V408_CANDIDAT, V408_ACTIF, V408_BLOQUE (avec la raison), V408_SAUTES (toutes les
+// 6000).
+[[nodiscard]] bool IsV408OeilDroitEnabled() {
+    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_V408_OEIL_DROIT");
+    return cached;
+}
+
+struct V408Zone {
+    PAddr a = 0;
+    PAddr b = 0; // [a, b)
+};
+
+struct V408Etat {
+    PAddr r = 0;
+    u32 r_taille = 0;
+    u32 r_largeur = 0;
+    u32 r_hauteur = 0;
+    u32 ok = 0;
+    bool actif_annonce = false;
+    u64 seq = 0;
+    u64 confirme_seq = 0;
+    std::array<PAddr, 16> bloques{};
+    std::size_t nbloques = 0;
+    std::array<V408Zone, 32> copies{};
+    std::size_t ncopies = 0;
+    std::array<PAddr, 6> derniers_src{};
+    std::array<u32, 6> derniers_classe{};
+    std::size_t derniers_pos = 0;
+    u64 sautes = 0;
+};
+V408Etat v408{};
+
+constexpr u32 kV408Seuil = 60;
+
+[[nodiscard]] u32 V408OctetsTransfert(u32 format) {
+    switch (format) {
+    case 0:
+        return 4; // RGBA8
+    case 1:
+        return 3; // RGB8
+    default:
+        return 2; // RGB565, RGB5A1, RGBA4
+    }
+}
+
+[[nodiscard]] bool V408EstBloque(PAddr a) {
+    for (std::size_t i = 0; i < v408.nbloques; ++i) {
+        if (v408.bloques[i] == a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void V408Bloquer(const char* raison, PAddr detail) {
+    if (v408.r == 0 || V408EstBloque(v408.r)) {
+        return;
+    }
+    if (v408.nbloques < v408.bloques.size()) {
+        v408.bloques[v408.nbloques++] = v408.r;
+    }
+    LOG_WARNING(Render_Vulkan,
+                "V408_BLOQUE r=0x{:08x} raison=\"{}\" detail=0x{:08x} apres_transferts_ok={} "
+                "draws_sautes={}",
+                v408.r, raison, detail, v408.ok, v408.sautes);
+    v408.ok = 0;
+    v408.ncopies = 0;
+}
+
+[[nodiscard]] bool V408DansR(PAddr a, PAddr b) {
+    return v408.r != 0 && a < v408.r + v408.r_taille && b > v408.r;
+}
+
+[[nodiscard]] bool V408DansCopie(PAddr a, PAddr b) {
+    for (std::size_t i = 0; i < v408.ncopies; ++i) {
+        if (a < v408.copies[i].b && b > v408.copies[i].a) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Retire [a, b) des zones copiees depuis R (effacement ou ecrasement), en coupant au besoin.
+void V408Retirer(PAddr a, PAddr b) {
+    std::array<V408Zone, 32> garde{};
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < v408.ncopies; ++i) {
+        const V408Zone z = v408.copies[i];
+        if (b <= z.a || a >= z.b) {
+            if (n < garde.size()) {
+                garde[n++] = z;
+            }
+            continue;
+        }
+        if (z.a < a && n < garde.size()) {
+            garde[n++] = V408Zone{z.a, a};
+        }
+        if (b < z.b && n < garde.size()) {
+            garde[n++] = V408Zone{b, z.b};
+        }
+    }
+    v408.copies = garde;
+    v408.ncopies = n;
+}
+
+void V408Ajouter(PAddr a, PAddr b) {
+    if (a >= b) {
+        return;
+    }
+    if (v408.ncopies < v408.copies.size()) {
+        v408.copies[v408.ncopies++] = V408Zone{a, b};
+    } else {
+        V408Bloquer("trop de copies de l'oeil droit a suivre", a);
+    }
+}
+
+void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_bpp,
+                   u32 out_w, u32 out_h, u32 out_bpp) {
+    ++v408.seq;
+    const PAddr src_fin = src + in_w * in_h * in_bpp;
+    if (classe == 2) {
+        bool vu_a_gauche = false;
+        for (std::size_t i = 0; i < v408.derniers_src.size(); ++i) {
+            if (v408.derniers_classe[i] == 1 && v408.derniers_src[i] == src) {
+                vu_a_gauche = true;
+            }
+        }
+        if (vu_a_gauche) {
+            // Meme image envoyee a gauche et a droite : ce tampon n'est pas un oeil droit.
+            if (src == v408.r) {
+                V408Bloquer("meme image envoyee a gauche et a droite", dst);
+            }
+        } else if (!V408EstBloque(src)) {
+            if (src != v408.r) {
+                v408.r = src;
+                v408.r_taille = in_w * in_h * in_bpp;
+                // Taille du framebuffer = taille d'ENTREE du transfert (la sortie peut etre
+                // reduite, par exemple 480x800 vers 240x400) : c'est elle que Draw compare.
+                v408.r_largeur = in_w;
+                v408.r_hauteur = in_h;
+                v408.ok = 0;
+                v408.ncopies = 0;
+                v408.actif_annonce = false;
+                LOG_WARNING(Render_Vulkan,
+                            "V408_CANDIDAT r=0x{:08x} taille=0x{:x} entree={}x{} sortie={}x{} "
+                            "ecran=0x{:08x}",
+                            src, v408.r_taille, in_w, in_h, out_w, out_h, dst);
+            } else {
+                ++v408.ok;
+                v408.confirme_seq = v408.seq;
+                if (v408.ok >= kV408Seuil && !v408.actif_annonce) {
+                    v408.actif_annonce = true;
+                    LOG_WARNING(Render_Vulkan,
+                                "V408_ACTIF r=0x{:08x} apres {} transferts sans violation",
+                                v408.r, v408.ok);
+                }
+            }
+        }
+    } else {
+        if (V408DansR(src, src_fin)) {
+            V408Bloquer(classe == 1 ? "oeil droit envoye a gauche"
+                                    : "oeil droit lu par un transfert",
+                        dst);
+        } else if (V408DansCopie(src, src_fin)) {
+            V408Bloquer("copie de l'oeil droit relue par un transfert", src);
+        }
+    }
+    V408Retirer(dst, dst + out_w * out_h * out_bpp);
+    v408.derniers_src[v408.derniers_pos] = src;
+    v408.derniers_classe[v408.derniers_pos] = classe;
+    v408.derniers_pos = (v408.derniers_pos + 1) % v408.derniers_src.size();
+}
+
+void V408Copie(PAddr src, PAddr dst, u32 taille) {
+    if (v408.r == 0 || V408EstBloque(v408.r)) {
+        return;
+    }
+    const bool depuis_r = V408DansR(src, src + taille);
+    if (!depuis_r && V408DansCopie(src, src + taille)) {
+        V408Bloquer("copie de l'oeil droit recopiee ailleurs", src);
+        return;
+    }
+    V408Retirer(dst, dst + taille);
+    if (depuis_r) {
+        V408Ajouter(dst, dst + taille);
+    }
+}
+
+void V408Effacement(PAddr debut, PAddr fin) {
+    if (debut < fin) {
+        V408Retirer(debut, fin);
+    }
 }
 
 /// Echappatoire : retablit l'appel inconditionnel a Surface::CopyImageView().
@@ -8300,6 +8519,47 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
         }
     }
+    // V408 (MESURE, inactif par defaut) : verification des regles puis saut de l'oeil droit.
+    // Voir le bloc explicatif au-dessus de IsV408OeilDroitEnabled().
+    if (IsV408OeilDroitEnabled() && v408.r != 0 && !V408EstBloque(v408.r)) {
+        const auto& v408_fb = regs.framebuffer.framebuffer;
+        const PAddr v408_color = v408_fb.GetColorBufferPhysicalAddress();
+        if (v408_color == v408.r) {
+            if (v408_fb.GetWidth() != v408.r_largeur || v408_fb.GetHeight() != v408.r_hauteur) {
+                V408Bloquer("autre rendu dans le tampon de l'oeil droit", v408_color);
+            }
+        } else {
+            const auto v408_textures = regs.texturing.GetTextures();
+            for (u32 v408_unite = 0; v408_unite < 3; ++v408_unite) {
+                if (!v408_textures[v408_unite].enabled) {
+                    continue;
+                }
+                const auto& v408_tc = v408_textures[v408_unite].config;
+                const PAddr v408_ta = v408_tc.GetPhysicalAddress();
+                const PAddr v408_tb = v408_ta + static_cast<u32>(v408_tc.width) *
+                                                    static_cast<u32>(v408_tc.height) * 4u;
+                if (V408DansR(v408_ta, v408_tb)) {
+                    V408Bloquer("oeil droit lu comme texture", v408_ta);
+                    break;
+                }
+                if (V408DansCopie(v408_ta, v408_tb)) {
+                    V408Bloquer("copie de l'oeil droit lue comme texture", v408_ta);
+                    break;
+                }
+            }
+        }
+        if (v408_color == v408.r && !V408EstBloque(v408.r) && v408.ok >= kV408Seuil &&
+            v408.seq - v408.confirme_seq <= 12 && !regs.framebuffer.IsShadowRendering() &&
+            Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off &&
+            Settings::values.mono_render_option.GetValue() == Settings::MonoRenderOption::LeftEye) {
+            if ((++v408.sautes % 6000) == 1) {
+                LOG_WARNING(Render_Vulkan, "V408_SAUTES r=0x{:08x} draws_sautes={}", v408.r,
+                            v408.sautes);
+            }
+            vertex_batch.clear();
+            return true;
+        }
+    }
     // V405 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE=1. Voir le bloc
     // explicatif dans video_core/gpu.cpp. Saute un draw seulement si son tampon couleur est
     // EXACTEMENT celui que le jeu vient de copier vers l'ecran droit (confirme dans les 12
@@ -10097,6 +10357,13 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
                         config.output_height.Value());
         }
     }
+    if (IsV408OeilDroitEnabled()) {
+        V408Transfert(src_addr, dst_addr, VideoCore::g_v408_classe.load(std::memory_order_relaxed),
+                      config.input_width.Value(), config.input_height.Value(),
+                      V408OctetsTransfert(static_cast<u32>(config.input_format.Value())),
+                      config.output_width.Value(), config.output_height.Value(),
+                      V408OctetsTransfert(static_cast<u32>(config.output_format.Value())));
+    }
     const bool result = res_cache.AccelerateDisplayTransfer(config);
     if (IsTraceDisplayTransferEnabled()) {
         LOG_WARNING(Render_Vulkan,
@@ -10132,6 +10399,10 @@ bool RasterizerVulkan::AccelerateTextureCopy(const Pica::DisplayTransferConfig& 
                         config.texture_copy.output_width.Value());
         }
     }
+    if (IsV408OeilDroitEnabled()) {
+        V408Copie(config.GetPhysicalInputAddress(), config.GetPhysicalOutputAddress(),
+                  config.texture_copy.size);
+    }
     return res_cache.AccelerateTextureCopy(config);
 }
 
@@ -10145,6 +10416,9 @@ bool RasterizerVulkan::AccelerateFill(const Pica::MemoryFillConfig& config) {
             LOG_WARNING(Render_Vulkan, "V407_SEQ t={:.4f} F debut=0x{:08x} fin=0x{:08x}", v407_t,
                         config.GetStartAddress(), config.GetEndAddress());
         }
+    }
+    if (IsV408OeilDroitEnabled()) {
+        V408Effacement(config.GetStartAddress(), config.GetEndAddress());
     }
     return res_cache.AccelerateFill(config);
 }
