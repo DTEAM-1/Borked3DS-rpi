@@ -1093,10 +1093,12 @@ void V407Vider() {
 //  1. Candidat R = source d'un transfert vers une adresse droite de l'ecran du haut, qui n'est
 //     pas aussi partie vers une adresse gauche dans les 6 derniers transferts.
 //  2. R est BLOQUE pour la session (jamais saute) des que son contenu sert a autre chose qu'a
-//     l'ecran droit : R envoye a gauche ou ailleurs, R lu comme texture par un draw d'une autre
+//     l'ecran droit : R envoye a gauche, R lu comme texture par un draw d'une autre
 //     cible, R dessine avec une autre taille que celle envoyee a l'ecran, ou une COPIE de R
 //     (TextureCopy) relue par autre chose qu'un draw de R (texture d'un draw, copie, transfert)
 //     avant d'etre effacee (MemoryFill) ou ecrasee (copie ou transfert vers la meme zone).
+//     v409 : un transfert de R vers une adresse inconnue est traite comme une copie (TB123) ;
+//     les adresses d'ecran sont classees par historique dans gpu.cpp.
 //  3. Les draws vers R ne sont sautes qu'apres 60 transferts de R vers l'ecran droit sans aucune
 //     violation, tant que R a ete confirme dans les 12 derniers transferts, 3D coupee, oeil
 //     gauche affiche, hors rendu d'ombre.
@@ -1221,6 +1223,7 @@ void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_
                    u32 out_w, u32 out_h, u32 out_bpp) {
     ++v408.seq;
     const PAddr src_fin = src + in_w * in_h * in_bpp;
+    bool copie_vers_dst = false;
     if (classe == 2) {
         bool vu_a_gauche = false;
         for (std::size_t i = 0; i < v408.derniers_src.size(); ++i) {
@@ -1261,14 +1264,23 @@ void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_
         }
     } else {
         if (V408DansR(src, src_fin)) {
-            V408Bloquer(classe == 1 ? "oeil droit envoye a gauche"
-                                    : "oeil droit lu par un transfert",
-                        dst);
+            if (classe == 1) {
+                V408Bloquer("oeil droit envoye a gauche", dst);
+            } else {
+                // v409 : un transfert de l'oeil droit vers une adresse qui n'est (pas encore)
+                // connue comme ecran est une COPIE comme une autre : il ne bloque que si cette
+                // copie est relue avant d'etre effacee ou ecrasee (TB123 : le second tampon de
+                // l'ecran droit de Metroid, 0x18370800, servi avant de paraitre dans les registres).
+                copie_vers_dst = !V408EstBloque(v408.r);
+            }
         } else if (V408DansCopie(src, src_fin)) {
             V408Bloquer("copie de l'oeil droit relue par un transfert", src);
         }
     }
     V408Retirer(dst, dst + out_w * out_h * out_bpp);
+    if (copie_vers_dst) {
+        V408Ajouter(dst, dst + out_w * out_h * out_bpp);
+    }
     v408.derniers_src[v408.derniers_pos] = src;
     v408.derniers_classe[v408.derniers_pos] = classe;
     v408.derniers_pos = (v408.derniers_pos + 1) % v408.derniers_src.size();
