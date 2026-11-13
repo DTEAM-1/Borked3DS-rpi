@@ -47,7 +47,7 @@ namespace VideoCore {
 extern std::atomic<u32> g_v405_right_src;
 extern std::atomic<u64> g_v405_transfer_seq;
 extern std::atomic<u64> g_v405_confirm_seq;
-extern std::atomic<u32> g_v408_classe; // V408 : 0 autre, 1 haut gauche, 2 haut droite
+extern std::atomic<u32> g_v408_classe; // V408 : 0 autre, 1 haut gauche, 2 haut droite, 3 bas
 } // namespace VideoCore
 
 namespace Vulkan {
@@ -1122,6 +1122,8 @@ struct V408Etat {
     u32 r_taille = 0;
     u32 r_largeur = 0;
     u32 r_hauteur = 0;
+    u32 r_pas = 0;               // v412 : input_width du transfert vers l'ecran droit
+    u32 r_hauteur_allouee = 0;   // v412 : input_height du meme transfert
     u32 ok = 0;
     bool actif_annonce = false;
     u32 anomalies = 0;            // v411 : EPISODES d'anomalies de R
@@ -1175,7 +1177,7 @@ constexpr u32 kV408AnomaliesMax = 10;
     return false;
 }
 
-void V408Bloquer(const char* raison, PAddr detail) {
+void V408Bloquer(const char* raison, PAddr detail, PAddr detail2 = 0) {
     if (v408.r == 0 || V408EstBloque(v408.r)) {
         return;
     }
@@ -1198,18 +1200,18 @@ void V408Bloquer(const char* raison, PAddr detail) {
             v408.bloques[v408.nbloques++] = v408.r;
         }
         LOG_WARNING(Render_Vulkan,
-                    "V408_BLOQUE r=0x{:08x} raison=\"{}\" detail=0x{:08x} episodes={} "
-                    "anomalies={} apres_transferts_ok={} draws_sautes={}",
-                    v408.r, raison, detail, v408.anomalies, v408.anomalies_total, ok_avant,
-                    v408.sautes);
+                    "V408_BLOQUE r=0x{:08x} raison=\"{}\" detail=0x{:08x} detail2=0x{:08x} "
+                    "episodes={} anomalies={} apres_transferts_ok={} draws_sautes={}",
+                    v408.r, raison, detail, detail2, v408.anomalies, v408.anomalies_total,
+                    ok_avant, v408.sautes);
         v408.ncopies = 0;
         return;
     }
     if (nouvel_episode || (v408.anomalies_total % 600) == 0) {
         LOG_WARNING(Render_Vulkan,
-                    "V408_ANOMALIE r=0x{:08x} raison=\"{}\" detail=0x{:08x} episode={} "
-                    "anomalies={} seuil={} apres_transferts_ok={} draws_sautes={}",
-                    v408.r, raison, detail, v408.anomalies, v408.anomalies_total,
+                    "V408_ANOMALIE r=0x{:08x} raison=\"{}\" detail=0x{:08x} detail2=0x{:08x} "
+                    "episode={} anomalies={} seuil={} apres_transferts_ok={} draws_sautes={}",
+                    v408.r, raison, detail, detail2, v408.anomalies, v408.anomalies_total,
                     V408SeuilActuel(), ok_avant, v408.sautes);
     }
 }
@@ -1261,10 +1263,25 @@ void V408Ajouter(PAddr a, PAddr b) {
     }
 }
 
+// v412 : etendues exactes d'un display transfer, comme le cache de surfaces les calcule
+// (rasterizer_cache.h, AccelerateDisplayTransfer) : la source lue a pour pas input_width et
+// output_width x output_height pixels (dimensions AVANT reduction) ; la destination ecrite fait
+// output_width x output_height, divises par 2 selon la reduction (ScaleX : largeur, ScaleXY :
+// largeur et hauteur). input_height n'intervient pas. TB125-TB127 (Castlevania) : l'ecran du bas
+// lit 320 lignes depuis 0x18383400, qui finissent exactement au debut de l'oeil droit 0x183ce400 ;
+// compte avec input_height (400), la lecture debordait sur l'oeil droit a chaque image.
 void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_bpp,
-                   u32 out_w, u32 out_h, u32 out_bpp) {
+                   u32 out_w, u32 out_h, u32 out_bpp, u32 echelle, bool lineaire) {
     ++v408.seq;
-    const PAddr src_fin = src + in_w * in_h * in_bpp;
+    // Fin du dernier pixel lu : en lineaire, (out_h - 1) lignes de pas in_w puis out_w pixels ;
+    // en tuiles 8x8 (cas courant des tampons d'image), les bandes de 8 lignes de pas in_w, la
+    // derniere limitee a out_w pixels. Le remplissage au-dela de out_w n'est pas lu.
+    const u32 lignes = out_h == 0 ? 0 : (lineaire ? out_h - 1 : ((out_h + 7u) & ~7u) - 8u);
+    const u32 dernier = lineaire ? out_w : out_w * 8u;
+    const PAddr src_fin = out_h == 0 ? src : src + (lignes * in_w + dernier) * in_bpp;
+    const u32 dst_w = echelle != 0 ? out_w / 2 : out_w;
+    const u32 dst_h = echelle == 2 ? out_h / 2 : out_h;
+    const PAddr dst_fin = dst + dst_w * dst_h * out_bpp;
     bool copie_vers_dst = false;
     bool deja_compte = false; // v410 : cet envoi a gauche a deja ete compte comme anomalie
     if (classe == 2) {
@@ -1277,7 +1294,7 @@ void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_
         if (vu_a_gauche) {
             // Meme image envoyee a gauche et a droite : ce tampon n'est pas un oeil droit.
             if (src == v408.r) {
-                V408Bloquer("meme image envoyee a gauche et a droite", dst);
+                V408Bloquer("meme image envoyee a gauche et a droite", src, dst);
                 // v410 : un meme envoi a gauche ne compte qu'une fois.
                 for (std::size_t i = 0; i < v408.derniers_src.size(); ++i) {
                     if (v408.derniers_classe[i] == 1 && v408.derniers_src[i] == src) {
@@ -1288,11 +1305,13 @@ void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_
         } else if (!V408EstBloque(src)) {
             if (src != v408.r) {
                 v408.r = src;
-                v408.r_taille = in_w * in_h * in_bpp;
-                // Taille du framebuffer = taille d'ENTREE du transfert (la sortie peut etre
-                // reduite, par exemple 480x800 vers 240x400) : c'est elle que Draw compare.
-                v408.r_largeur = in_w;
-                v408.r_hauteur = in_h;
+                v408.r_taille = in_w * out_h * in_bpp;
+                // Dimensions du tampon tel que dessine (avant reduction) ; Draw accepte aussi le
+                // pas (in_w) et la hauteur allouee (in_h), voir le controle de taille dans Draw.
+                v408.r_largeur = out_w;
+                v408.r_hauteur = out_h;
+                v408.r_pas = in_w;
+                v408.r_hauteur_allouee = in_h;
                 v408.ok = 0;
                 v408.ncopies = 0;
                 v408.actif_annonce = false;
@@ -1300,9 +1319,9 @@ void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_
                 v408.anomalies_total = 0;
                 v408.anomalie_seq = ~u64{0};
                 LOG_WARNING(Render_Vulkan,
-                            "V408_CANDIDAT r=0x{:08x} taille=0x{:x} entree={}x{} sortie={}x{} "
-                            "ecran=0x{:08x}",
-                            src, v408.r_taille, in_w, in_h, out_w, out_h, dst);
+                            "V408_CANDIDAT r=0x{:08x} taille=0x{:x} pas={} hauteur_allouee={} "
+                            "source={}x{} echelle={} ecran=0x{:08x}",
+                            src, v408.r_taille, in_w, in_h, out_w, out_h, echelle, dst);
             } else {
                 ++v408.ok;
                 v408.confirme_seq = v408.seq;
@@ -1317,8 +1336,11 @@ void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_
     } else {
         if (V408DansR(src, src_fin)) {
             if (classe == 1) {
-                V408Bloquer("oeil droit envoye a gauche", dst);
+                V408Bloquer("oeil droit envoye a gauche", src, dst);
                 deja_compte = v408.r != 0;
+            } else if (classe == 3) {
+                // v412 : l'ecran du bas est affiche : y envoyer l'oeil droit est une anomalie.
+                V408Bloquer("oeil droit envoye a l'ecran du bas", src, dst);
             } else {
                 // v409 : un transfert de l'oeil droit vers une adresse qui n'est (pas encore)
                 // connue comme ecran est une COPIE comme une autre : il ne bloque que si cette
@@ -1327,12 +1349,12 @@ void V408Transfert(PAddr src, PAddr dst, u32 classe, u32 in_w, u32 in_h, u32 in_
                 copie_vers_dst = !V408EstBloque(v408.r);
             }
         } else if (V408DansCopie(src, src_fin)) {
-            V408Bloquer("copie de l'oeil droit relue par un transfert", src);
+            V408Bloquer("copie de l'oeil droit relue par un transfert", src, dst);
         }
     }
-    V408Retirer(dst, dst + out_w * out_h * out_bpp);
+    V408Retirer(dst, dst_fin);
     if (copie_vers_dst) {
-        V408Ajouter(dst, dst + out_w * out_h * out_bpp);
+        V408Ajouter(dst, dst_fin);
     }
     v408.derniers_src[v408.derniers_pos] = src;
     v408.derniers_classe[v408.derniers_pos] = deja_compte ? 0 : classe;
@@ -8590,7 +8612,10 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
         const auto& v408_fb = regs.framebuffer.framebuffer;
         const PAddr v408_color = v408_fb.GetColorBufferPhysicalAddress();
         if (v408_color == v408.r) {
-            if (v408_fb.GetWidth() != v408.r_largeur || v408_fb.GetHeight() != v408.r_hauteur) {
+            const u32 v408_w = v408_fb.GetWidth();
+            const u32 v408_h = v408_fb.GetHeight();
+            if ((v408_w != v408.r_largeur && v408_w != v408.r_pas) ||
+                (v408_h != v408.r_hauteur && v408_h != v408.r_hauteur_allouee)) {
                 V408Bloquer("autre rendu dans le tampon de l'oeil droit", v408_color);
             }
         } else {
@@ -10427,7 +10452,9 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
                       config.input_width.Value(), config.input_height.Value(),
                       V408OctetsTransfert(static_cast<u32>(config.input_format.Value())),
                       config.output_width.Value(), config.output_height.Value(),
-                      V408OctetsTransfert(static_cast<u32>(config.output_format.Value())));
+                      V408OctetsTransfert(static_cast<u32>(config.output_format.Value())),
+                      static_cast<u32>(config.scaling.Value()),
+                      config.input_linear.Value() != 0);
     }
     const bool result = res_cache.AccelerateDisplayTransfer(config);
     if (IsTraceDisplayTransferEnabled()) {
