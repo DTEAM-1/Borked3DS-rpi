@@ -97,8 +97,8 @@ void V408Retenir(std::array<PAddr, 8>& liste, std::size_t& n, PAddr a) {
 
 // V408 : classe de la destination du display transfer en cours, lue par le rasterizer Vulkan
 // (vk_rasterizer.cpp, AccelerateDisplayTransfer) juste apres : 0 = autre, 1 = ecran du haut
-// gauche, 2 = ecran du haut droite. Une adresse droite egale a une adresse gauche (configuration
-// mono) est classee gauche.
+// gauche, 2 = ecran du haut droite, 3 = ecran du bas (v412). Une adresse droite egale a une
+// adresse gauche (configuration mono) est classee gauche.
 std::atomic<u32> g_v408_classe{0};
 
 // V405 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE=1.
@@ -624,8 +624,22 @@ void GPU::MemoryTransfer() {
             V408Retenir(g_v408_droite, g_v408_ndroite, v408_top.address_right1);
             V408Retenir(g_v408_droite, g_v408_ndroite, v408_top.address_right2);
             const PAddr v408_dst = config.GetPhysicalOutputAddress();
+            // v412 : les registres ACTUELS d'abord (haut gauche, haut droite, bas), l'historique
+            // seulement pour une adresse absente des registres actuels. TB125-TB127 : 0x18300000,
+            // vu dans les registres du haut au demarrage, restait classe gauche alors que c'est
+            // l'ecran du bas (TB118). 3 = ecran du bas.
+            const auto& v408_bas = impl->pica.regs.framebuffer_config[1];
             u32 v408_classe = 0;
-            if (V408Connu(g_v408_gauche, v408_dst)) {
+            if (v408_dst == 0) {
+                v408_classe = 0;
+            } else if (v408_dst == v408_top.address_left1 || v408_dst == v408_top.address_left2) {
+                v408_classe = 1;
+            } else if (v408_dst == v408_top.address_right1 ||
+                       v408_dst == v408_top.address_right2) {
+                v408_classe = 2;
+            } else if (v408_dst == v408_bas.address_left1 || v408_dst == v408_bas.address_left2) {
+                v408_classe = 3;
+            } else if (V408Connu(g_v408_gauche, v408_dst)) {
                 v408_classe = 1;
             } else if (V408Connu(g_v408_droite, v408_dst)) {
                 v408_classe = 2;
