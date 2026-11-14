@@ -380,8 +380,14 @@ void V391ApplyPerGameLighting(u64 title_id) {
     }};
     const bool listee = std::find(titres.begin(), titres.end(), title_id) != titres.end();
     const char* non = std::getenv("BORKED3DS_V3DV_V391_NO_LITE");
-    if (!listee || (non != nullptr && non[0] != '\0')) {
-        LOG_WARNING(Frontend, "V391_ECLAIRAGE_ALLEGE titre={:016X} actif=0", title_id);
+    // v415 : avec le rythme par image, Luigi retrouve sa cadence de console (~30 fps) et le Pi
+    // tient les 8 lumieres a 100 % de vitesse (TB143-TB144). L'allegement, qui compensait la
+    // mauvaise cause (images calculees puis jetees), n'a plus lieu d'etre : ni liste, ni exception.
+    const char* v415 = std::getenv("BORKED3DS_V3DV_V415_CADENCE");
+    const bool v415_actif = v415 != nullptr && v415[0] != '\0' && v415[0] != '0';
+    if (!listee || (non != nullptr && non[0] != '\0') || v415_actif) {
+        LOG_WARNING(Frontend, "V391_ECLAIRAGE_ALLEGE titre={:016X} actif=0{}", title_id,
+                    v415_actif ? " (rythme v415)" : "");
         return;
     }
     if (std::getenv("BORKED3DS_V3DV_V391_LITE_LIGHTS") == nullptr) {
