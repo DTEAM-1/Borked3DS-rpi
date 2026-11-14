@@ -122,6 +122,33 @@ void V408Retenir(std::array<V408Adresse, 8>& liste, std::size_t& n, PAddr a, s64
     ++n;
 }
 
+// v416 : tampons REELLEMENT AFFICHES (adresse gauche mise en service a chaque echange de l'ecran du
+// haut). Les registres seuls ne suffisent pas : SetBufferSwap n'ecrit que l'emplacement 1 OU 2, et
+// l'autre garde une adresse perimee. TB147 (Luigi) : gauche1 = 0x18300000 depuis le demarrage,
+// alors que l'ecran affiche trois tampons 0x211xxxxx remplis par COPIE de texture.
+std::array<V408Adresse, 8> g_v416_montres{};
+std::size_t g_v416_nmontres = 0;
+
+bool V416CouvreUnEcran(PAddr debut, PAddr fin, s64 maintenant) {
+    for (const V408Adresse& x : g_v416_montres) {
+        if (x.a != 0 && maintenant - x.vu <= kV408Oubli && x.a >= debut && x.a < fin) {
+            return true;
+        }
+    }
+    return false;
+}
+
+u32 V416OctetsPixel(u32 format) {
+    switch (format) {
+    case 0: // RGBA8
+        return 4;
+    case 1: // RGB8
+        return 3;
+    default: // RGB565, RGB5A1, RGBA4
+        return 2;
+    }
+}
+
 } // namespace
 
 // V413 (MESURE) : BORKED3DS_V3DV_V413_TRAVAIL=1. Une ligne V413_TRAVAIL par seconde de temps
@@ -404,6 +431,22 @@ void V415Echange(s64 maintenant) {
     V415Fenetre(maintenant);
 }
 
+// v416 : une IMAGE CALCULEE = la premiere ecriture (display transfer OU copie de texture) dont la
+// zone [debut, fin) couvre un tampon affiche ces 3 dernieres secondes, apres au moins un draw
+// depuis l'image precedente. Castlevania : transfert direct ; Metroid : double tampon ; Luigi :
+// triple tampon rempli par copie (la copie commence 0x3000 avant l'adresse affichee).
+void V416Ecriture(PAddr debut, PAddr fin, s64 maintenant) {
+    if (fin <= debut || !V416CouvreUnEcran(debut, fin, maintenant) ||
+        Pica::g_v413_draws == g_v415_draws_image) {
+        return;
+    }
+    g_v415_draws_image = Pica::g_v413_draws;
+    ++g_v413_rendus_gauche;
+    if (IsV415CadenceEnabled()) {
+        V415Image(maintenant);
+    }
+}
+
 } // namespace
 
 // V415 : attente due par le thread du jeu, en nanosecondes de temps emule, consommee a la fin de
@@ -675,8 +718,15 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
         if (IsV413TravailEnabled()) {
             V413FinImage(impl->timing.GetGlobalTicks());
         }
-        if (IsV415CadenceEnabled()) {
-            V415Echange(static_cast<s64>(impl->timing.GetGlobalTicks()));
+        if (IsV415CadenceEnabled() || IsV413TravailEnabled()) {
+            const s64 v416_t = static_cast<s64>(impl->timing.GetGlobalTicks());
+            const auto& v416_fb = impl->pica.regs.framebuffer_config[0];
+            V408Retenir(g_v416_montres, g_v416_nmontres,
+                        v416_fb.active_fb == 0 ? v416_fb.address_left1 : v416_fb.address_left2,
+                        v416_t);
+            if (IsV415CadenceEnabled()) {
+                V415Echange(v416_t);
+            }
         }
         impl->system.perf_stats->EndGameFrame();
         right_eye_disabler->ReportEndFrame();
@@ -898,6 +948,23 @@ void GPU::MemoryTransfer() {
     if (config.is_texture_copy) {
         ++g_v413_copies;
         g_v413_copie_octets += config.texture_copy.size;
+        if (IsV415CadenceEnabled() || IsV413TravailEnabled()) {
+            // v416 : zone ecrite par la copie, comme AccelerateTextureCopy la calcule
+            // (rasterizer_cache.h) : lignes de output_width octets separees de output_gap.
+            const u32 cs = config.texture_copy.size & ~15u;
+            u32 ow = config.texture_copy.output_width * 16;
+            u32 og = config.texture_copy.output_gap * 16;
+            if (og == 0 || ow == 0 || ow >= cs) {
+                ow = cs;
+                og = 0;
+            }
+            if (cs != 0) {
+                const u32 lignes = cs / ow;
+                const u32 etendue = (lignes - 1) * (ow + og) + ow;
+                const PAddr d = config.GetPhysicalOutputAddress();
+                V416Ecriture(d, d + etendue, static_cast<s64>(impl->timing.GetGlobalTicks()));
+            }
+        }
     } else {
         ++g_v413_transferts;
         g_v413_transfert_pixels += static_cast<u64>(config.output_width.Value()) *
@@ -986,14 +1053,15 @@ void GPU::MemoryTransfer() {
                 v408_classe = 2;
             }
             g_v408_classe.store(v408_classe, std::memory_order_relaxed);
-            // v415 : une image CALCULEE = un envoi vers l'ecran gauche precede d'au moins un draw
-            // depuis l'image precedente (un meme rendu renvoye a l'ecran ne compte pas deux fois).
-            if (v408_classe == 1 && Pica::g_v413_draws != g_v415_draws_image) {
-                g_v415_draws_image = Pica::g_v413_draws;
-                ++g_v413_rendus_gauche; // v414
-                if (IsV415CadenceEnabled()) {
-                    V415Image(v408_t);
-                }
+            // v416 : image calculee = ecriture couvrant un tampon affiche (voir V416Ecriture).
+            {
+                const u32 w = config.scaling != 0 ? config.output_width.Value() / 2
+                                                  : config.output_width.Value();
+                const u32 h = config.scaling == 2 ? config.output_height.Value() / 2
+                                                  : config.output_height.Value();
+                const u32 octets =
+                    w * h * V416OctetsPixel(static_cast<u32>(config.output_format.Value()));
+                V416Ecriture(v408_dst, v408_dst + octets, v408_t);
             }
             g_v413_rendus_droite += v408_classe == 2 ? 1 : 0;
         }
