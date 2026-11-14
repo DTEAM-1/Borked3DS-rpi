@@ -31,6 +31,11 @@ SERIALIZE_EXPORT_IMPL(Service::GSP::SessionData)
 SERIALIZE_EXPORT_IMPL(Service::GSP::GSP_GPU)
 SERVICE_CONSTRUCT_IMPL(Service::GSP::GSP_GPU)
 
+namespace VideoCore {
+// V415 (video_core/gpu.cpp) : attente due par le thread du jeu, en ns de temps emule.
+s64 V415AttenteNs(s64 maintenant);
+} // namespace VideoCore
+
 namespace Service::GSP {
 
 // Beginning address of HW regs
@@ -585,11 +590,17 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
                     static_cast<u32>(command_buffer->should_stop));
     }
 
-    if (requires_delay) {
+    // V415 : rythme par image (video_core/gpu.cpp). Si une image vient de finir avant son heure
+    // visee, le thread du jeu dort jusqu'a cette heure, en temps emule, en plus du delai manuel.
+    const s64 v415_ns = VideoCore::V415AttenteNs(static_cast<s64>(system.CoreTiming().GetGlobalTicks()));
+    if (requires_delay || v415_ns > 0) {
+        const s64 delai_ns =
+            (requires_delay
+                 ? static_cast<s64>(Settings::values.delay_game_render_thread_us.GetValue()) * 1000
+                 : 0) +
+            v415_ns;
         ctx.RunAsync(
-            [](Kernel::HLERequestContext& ctx) {
-                return Settings::values.delay_game_render_thread_us.GetValue() * 1000;
-            },
+            [delai_ns](Kernel::HLERequestContext& ctx) { return delai_ns; },
             [](Kernel::HLERequestContext& ctx) {
                 IPC::RequestBuilder rb(ctx, 1, 0);
                 rb.Push(ResultSuccess);
