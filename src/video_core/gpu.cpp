@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 
@@ -81,28 +82,43 @@ bool IsV408OeilDroitEnabled() {
 }
 
 // V408 (v409) : adresses deja vues comme ecran du haut gauche / droit (8 par cote, anneau).
-std::array<PAddr, 8> g_v408_gauche{};
+// v415 : avec OUBLI. Une adresse n'est retenue que si elle a ete vue dans les registres depuis
+// moins de 3 s de temps emule. TB139 (Luigi) : 0x18000000 et 0x18300000, ecrans au demarrage puis
+// tampons de travail (4 transferts par image), restaient classes « ecran gauche » pour toute la
+// session (6 « images » comptees par image).
+struct V408Adresse {
+    PAddr a = 0;
+    s64 vu = 0; // ticks emules de la derniere presence dans les registres
+};
+constexpr s64 kV408Oubli = 3 * static_cast<s64>(BASE_CLOCK_RATE_ARM11);
+std::array<V408Adresse, 8> g_v408_gauche{};
 std::size_t g_v408_ngauche = 0;
-std::array<PAddr, 8> g_v408_droite{};
+std::array<V408Adresse, 8> g_v408_droite{};
 std::size_t g_v408_ndroite = 0;
 
-bool V408Connu(const std::array<PAddr, 8>& liste, PAddr a) {
+bool V408Connu(const std::array<V408Adresse, 8>& liste, PAddr a, s64 maintenant) {
     if (a == 0) {
         return false;
     }
-    for (const PAddr x : liste) {
-        if (x == a) {
+    for (const V408Adresse& x : liste) {
+        if (x.a == a && maintenant - x.vu <= kV408Oubli) {
             return true;
         }
     }
     return false;
 }
 
-void V408Retenir(std::array<PAddr, 8>& liste, std::size_t& n, PAddr a) {
-    if (a == 0 || V408Connu(liste, a)) {
+void V408Retenir(std::array<V408Adresse, 8>& liste, std::size_t& n, PAddr a, s64 maintenant) {
+    if (a == 0) {
         return;
     }
-    liste[n % liste.size()] = a;
+    for (V408Adresse& x : liste) {
+        if (x.a == a) {
+            x.vu = maintenant;
+            return;
+        }
+    }
+    liste[n % liste.size()] = V408Adresse{a, maintenant};
     ++n;
 }
 
@@ -215,7 +231,191 @@ void V413FinImage(s64 ticks) {
     images = 0;
     max_draws = max_sommets = max_listes = 0;
 }
+// ---------------------------------------------------------------------------------------------
+// V415 : RYTHME PAR IMAGE (BORKED3DS_V3DV_V415_CADENCE=1). Aucun titre dans le code.
+//
+// Cause (TB128-TB144) : le GPU emule s'execute en ZERO temps emule. Un jeu a cadence libre,
+// ralenti sur la vraie console par son GPU, calcule alors plus d'images que l'ecran n'en affiche :
+// Castlevania ~2 par image affichee (personnage qui glisse : sa logique fait plusieurs pas par
+// image affichee), Luigi 1,5 a 2 (le Pi dessine des images jetees : 55-60 % de vitesse, une partie
+// du rendu jamais vue). Un delai fixe par lot de commandes (delay_game_render_thread_us) corrige,
+// mais ne tombe juste pour aucune scene (TB144 : 26-28 fps, glitchs courts).
+//
+// Mecanisme :
+//  1. Detection : sur une seconde emulee, plus d'images CALCULEES (envois vers l'ecran gauche
+//     precedes de draws) que d'images AFFICHEES (echanges de l'ecran du haut), deux fois de
+//     suite : le rythme s'engage. Un jeu cale sur l'ecran (Metroid) n'est jamais touche.
+//  2. Rythme : chaque image calculee doit durer k rafraichissements (k x FRAME_TICKS). Si elle
+//     finit plus tot, le jeu dort (temps emule) jusqu'a l'heure visee, au prochain lot de
+//     commandes qu'il envoie (gsp_gpu.cpp, TriggerCmdReqQueue). Chaque image reste affichee
+//     exactement k rafraichissements : mouvement regulier.
+//  3. Choix de k : depart a 1 (60 fps). Vitesse d'emulation < 97 % deux secondes de suite :
+//     k + 1 (max 3). Apres un temps a >= 99,5 % : essai de k - 1 ; s'il fait chuter la vitesse,
+//     retour a k et l'essai suivant attend deux fois plus longtemps (30 s, 60 s, ... 600 s).
+// Journal : V415_CADENCE (engagement, changements de k, bilan toutes les 10 s).
+// ---------------------------------------------------------------------------------------------
+bool IsV415CadenceEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_V415_CADENCE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+u64 g_v415_draws_image = 0; // compteur de draws au dernier envoi compte comme image
+
+struct V415Etat {
+    bool actif = false;
+    u32 k = 1;
+    s64 fin_visee = 0; // fin visee de la derniere image (ticks emules)
+    s64 reveil = 0;    // le jeu dort jusqu'a ce tick (consomme par GSP)
+    s64 debut_fenetre = -1;
+    std::chrono::steady_clock::time_point debut_hote{};
+    u32 images = 0;   // images calculees dans la fenetre
+    u32 echanges = 0; // images affichees dans la fenetre
+    u32 surprod_suite = 0;
+    u32 lent_suite = 0;
+    u32 rapide_suite = 0;
+    u32 essai_delai = 30; // fenetres a >= 99,5 % avant un essai de k - 1
+    u32 essai_k = 0;      // k d'avant l'essai en cours (0 = aucun essai)
+    u32 essai_fenetres = 0;
+    u32 fenetres = 0;
+    u64 attente_ticks = 0;
+    u32 attentes = 0;
+    u32 images_bilan = 0;
+    double vitesse_bilan = 0.0;
+};
+V415Etat v415;
+
+void V415Fenetre(s64 maintenant) {
+    const auto hote = std::chrono::steady_clock::now();
+    if (v415.debut_fenetre < 0) {
+        v415.debut_fenetre = maintenant;
+        v415.debut_hote = hote;
+        return;
+    }
+    const s64 duree = maintenant - v415.debut_fenetre;
+    if (duree < static_cast<s64>(BASE_CLOCK_RATE_ARM11)) {
+        return;
+    }
+    const double s_emule = static_cast<double>(duree) / BASE_CLOCK_RATE_ARM11;
+    const double s_hote = std::chrono::duration<double>(hote - v415.debut_hote).count();
+    const double vitesse = s_hote > 0.0 ? s_emule / s_hote : 1.0;
+    const double ips = v415.images / s_emule;
+    const double eps = v415.echanges / s_emule;
+
+    if (!v415.actif) {
+        const bool surprod = v415.images > v415.echanges + v415.echanges / 20 + 1;
+        v415.surprod_suite = surprod ? v415.surprod_suite + 1 : 0;
+        if (v415.surprod_suite >= 2) {
+            v415.actif = true;
+            v415.k = 1;
+            v415.fin_visee = maintenant;
+            LOG_WARNING(HW_GPU,
+                        "V415_CADENCE engage calculees_par_s={:.1f} affichees_par_s={:.1f} "
+                        "vitesse={:.1f}% k=1",
+                        ips, eps, vitesse * 100.0);
+        }
+    } else if (v415.essai_k != 0) {
+        ++v415.essai_fenetres;
+        if (vitesse < 0.97) {
+            LOG_WARNING(HW_GPU, "V415_CADENCE essai_echoue k={} retour_k={} vitesse={:.1f}%",
+                        v415.k, v415.essai_k, vitesse * 100.0);
+            v415.k = v415.essai_k;
+            v415.essai_k = 0;
+            v415.essai_delai = std::min<u32>(v415.essai_delai * 2, 600);
+            v415.lent_suite = 0;
+            v415.rapide_suite = 0;
+        } else if (v415.essai_fenetres >= 3) {
+            LOG_WARNING(HW_GPU, "V415_CADENCE essai_reussi k={} vitesse={:.1f}%", v415.k,
+                        vitesse * 100.0);
+            v415.essai_k = 0;
+            v415.essai_delai = 30;
+        }
+    } else {
+        if (vitesse < 0.97) {
+            ++v415.lent_suite;
+            v415.rapide_suite = 0;
+        } else if (vitesse >= 0.995) {
+            ++v415.rapide_suite;
+            v415.lent_suite = 0;
+        } else {
+            v415.lent_suite = 0;
+            v415.rapide_suite = 0;
+        }
+        if (v415.lent_suite >= 2 && v415.k < 3) {
+            ++v415.k;
+            v415.lent_suite = 0;
+            LOG_WARNING(HW_GPU, "V415_CADENCE k={} (vitesse={:.1f}%, cible {:.0f} fps)", v415.k,
+                        vitesse * 100.0, 60.0 / v415.k);
+        } else if (v415.rapide_suite >= v415.essai_delai && v415.k > 1) {
+            v415.essai_k = v415.k;
+            --v415.k;
+            v415.essai_fenetres = 0;
+            v415.rapide_suite = 0;
+            LOG_WARNING(HW_GPU, "V415_CADENCE essai k={} (depuis k={})", v415.k, v415.essai_k);
+        }
+    }
+
+    ++v415.fenetres;
+    v415.images_bilan += v415.images;
+    v415.vitesse_bilan += vitesse;
+    if (v415.fenetres % 10 == 0) {
+        LOG_WARNING(HW_GPU,
+                    "V415_CADENCE bilan actif={} k={} calculees_par_s={:.1f} vitesse={:.1f}% "
+                    "attente_moy_ms={:.2f}",
+                    v415.actif ? 1 : 0, v415.k, v415.images_bilan / 10.0,
+                    v415.vitesse_bilan * 10.0,
+                    v415.attentes == 0 ? 0.0
+                                       : static_cast<double>(v415.attente_ticks) * 1000.0 /
+                                             BASE_CLOCK_RATE_ARM11 / v415.attentes);
+        v415.images_bilan = 0;
+        v415.vitesse_bilan = 0.0;
+        v415.attente_ticks = 0;
+        v415.attentes = 0;
+    }
+    v415.debut_fenetre = maintenant;
+    v415.debut_hote = hote;
+    v415.images = 0;
+    v415.echanges = 0;
+}
+
+// Une image calculee vient de finir (envoi vers l'ecran gauche).
+void V415Image(s64 maintenant) {
+    ++v415.images;
+    if (v415.actif) {
+        const s64 cible = v415.fin_visee + static_cast<s64>(v415.k * FRAME_TICKS);
+        if (maintenant < cible) {
+            v415.reveil = cible;
+            v415.fin_visee = cible;
+            v415.attente_ticks += static_cast<u64>(cible - maintenant);
+            ++v415.attentes;
+        } else {
+            v415.fin_visee = maintenant;
+            v415.reveil = 0;
+        }
+    }
+    V415Fenetre(maintenant);
+}
+
+// Une image vient d'etre affichee (echange de l'ecran du haut).
+void V415Echange(s64 maintenant) {
+    ++v415.echanges;
+    V415Fenetre(maintenant);
+}
+
 } // namespace
+
+// V415 : attente due par le thread du jeu, en nanosecondes de temps emule, consommee a la fin de
+// chaque lot de commandes GSP (gsp_gpu.cpp, TriggerCmdReqQueue). 0 si rien a attendre.
+s64 V415AttenteNs(s64 maintenant) {
+    if (!IsV415CadenceEnabled() || v415.reveil <= maintenant) {
+        return 0;
+    }
+    const s64 ticks = v415.reveil - maintenant;
+    v415.reveil = 0;
+    return static_cast<s64>(static_cast<double>(ticks) * 1e9 / BASE_CLOCK_RATE_ARM11);
+}
 
 // V408 : classe de la destination du display transfer en cours, lue par le rasterizer Vulkan
 // (vk_rasterizer.cpp, AccelerateDisplayTransfer) juste apres : 0 = autre, 1 = ecran du haut
@@ -474,6 +674,9 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
     if (screen_id == 0) {
         if (IsV413TravailEnabled()) {
             V413FinImage(impl->timing.GetGlobalTicks());
+        }
+        if (IsV415CadenceEnabled()) {
+            V415Echange(static_cast<s64>(impl->timing.GetGlobalTicks()));
         }
         impl->system.perf_stats->EndGameFrame();
         right_eye_disabler->ReportEndFrame();
@@ -748,7 +951,7 @@ void GPU::MemoryTransfer() {
                 }
             }
         }
-        if (IsV408OeilDroitEnabled() || IsV413TravailEnabled()) {
+        if (IsV408OeilDroitEnabled() || IsV413TravailEnabled() || IsV415CadenceEnabled()) {
             // V408 (v409) : classement par HISTORIQUE. TB123 (Metroid) : le premier transfert vers
             // le second tampon de l'ecran droit (0x18370800, double tampon avec 0x183b6d00, TB118)
             // a eu lieu avant que cette adresse paraisse dans les registres ; un classement sur les
@@ -756,10 +959,11 @@ void GPU::MemoryTransfer() {
             // fois comme ecran gauche (ou droit) le reste. Vue des deux cotes : classee gauche (le
             // cas prudent, qui bloque si l'oeil droit y est envoye).
             const auto& v408_top = impl->pica.regs.framebuffer_config[0];
-            V408Retenir(g_v408_gauche, g_v408_ngauche, v408_top.address_left1);
-            V408Retenir(g_v408_gauche, g_v408_ngauche, v408_top.address_left2);
-            V408Retenir(g_v408_droite, g_v408_ndroite, v408_top.address_right1);
-            V408Retenir(g_v408_droite, g_v408_ndroite, v408_top.address_right2);
+            const s64 v408_t = static_cast<s64>(impl->timing.GetGlobalTicks());
+            V408Retenir(g_v408_gauche, g_v408_ngauche, v408_top.address_left1, v408_t);
+            V408Retenir(g_v408_gauche, g_v408_ngauche, v408_top.address_left2, v408_t);
+            V408Retenir(g_v408_droite, g_v408_ndroite, v408_top.address_right1, v408_t);
+            V408Retenir(g_v408_droite, g_v408_ndroite, v408_top.address_right2, v408_t);
             const PAddr v408_dst = config.GetPhysicalOutputAddress();
             // v412 : les registres ACTUELS d'abord (haut gauche, haut droite, bas), l'historique
             // seulement pour une adresse absente des registres actuels. TB125-TB127 : 0x18300000,
@@ -776,13 +980,21 @@ void GPU::MemoryTransfer() {
                 v408_classe = 2;
             } else if (v408_dst == v408_bas.address_left1 || v408_dst == v408_bas.address_left2) {
                 v408_classe = 3;
-            } else if (V408Connu(g_v408_gauche, v408_dst)) {
+            } else if (V408Connu(g_v408_gauche, v408_dst, v408_t)) {
                 v408_classe = 1;
-            } else if (V408Connu(g_v408_droite, v408_dst)) {
+            } else if (V408Connu(g_v408_droite, v408_dst, v408_t)) {
                 v408_classe = 2;
             }
             g_v408_classe.store(v408_classe, std::memory_order_relaxed);
-            g_v413_rendus_gauche += v408_classe == 1 ? 1 : 0; // v414
+            // v415 : une image CALCULEE = un envoi vers l'ecran gauche precede d'au moins un draw
+            // depuis l'image precedente (un meme rendu renvoye a l'ecran ne compte pas deux fois).
+            if (v408_classe == 1 && Pica::g_v413_draws != g_v415_draws_image) {
+                g_v415_draws_image = Pica::g_v413_draws;
+                ++g_v413_rendus_gauche; // v414
+                if (IsV415CadenceEnabled()) {
+                    V415Image(v408_t);
+                }
+            }
             g_v413_rendus_droite += v408_classe == 2 ? 1 : 0;
         }
         if (right_eye_disabler->ShouldAllowDisplayTransfer(config.GetPhysicalInputAddress(),
