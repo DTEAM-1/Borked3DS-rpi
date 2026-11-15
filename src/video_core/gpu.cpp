@@ -344,7 +344,7 @@ void V415Fenetre(s64 maintenant) {
             v415.k = 1;
             v415.fin_visee = maintenant;
             LOG_WARNING(HW_GPU,
-                        "V415_CADENCE v417 engage calculees_par_s={:.1f} affichees_par_s={:.1f} "
+                        "V415_CADENCE v418 engage calculees_par_s={:.1f} affichees_par_s={:.1f} "
                         "vitesse={:.1f}% k=1",
                         ips, eps, vitesse * 100.0);
         }
@@ -452,6 +452,10 @@ void V416Ecriture(PAddr debut, PAddr fin, s64 maintenant) {
     // image. TB148 (Luigi) : deux copies par image dans le meme tampon (0x18300000 -> ecran - 0x3000
     // puis 0x18000000 -> ecran - 0x2eb0) etaient comptees comme deux images : chaque image durait
     // 2k rafraichissements (30, 15 puis 10 fps affiches).
+    // v418 : « sans echange » voulait dire n'importe quel echange. TB149 : pendant l'attente posee
+    // apres la premiere copie, l'echange de l'image PRECEDENTE (un autre tampon) passait, et la
+    // seconde copie etait de nouveau comptee (60 comptees pour 30 affichees). Le meme tampon ne
+    // porte une nouvelle image qu'apres avoir ete LUI-MEME mis a l'affichage.
     if (ecran == g_v417_dernier_ecran && !g_v417_echange_depuis) {
         return;
     }
@@ -738,10 +742,12 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
         if (IsV415CadenceEnabled() || IsV413TravailEnabled()) {
             const s64 v416_t = static_cast<s64>(impl->timing.GetGlobalTicks());
             const auto& v416_fb = impl->pica.regs.framebuffer_config[0];
-            V408Retenir(g_v416_montres, g_v416_nmontres,
-                        v416_fb.active_fb == 0 ? v416_fb.address_left1 : v416_fb.address_left2,
-                        v416_t);
-            g_v417_echange_depuis = true;
+            const PAddr v418_montre =
+                v416_fb.active_fb == 0 ? v416_fb.address_left1 : v416_fb.address_left2;
+            V408Retenir(g_v416_montres, g_v416_nmontres, v418_montre, v416_t);
+            if (v418_montre == g_v417_dernier_ecran) {
+                g_v417_echange_depuis = true; // v418 : ce tampon-la a ete affiche
+            }
             if (IsV415CadenceEnabled()) {
                 V415Echange(v416_t);
             }
