@@ -357,49 +357,16 @@ void V389ApplyV3dvDefaults() {
 #endif
 }
 
-// v391 : eclairage allege PAR JEU (Vulkan seulement). Luigi's Mansion 2 est limite par son
-// eclairage a 8 lumieres par pixel (TB90 : 40 -> 26 ms/image sans eclairage). Pour ce titre
-// seulement, on ne calcule qu'une partie des lumieres (voir WriteLighting,
-// glsl_fs_shader_gen.cpp). Les autres jeux ne sont jamais touches.
-//   BORKED3DS_V3DV_V391_LITE_LIGHTS=N : nombre de lumieres calculees (1-7), pose ici a 6 pour
-//                                       les titres de la liste ; une valeur manuelle prime.
-//   BORKED3DS_V3DV_V391_LITE_SPEC=K   : lumieres avec speculaire parmi celles calculees (option).
-//   BORKED3DS_V3DV_V391_NO_LITE=1     : desactive l'allegement meme pour Luigi.
+// v419 : la liste par titre de v391 (Luigi's Mansion 2 a 6 lumieres sur 8) est RETIREE. Sa cause
+// etait le GPU emule en zero temps : le jeu calculait 1,5 a 2 images par image affichee. Avec le
+// rythme par image (v415, video_core/gpu.cpp), Luigi tient ses 8 lumieres a 100 % de vitesse
+// (TB150). Les variables manuelles BORKED3DS_V3DV_V391_LITE_LIGHTS / _SPEC restent lues par
+// glsl_fs_shader_gen.cpp pour un essai volontaire, mais plus rien ne les pose.
 void V391ApplyPerGameLighting(u64 title_id) {
-#if defined(BORKED3DS_V389_PLATFORM_DEFAULTS)
-    static bool posee_par_nous = false;
-    if (posee_par_nous) {
-        unsetenv("BORKED3DS_V3DV_V391_LITE_LIGHTS");
-        posee_par_nous = false;
-    }
-    if (Settings::values.graphics_api.GetValue() != Settings::GraphicsAPI::Vulkan) {
-        return;
-    }
-    static constexpr std::array<u64, 1> titres{{
-        0x0004000000076500ULL, // Luigi's Mansion 2 (version testee par David)
-    }};
-    const bool listee = std::find(titres.begin(), titres.end(), title_id) != titres.end();
-    const char* non = std::getenv("BORKED3DS_V3DV_V391_NO_LITE");
-    // v415 : avec le rythme par image, Luigi retrouve sa cadence de console (~30 fps) et le Pi
-    // tient les 8 lumieres a 100 % de vitesse (TB143-TB144). L'allegement, qui compensait la
-    // mauvaise cause (images calculees puis jetees), n'a plus lieu d'etre : ni liste, ni exception.
-    const char* v415 = std::getenv("BORKED3DS_V3DV_V415_CADENCE");
-    const bool v415_actif = v415 != nullptr && v415[0] != '\0' && v415[0] != '0';
-    if (!listee || (non != nullptr && non[0] != '\0') || v415_actif) {
-        LOG_WARNING(Frontend, "V391_ECLAIRAGE_ALLEGE titre={:016X} actif=0{}", title_id,
-                    v415_actif ? " (rythme v415)" : "");
-        return;
-    }
-    if (std::getenv("BORKED3DS_V3DV_V391_LITE_LIGHTS") == nullptr) {
-        setenv("BORKED3DS_V3DV_V391_LITE_LIGHTS", "6", 0);
-        posee_par_nous = true;
-    }
-    LOG_WARNING(Frontend, "V391_ECLAIRAGE_ALLEGE titre={:016X} actif=1 lumieres={} speculaire={}",
-                title_id, std::getenv("BORKED3DS_V3DV_V391_LITE_LIGHTS"),
-                std::getenv("BORKED3DS_V3DV_V391_LITE_SPEC") != nullptr
-                    ? std::getenv("BORKED3DS_V3DV_V391_LITE_SPEC")
-                    : "toutes");
-#endif
+    // Le marqueur V391_ECLAIRAGE_ALLEGE est garde : borked3ds.sh le cherche dans le binaire.
+    LOG_WARNING(Frontend,
+                "V391_ECLAIRAGE_ALLEGE titre={:016X} actif=0 (v419 : liste retiree, eclairage complet)",
+                title_id);
 }
 
 } // namespace
