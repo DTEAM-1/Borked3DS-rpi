@@ -42,11 +42,8 @@
 #include "video_core/shader/generator/glsl_shader_gen.h"
 #include "video_core/texture/texture_decode.h"
 
-// V405 : reperage du tampon de l'oeil droit, fait dans video_core/gpu.cpp (display transfer).
+// V408 : classe de la destination du display transfer, calculee dans video_core/gpu.cpp.
 namespace VideoCore {
-extern std::atomic<u32> g_v405_right_src;
-extern std::atomic<u64> g_v405_transfer_seq;
-extern std::atomic<u64> g_v405_confirm_seq;
 extern std::atomic<u32> g_v408_classe; // V408 : 0 autre, 1 haut gauche, 2 haut droite, 3 bas
 } // namespace VideoCore
 
@@ -836,161 +833,6 @@ void V114ShaderMultiplexFileTraceNumber(const char* label, u64 value) {
     return cached;
 }
 
-// V406 (DIAGNOSTIC SEUL, aucun changement de rendu) : BORKED3DS_V3DV_V406_DEPENDANCES=1.
-// Question : une image AFFICHEE depend-elle du contenu d'une autre cible de rendu ? TB118/TB119
-// (Metroid) : v405 ne saute que les vrais draws de l'oeil droit (0x180ea600, 240x400, son propre
-// depth), toutes les copies restent faites par le GPU, et pourtant l'ecran du haut devient noir.
-// Hypothese D : un rendu visible LIT l'oeil droit (texture d'un draw, ou copie de texture qui
-// alimente une chaine d'effets). Cette sonde garde les 16 dernieres cibles de rendu ecrites
-// (couleur et depth, adresse et taille) et signale chaque lecture qui tombe dedans :
-//   - origine=dessin : une unite de texture active d'un draw ;
-//   - origine=copie  : la source d'une copie de texture (TextureCopy) ;
-//   - origine=ecran  : la source d'un display transfer.
-// Une ligne V406_LECTURE a la premiere occurrence de chaque triplet (ecrit, lu, cible), au plus
-// 96 ; puis un bilan V406_BILAN toutes les 20 s avec le nombre d'occurrences de chacun.
-[[nodiscard]] bool IsV406DependancesEnabled() {
-    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_V406_DEPENDANCES");
-    return cached;
-}
-
-struct V406Cible {
-    PAddr addr = 0;
-    u32 taille = 0;
-    u32 w = 0;
-    u32 h = 0;
-    u32 type = 0; // 0 = couleur, 1 = depth
-    u64 vu = 0;
-};
-std::array<V406Cible, 16> v406_cibles{};
-u64 v406_horloge = 0;
-
-struct V406Lecture {
-    u32 origine = 0; // 0 = dessin, 1 = copie, 2 = ecran
-    PAddr ecrit = 0;
-    PAddr lu = 0;
-    PAddr cible = 0;
-    u32 w = 0;
-    u32 h = 0;
-    u32 type = 0;
-    u64 compte = 0;
-};
-std::array<V406Lecture, 96> v406_lectures{};
-std::size_t v406_nlectures = 0;
-std::chrono::steady_clock::time_point v406_dernier_bilan{};
-
-[[nodiscard]] u32 V406OctetsCouleur(u32 format) {
-    switch (format) {
-    case 0:
-        return 4; // RGBA8
-    case 1:
-        return 3; // RGB8
-    case 2:
-    case 3:
-    case 4:
-        return 2; // RGB5A1, RGB565, RGBA4
-    default:
-        return 4;
-    }
-}
-
-[[nodiscard]] u32 V406OctetsDepth(u32 format) {
-    switch (format) {
-    case 0:
-        return 2; // D16
-    case 2:
-        return 3; // D24
-    case 3:
-        return 4; // D24S8
-    default:
-        return 4;
-    }
-}
-
-[[nodiscard]] const char* V406NomOrigine(u32 origine) {
-    switch (origine) {
-    case 0:
-        return "dessin";
-    case 1:
-        return "copie";
-    default:
-        return "ecran";
-    }
-}
-
-void V406NoterCible(PAddr addr, u32 taille, u32 w, u32 h, u32 type) {
-    if (addr == 0 || taille == 0) {
-        return;
-    }
-    ++v406_horloge;
-    std::size_t libre = 0;
-    u64 plus_vieux = ~0ull;
-    for (std::size_t i = 0; i < v406_cibles.size(); ++i) {
-        V406Cible& c = v406_cibles[i];
-        if (c.addr == addr && c.type == type) {
-            c.taille = taille;
-            c.w = w;
-            c.h = h;
-            c.vu = v406_horloge;
-            return;
-        }
-        if (c.vu < plus_vieux) {
-            plus_vieux = c.vu;
-            libre = i;
-        }
-    }
-    v406_cibles[libre] = V406Cible{addr, taille, w, h, type, v406_horloge};
-}
-
-void V406Bilan(bool force) {
-    const auto maintenant = std::chrono::steady_clock::now();
-    if (v406_dernier_bilan.time_since_epoch().count() == 0) {
-        v406_dernier_bilan = maintenant;
-        return;
-    }
-    if (!force && maintenant - v406_dernier_bilan < std::chrono::seconds(20)) {
-        return;
-    }
-    v406_dernier_bilan = maintenant;
-    for (std::size_t i = 0; i < v406_nlectures; ++i) {
-        const V406Lecture& l = v406_lectures[i];
-        LOG_WARNING(Render_Vulkan,
-                    "V406_BILAN origine={} ecrit=0x{:08x} lu=0x{:08x} dans=0x{:08x} {}x{} {} "
-                    "compte={}",
-                    V406NomOrigine(l.origine), l.ecrit, l.lu, l.cible, l.w, l.h,
-                    l.type == 0 ? "couleur" : "depth", l.compte);
-    }
-}
-
-void V406SignalerLecture(u32 origine, PAddr ecrit, PAddr lu, u32 unite) {
-    if (lu == 0) {
-        return;
-    }
-    for (const V406Cible& c : v406_cibles) {
-        if (c.addr == 0 || lu < c.addr || lu >= c.addr + c.taille) {
-            continue;
-        }
-        for (std::size_t i = 0; i < v406_nlectures; ++i) {
-            V406Lecture& l = v406_lectures[i];
-            if (l.origine == origine && l.ecrit == ecrit && l.lu == lu && l.cible == c.addr) {
-                ++l.compte;
-                V406Bilan(false);
-                return;
-            }
-        }
-        if (v406_nlectures < v406_lectures.size()) {
-            v406_lectures[v406_nlectures++] =
-                V406Lecture{origine, ecrit, lu, c.addr, c.w, c.h, c.type, 1};
-            LOG_WARNING(Render_Vulkan,
-                        "V406_LECTURE origine={} unite={} ecrit=0x{:08x} lu=0x{:08x} "
-                        "dans=0x{:08x} {}x{} {} decalage=0x{:x}",
-                        V406NomOrigine(origine), unite, ecrit, lu, c.addr, c.w, c.h,
-                        c.type == 0 ? "couleur" : "depth", lu - c.addr);
-        }
-        V406Bilan(false);
-        return;
-    }
-}
-
 // V407 (DIAGNOSTIC SEUL, aucun changement de rendu) : BORKED3DS_V3DV_V407_SEQUENCE=<secondes>.
 // Question : dans quel ORDRE, a l'interieur d'une image, le jeu dessine-t-il chaque oeil, copie-t-il
 // ses images (TextureCopy), relit-il ces copies (textures des draws), efface-t-il (MemoryFill) et
@@ -1077,7 +919,7 @@ void V407Vider() {
     return t;
 }
 
-// V408 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V408_OEIL_DROIT=1.
+// V408 : saut de l'oeil droit. Actif par defaut depuis v419 ; BORKED3DS_V3DV_V408_OFF=1 le coupe.
 // Sauter l'oeil droit quand la 3D est coupee, mais seulement si le jeu ne s'en sert pour RIEN
 // d'autre que l'ecran droit. Constats (12 nov. 2026) :
 //  - Castlevania et Metroid dessinent les deux yeux, curseur 3D a 0 ; l'emulateur n'affiche que
@@ -1107,8 +949,9 @@ void V407Vider() {
 // fausse par episode.
 // Journal : V408_CANDIDAT, V408_ACTIF, V408_BLOQUE (avec la raison), V408_SAUTES (toutes les
 // 6000).
+// v419 : actif par defaut ; BORKED3DS_V3DV_V408_OFF=1 le coupe pour tous les jeux.
 [[nodiscard]] bool IsV408OeilDroitEnabled() {
-    static const bool cached = IsEnvEnabled("BORKED3DS_V3DV_V408_OEIL_DROIT");
+    static const bool cached = !IsEnvEnabled("BORKED3DS_V3DV_V408_OFF");
     return cached;
 }
 
@@ -8546,34 +8389,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             return true;
         }
     }
-    // V406 (DIAGNOSTIC SEUL) : lectures de cibles de rendu par les textures de ce draw, puis
-    // enregistrement des cibles que ce draw ecrit. Voir IsV406DependancesEnabled().
-    if (IsV406DependancesEnabled()) {
-        const auto& v406_fb = regs.framebuffer.framebuffer;
-        const PAddr v406_color = v406_fb.GetColorBufferPhysicalAddress();
-        const PAddr v406_depth = v406_fb.GetDepthBufferPhysicalAddress();
-        const u32 v406_w = v406_fb.GetWidth();
-        const u32 v406_h = v406_fb.GetHeight();
-        const auto v406_textures = regs.texturing.GetTextures();
-        for (u32 v406_unite = 0; v406_unite < 3; ++v406_unite) {
-            if (v406_textures[v406_unite].enabled) {
-                V406SignalerLecture(0, v406_color,
-                                    v406_textures[v406_unite].config.GetPhysicalAddress(),
-                                    v406_unite);
-            }
-        }
-        V406NoterCible(v406_color,
-                       v406_w * v406_h *
-                           V406OctetsCouleur(static_cast<u32>(v406_fb.color_format.Value())),
-                       v406_w, v406_h, 0);
-        if (regs.framebuffer.output_merger.depth_test_enable != 0 ||
-            regs.framebuffer.output_merger.depth_write_enable != 0) {
-            V406NoterCible(v406_depth,
-                           v406_w * v406_h *
-                               V406OctetsDepth(static_cast<u32>(v406_fb.depth_format.Value())),
-                           v406_w, v406_h, 1);
-        }
-    }
     // V407 (DIAGNOSTIC SEUL) : ordre des draws dans la fenetre choisie. Voir V407Debut().
     {
         const double v407_t = V407Temps();
@@ -8648,35 +8463,6 @@ bool RasterizerVulkan::Draw(bool accelerate, bool is_indexed) {
             }
             vertex_batch.clear();
             return true;
-        }
-    }
-    // V405 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE=1. Voir le bloc
-    // explicatif dans video_core/gpu.cpp. Saute un draw seulement si son tampon couleur est
-    // EXACTEMENT celui que le jeu vient de copier vers l'ecran droit (confirme dans les 12
-    // derniers display transfers), avec la 3D coupee et l'oeil gauche affiche. Meme sortie propre
-    // que les autres draws supprimes (vertex_batch.clear, return true). Hors census : la baisse
-    // de draws recenses mesure directement ce qui est saute.
-    {
-        static const bool v405_skip_right_eye = IsEnvEnabled("BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE");
-        if (v405_skip_right_eye) {
-            const u32 v405_right_src = VideoCore::g_v405_right_src.load(std::memory_order_relaxed);
-            const u64 v405_seq = VideoCore::g_v405_transfer_seq.load(std::memory_order_relaxed);
-            const u64 v405_confirm =
-                VideoCore::g_v405_confirm_seq.load(std::memory_order_relaxed);
-            if (v405_right_src != 0 && v405_seq >= v405_confirm && v405_seq - v405_confirm <= 12 &&
-                Settings::values.render_3d.GetValue() == Settings::StereoRenderOption::Off &&
-                Settings::values.mono_render_option.GetValue() ==
-                    Settings::MonoRenderOption::LeftEye &&
-                !regs.framebuffer.IsShadowRendering() &&
-                regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress() == v405_right_src) {
-                static u64 v405_skipped = 0;
-                if ((++v405_skipped % 6000) == 1) {
-                    LOG_WARNING(Render_Vulkan, "V405_OEIL_DROIT draws_sautes={} tampon=0x{:08x}",
-                                v405_skipped, v405_right_src);
-                }
-                vertex_batch.clear();
-                return true;
-            }
         }
     }
     if (IsA7Z12FrameCensusEnabled()) {
@@ -10432,10 +10218,6 @@ void RasterizerVulkan::ClearAll(bool flush) {
 bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
     const PAddr src_addr = config.GetPhysicalInputAddress();
     const PAddr dst_addr = config.GetPhysicalOutputAddress();
-    if (IsV406DependancesEnabled()) {
-        // V406 : un display transfer lit sa source (diagnostic seul).
-        V406SignalerLecture(2, dst_addr, src_addr, 0);
-    }
     {
         const double v407_t = V407Temps();
         if (v407_t >= 0.0) {
@@ -10472,11 +10254,6 @@ bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConf
 }
 
 bool RasterizerVulkan::AccelerateTextureCopy(const Pica::DisplayTransferConfig& config) {
-    if (IsV406DependancesEnabled()) {
-        // V406 : une copie de texture est une lecture de sa source (diagnostic seul).
-        V406SignalerLecture(1, config.GetPhysicalOutputAddress(),
-                            config.GetPhysicalInputAddress(), 0);
-    }
     {
         const double v407_t = V407Temps();
         if (v407_t >= 0.0) {
