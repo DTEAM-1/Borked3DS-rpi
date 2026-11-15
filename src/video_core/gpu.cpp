@@ -65,18 +65,12 @@ bool IsA7Z68GpuExecuteSubmitTraceEnabled() {
     return enabled;
 }
 
-bool IsV405SkipRightEyeEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE");
-        return value != nullptr && value[0] != '\0' && value[0] != '0';
-    }();
-    return enabled;
-}
-
+// v419 : actif par defaut (valide TB128-TB155 : Castlevania, Luigi, Metroid, Kid Icarus, Smash).
+// Echappatoire pour tous les jeux : BORKED3DS_V3DV_V408_OFF=1.
 bool IsV408OeilDroitEnabled() {
     static const bool enabled = [] {
-        const char* value = std::getenv("BORKED3DS_V3DV_V408_OEIL_DROIT");
-        return value != nullptr && value[0] != '\0' && value[0] != '0';
+        const char* value = std::getenv("BORKED3DS_V3DV_V408_OFF");
+        return value == nullptr || value[0] == '\0' || value[0] == '0';
     }();
     return enabled;
 }
@@ -264,7 +258,8 @@ void V413FinImage(s64 ticks) {
     max_draws = max_sommets = max_listes = 0;
 }
 // ---------------------------------------------------------------------------------------------
-// V415 : RYTHME PAR IMAGE (BORKED3DS_V3DV_V415_CADENCE=1). Aucun titre dans le code.
+// V415 : RYTHME PAR IMAGE (actif par defaut depuis v419 ; BORKED3DS_V3DV_V415_OFF=1 le coupe).
+// Aucun titre dans le code.
 //
 // Cause (TB128-TB144) : le GPU emule s'execute en ZERO temps emule. Un jeu a cadence libre,
 // ralenti sur la vraie console par son GPU, calcule alors plus d'images que l'ecran n'en affiche :
@@ -284,12 +279,14 @@ void V413FinImage(s64 ticks) {
 //  3. Choix de k : depart a 1 (60 fps). Vitesse d'emulation < 97 % deux secondes de suite :
 //     k + 1 (max 3). Apres un temps a >= 99,5 % : essai de k - 1 ; s'il fait chuter la vitesse,
 //     retour a k et l'essai suivant attend deux fois plus longtemps (30 s, 60 s, ... 600 s).
-// Journal : V415_CADENCE (engagement, changements de k, bilan toutes les 10 s).
+// Journal : V415_CADENCE (engagement, changements de k ; bilan toutes les 10 s seulement sous
+// BORKED3DS_V3DV_V413_TRAVAIL=1).
 // ---------------------------------------------------------------------------------------------
+// v419 : actif par defaut. Echappatoire pour tous les jeux : BORKED3DS_V3DV_V415_OFF=1.
 bool IsV415CadenceEnabled() {
     static const bool enabled = [] {
-        const char* value = std::getenv("BORKED3DS_V3DV_V415_CADENCE");
-        return value != nullptr && value[0] != '\0' && value[0] != '0';
+        const char* value = std::getenv("BORKED3DS_V3DV_V415_OFF");
+        return value == nullptr || value[0] == '\0' || value[0] == '0';
     }();
     return enabled;
 }
@@ -327,6 +324,16 @@ void V415Fenetre(s64 maintenant) {
         return;
     }
     const s64 duree = maintenant - v415.debut_fenetre;
+    if (duree < 0) {
+        // v419 : l'horloge emulee a recule (chargement d'un etat) : on repart de zero.
+        v415.debut_fenetre = maintenant;
+        v415.debut_hote = hote;
+        v415.images = 0;
+        v415.echanges = 0;
+        v415.fin_visee = maintenant;
+        v415.reveil = 0;
+        return;
+    }
     if (duree < static_cast<s64>(BASE_CLOCK_RATE_ARM11)) {
         return;
     }
@@ -344,7 +351,7 @@ void V415Fenetre(s64 maintenant) {
             v415.k = 1;
             v415.fin_visee = maintenant;
             LOG_WARNING(HW_GPU,
-                        "V415_CADENCE v418 engage calculees_par_s={:.1f} affichees_par_s={:.1f} "
+                        "V415_CADENCE v419 engage calculees_par_s={:.1f} affichees_par_s={:.1f} "
                         "vitesse={:.1f}% k=1",
                         ips, eps, vitesse * 100.0);
         }
@@ -392,7 +399,7 @@ void V415Fenetre(s64 maintenant) {
     ++v415.fenetres;
     v415.images_bilan += v415.images;
     v415.vitesse_bilan += vitesse;
-    if (v415.fenetres % 10 == 0) {
+    if (v415.fenetres % 10 == 0 && IsV413TravailEnabled()) {
         LOG_WARNING(HW_GPU,
                     "V415_CADENCE bilan actif={} k={} calculees_par_s={:.1f} vitesse={:.1f}% "
                     "attente_moy_ms={:.2f}",
@@ -401,6 +408,8 @@ void V415Fenetre(s64 maintenant) {
                     v415.attentes == 0 ? 0.0
                                        : static_cast<double>(v415.attente_ticks) * 1000.0 /
                                              BASE_CLOCK_RATE_ARM11 / v415.attentes);
+    }
+    if (v415.fenetres % 10 == 0) {
         v415.images_bilan = 0;
         v415.vitesse_bilan = 0.0;
         v415.attente_ticks = 0;
@@ -417,7 +426,11 @@ void V415Image(s64 maintenant) {
     ++v415.images;
     if (v415.actif) {
         const s64 cible = v415.fin_visee + static_cast<s64>(v415.k * FRAME_TICKS);
-        if (maintenant < cible) {
+        if (cible - maintenant > static_cast<s64>((v415.k + 1) * FRAME_TICKS)) {
+            // v419 : heure visee incoherente (horloge emulee qui a saute) : jamais d'attente longue.
+            v415.fin_visee = maintenant;
+            v415.reveil = 0;
+        } else if (maintenant < cible) {
             v415.reveil = cible;
             v415.fin_visee = cible;
             v415.attente_ticks += static_cast<u64>(cible - maintenant);
@@ -486,24 +499,6 @@ s64 V415AttenteNs(s64 maintenant) {
 // gauche, 2 = ecran du haut droite, 3 = ecran du bas (v412). Une adresse droite egale a une
 // adresse gauche (configuration mono) est classee gauche.
 std::atomic<u32> g_v408_classe{0};
-
-// V405 (MESURE, inactif par defaut) : BORKED3DS_V3DV_V405_SKIP_RIGHT_EYE=1.
-// TB115 (Castlevania) : le jeu dessine chaque image deux fois, oeil gauche et oeil droit, draw par
-// draw en alternance, meme avec le curseur 3D annonce a 0 ; a chaque image, le tampon de l'oeil
-// droit est copie (display transfer) vers le framebuffer droit de l'ecran du haut. 3D coupee,
-// l'emulateur n'affiche que l'oeil gauche : tout le travail de l'oeil droit est perdu, et
-// l'alternance ferme et rouvre le render pass Vulkan ~240 fois par image (GPU a tuiles).
-// Ici on repere le tampon SOURCE d'un display transfer dont la destination est exactement l'une
-// des deux adresses droites de l'ecran du haut (et differente des adresses gauches). Le
-// rasterizer Vulkan saute ensuite les draws dont le tampon couleur est exactement ce tampon
-// (voir vk_rasterizer.cpp, Draw), seulement si la 3D est coupee, l'oeil affiche est le gauche,
-// et le reperage a ete confirme dans les 12 derniers transferts.
-// Ce n'est PAS le mecanisme d'Azahar (right_eye_disabler, qui bloque des listes de commandes
-// entieres et coupait la moitie de l'ecran de Kid Icarus) : ici, seuls les draws vers le tampon
-// exact de l'oeil droit sont sautes.
-std::atomic<u32> g_v405_right_src{0};
-std::atomic<u64> g_v405_transfer_seq{0};
-std::atomic<u64> g_v405_confirm_seq{0};
 
 GPU::GPU(Core::System& system, Frontend::EmuWindow& emu_window,
          Frontend::EmuWindow* secondary_window)
@@ -1003,45 +998,6 @@ void GPU::MemoryTransfer() {
         }
     } else {
         BORKED3DS_PROFILE("GPU", "Display Transfer");
-        if (IsV405SkipRightEyeEnabled()) {
-            const u64 v405_seq = g_v405_transfer_seq.fetch_add(1, std::memory_order_relaxed) + 1;
-            const auto& top = impl->pica.regs.framebuffer_config[0];
-            const PAddr v405_src = config.GetPhysicalInputAddress();
-            const PAddr v405_dst = config.GetPhysicalOutputAddress();
-            const bool v405_right1 = v405_dst != 0 && v405_dst == top.address_right1 &&
-                                     top.address_right1 != top.address_left1 &&
-                                     top.address_right1 != top.address_left2;
-            const bool v405_right2 = v405_dst != 0 && v405_dst == top.address_right2 &&
-                                     top.address_right2 != top.address_left1 &&
-                                     top.address_right2 != top.address_left2;
-            // Adresses de l'ecran du haut journalisees a chaque changement (8 fois au plus) :
-            // si le reperage echoue, le log dit pourquoi (droite = gauche, ou zero).
-            static u32 v405_lcd_last[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
-            static u32 v405_lcd_logs = 0;
-            const u32 v405_lcd_now[4] = {top.address_left1, top.address_left2,
-                                         top.address_right1, top.address_right2};
-            if (v405_lcd_logs < 8 &&
-                (v405_lcd_now[0] != v405_lcd_last[0] || v405_lcd_now[1] != v405_lcd_last[1] ||
-                 v405_lcd_now[2] != v405_lcd_last[2] || v405_lcd_now[3] != v405_lcd_last[3])) {
-                ++v405_lcd_logs;
-                for (int i = 0; i < 4; ++i) {
-                    v405_lcd_last[i] = v405_lcd_now[i];
-                }
-                LOG_WARNING(HW_GPU,
-                            "V405_ECRAN_HAUT actif=1 gauche1=0x{:08x} gauche2=0x{:08x} "
-                            "droite1=0x{:08x} droite2=0x{:08x} transfert=0x{:08x}->0x{:08x}",
-                            v405_lcd_now[0], v405_lcd_now[1], v405_lcd_now[2], v405_lcd_now[3],
-                            v405_src, v405_dst);
-            }
-            if (v405_right1 || v405_right2) {
-                const u32 v405_old = g_v405_right_src.exchange(v405_src, std::memory_order_relaxed);
-                g_v405_confirm_seq.store(v405_seq, std::memory_order_relaxed);
-                if (v405_old != v405_src) {
-                    LOG_WARNING(HW_GPU, "V405_OEIL_DROIT reperage src=0x{:08x} dst=0x{:08x}",
-                                v405_src, v405_dst);
-                }
-            }
-        }
         if (IsV408OeilDroitEnabled() || IsV413TravailEnabled() || IsV415CadenceEnabled()) {
             // V408 (v409) : classement par HISTORIQUE. TB123 (Metroid) : le premier transfert vers
             // le second tampon de l'ecran droit (0x18370800, double tampon avec 0x183b6d00, TB118)
