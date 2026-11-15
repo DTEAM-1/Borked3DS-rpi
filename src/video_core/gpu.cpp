@@ -129,14 +129,19 @@ void V408Retenir(std::array<V408Adresse, 8>& liste, std::size_t& n, PAddr a, s64
 std::array<V408Adresse, 8> g_v416_montres{};
 std::size_t g_v416_nmontres = 0;
 
-bool V416CouvreUnEcran(PAddr debut, PAddr fin, s64 maintenant) {
+// Rend l'adresse du tampon affiche couvert par [debut, fin), ou 0.
+PAddr V416CouvreUnEcran(PAddr debut, PAddr fin, s64 maintenant) {
     for (const V408Adresse& x : g_v416_montres) {
         if (x.a != 0 && maintenant - x.vu <= kV408Oubli && x.a >= debut && x.a < fin) {
-            return true;
+            return x.a;
         }
     }
-    return false;
+    return 0;
 }
+
+// v417 : dernier tampon affiche compte comme image, et echange survenu depuis.
+PAddr g_v417_dernier_ecran = 0;
+bool g_v417_echange_depuis = true;
 
 u32 V416OctetsPixel(u32 format) {
     switch (format) {
@@ -303,7 +308,7 @@ struct V415Etat {
     u32 surprod_suite = 0;
     u32 lent_suite = 0;
     u32 rapide_suite = 0;
-    u32 essai_delai = 30; // fenetres a >= 99,5 % avant un essai de k - 1
+    u32 essai_delai = 20; // fenetres a >= 98,5 % avant un essai de k - 1
     u32 essai_k = 0;      // k d'avant l'essai en cours (0 = aucun essai)
     u32 essai_fenetres = 0;
     u32 fenetres = 0;
@@ -339,7 +344,7 @@ void V415Fenetre(s64 maintenant) {
             v415.k = 1;
             v415.fin_visee = maintenant;
             LOG_WARNING(HW_GPU,
-                        "V415_CADENCE engage calculees_par_s={:.1f} affichees_par_s={:.1f} "
+                        "V415_CADENCE v417 engage calculees_par_s={:.1f} affichees_par_s={:.1f} "
                         "vitesse={:.1f}% k=1",
                         ips, eps, vitesse * 100.0);
         }
@@ -357,20 +362,20 @@ void V415Fenetre(s64 maintenant) {
             LOG_WARNING(HW_GPU, "V415_CADENCE essai_reussi k={} vitesse={:.1f}%", v415.k,
                         vitesse * 100.0);
             v415.essai_k = 0;
-            v415.essai_delai = 30;
+            v415.essai_delai = 20;
         }
     } else {
         if (vitesse < 0.97) {
             ++v415.lent_suite;
             v415.rapide_suite = 0;
-        } else if (vitesse >= 0.995) {
+        } else if (vitesse >= 0.985) {
             ++v415.rapide_suite;
             v415.lent_suite = 0;
         } else {
             v415.lent_suite = 0;
-            v415.rapide_suite = 0;
         }
-        if (v415.lent_suite >= 2 && v415.k < 3) {
+        // v417 : 3 secondes lentes de suite (une compilation de shaders ne doit pas suffire).
+        if (v415.lent_suite >= 3 && v415.k < 3) {
             ++v415.k;
             v415.lent_suite = 0;
             LOG_WARNING(HW_GPU, "V415_CADENCE k={} (vitesse={:.1f}%, cible {:.0f} fps)", v415.k,
@@ -436,10 +441,22 @@ void V415Echange(s64 maintenant) {
 // depuis l'image precedente. Castlevania : transfert direct ; Metroid : double tampon ; Luigi :
 // triple tampon rempli par copie (la copie commence 0x3000 avant l'adresse affichee).
 void V416Ecriture(PAddr debut, PAddr fin, s64 maintenant) {
-    if (fin <= debut || !V416CouvreUnEcran(debut, fin, maintenant) ||
-        Pica::g_v413_draws == g_v415_draws_image) {
+    if (fin <= debut || Pica::g_v413_draws == g_v415_draws_image) {
         return;
     }
+    const PAddr ecran = V416CouvreUnEcran(debut, fin, maintenant);
+    if (ecran == 0) {
+        return;
+    }
+    // v417 : plusieurs ecritures dans le MEME tampon sans echange entre elles composent UNE
+    // image. TB148 (Luigi) : deux copies par image dans le meme tampon (0x18300000 -> ecran - 0x3000
+    // puis 0x18000000 -> ecran - 0x2eb0) etaient comptees comme deux images : chaque image durait
+    // 2k rafraichissements (30, 15 puis 10 fps affiches).
+    if (ecran == g_v417_dernier_ecran && !g_v417_echange_depuis) {
+        return;
+    }
+    g_v417_dernier_ecran = ecran;
+    g_v417_echange_depuis = false;
     g_v415_draws_image = Pica::g_v413_draws;
     ++g_v413_rendus_gauche;
     if (IsV415CadenceEnabled()) {
@@ -724,6 +741,7 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
             V408Retenir(g_v416_montres, g_v416_nmontres,
                         v416_fb.active_fb == 0 ? v416_fb.address_left1 : v416_fb.address_left2,
                         v416_t);
+            g_v417_echange_depuis = true;
             if (IsV415CadenceEnabled()) {
                 V415Echange(v416_t);
             }
