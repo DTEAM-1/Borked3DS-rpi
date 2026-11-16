@@ -1,0 +1,43 @@
+# Profil PGO de Borked3DS-rpi (Raspberry Pi 5)
+#
+# Fichiers de ce dossier :
+#   borked3ds.proftext.xz         profil LLVM au format texte, compresse (lu par llvm-profdata)
+#   borked3ds.proftext.xz.sha256  somme de controle, verifiee par borked3ds.sh avant usage
+#   PROFIL.txt                    ce fichier
+#
+# borked3ds.sh (cible pi5) convertit le profil avec llvm-profdata de la meme version que
+# Clang, puis compile avec -fprofile-use. En cas de probleme, il compile sans PGO, comme avant.
+# BORKED3DS_NO_PGO=1 force un build sans PGO.
+
+commit_profil=1a105e20b
+clang=19.1.7 (Debian 13 trixie)
+date=2026-11-16
+options=-mcpu=cortex-a76+crypto -O3, ThinLTO, -fprofile-generate (PGO au niveau IR)
+
+# Chemins de l'arbre ou le profil a ete enregistre. Les fonctions locales (static, espaces de
+# noms anonymes, lambdas) y sont nommees "<chemin du source>;<nom>" ; borked3ds.sh remplace
+# ces prefixes par ceux de son propre arbre avant la conversion, sinon Clang ne les retrouve pas.
+prefixe_sources=/home/pi/borked3ds_pgo/src/
+prefixe_build=/home/pi/borked3ds_pgo/build_gen/
+
+# Entrainement : 7 sessions de jeu normales (rythme automatique), sorties par Exit :
+#   Luigi's Mansion 2 (chaud x2, et a froid sans cache de shaders), Castlevania Mirror of Fate,
+#   Kid Icarus Uprising, Super Smash Bros, Metroid Samus Returns. Moteur de rendu : Vulkan.
+#   Le code propre a OpenGL n'est pas dans le profil (compile comme code froid).
+#
+# Mesures (Pi 5, 3 GHz, travail fixe, temps CPU du thread d'emulation, binaire PGO contre
+# binaire standard -march=armv8.2-a+crc+crypto) :
+#   Luigi's Mansion 2   -11 %  (35,0 % -> 31,1 %, 3 passes de chaque cote)
+#   Zelda (non entraine) -17 %  (40,4 % -> 33,3 et 33,8 %)
+#   Sonic Lost World (non entraine) -8,5 %  (13,0 % -> 11,9 %)
+#
+# Regenerer le profil (apres de gros changements de code) :
+#   1. build instrumente : memes options + -fprofile-generate, installe a la place du binaire ;
+#   2. jouer quelques sessions avec LLVM_PROFILE_FILE=<dossier>/borked3ds-%m.profraw sur la
+#      ligne de lancement, et quitter par Exit ou Ctrl+Q (jamais par un signal : main.cpp
+#      intercepte SIGINT/SIGTERM et le profil ne serait pas ecrit) ;
+#   3. llvm-profdata merge -o borked3ds.profdata <dossier>/*.profraw
+#      llvm-profdata merge --text -o borked3ds.proftext borked3ds.profdata
+#      xz -9 borked3ds.proftext ; sha256sum borked3ds.proftext.xz > borked3ds.proftext.xz.sha256
+#   4. remplacer les fichiers de ce dossier et mettre a jour commit_profil, prefixe_sources
+#      (racine de l'arbre de sources, avec / final) et prefixe_build (dossier de build).
