@@ -1,43 +1,46 @@
-# Profil PGO de Borked3DS-rpi (Raspberry Pi 5)
+# Borked3DS-rpi PGO profile (Raspberry Pi 5)
 #
-# Fichiers de ce dossier :
-#   borked3ds.proftext.xz         profil LLVM au format texte, compresse (lu par llvm-profdata)
-#   borked3ds.proftext.xz.sha256  somme de controle, verifiee par borked3ds.sh avant usage
-#   PROFIL.txt                    ce fichier
+# Files in this folder:
+#   borked3ds.proftext.xz         LLVM profile in text format, compressed (read by llvm-profdata)
+#   borked3ds.proftext.xz.sha256  checksum, verified by borked3ds.sh before use
+#   PROFIL.txt                    this file
 #
-# borked3ds.sh (cible pi5) convertit le profil avec llvm-profdata de la meme version que
-# Clang, puis compile avec -fprofile-use. En cas de probleme, il compile sans PGO, comme avant.
-# BORKED3DS_NO_PGO=1 force un build sans PGO.
+# borked3ds.sh (pi5 target) converts the profile with the llvm-profdata of the same version as
+# Clang, then builds with -fprofile-use. If anything goes wrong, it builds without PGO, as before.
+# BORKED3DS_NO_PGO=1 forces a build without PGO.
+#
+# The key=value lines below are read by borked3ds.sh: keep their names unchanged.
 
 commit_profil=1a105e20b
 clang=19.1.7 (Debian 13 trixie)
 date=2026-11-16
-options=-mcpu=cortex-a76+crypto -O3, ThinLTO, -fprofile-generate (PGO au niveau IR)
+options=-mcpu=cortex-a76+crypto -O3, ThinLTO, -fprofile-generate (IR-level PGO)
 
-# Chemins de l'arbre ou le profil a ete enregistre. Les fonctions locales (static, espaces de
-# noms anonymes, lambdas) y sont nommees "<chemin du source>;<nom>" ; borked3ds.sh remplace
-# ces prefixes par ceux de son propre arbre avant la conversion, sinon Clang ne les retrouve pas.
+# Paths of the tree in which the profile was recorded. Local functions (static, anonymous
+# namespaces, lambdas) are named "<source path>;<name>" in the profile; borked3ds.sh replaces
+# these prefixes with the paths of its own tree before conversion, otherwise Clang cannot match them.
 prefixe_sources=/home/pi/borked3ds_pgo/src/
 prefixe_build=/home/pi/borked3ds_pgo/build_gen/
 
-# Entrainement : 7 sessions de jeu normales (rythme automatique), sorties par Exit :
-#   Luigi's Mansion 2 (chaud x2, et a froid sans cache de shaders), Castlevania Mirror of Fate,
-#   Kid Icarus Uprising, Super Smash Bros, Metroid Samus Returns. Moteur de rendu : Vulkan.
-#   Le code propre a OpenGL n'est pas dans le profil (compile comme code froid).
+# Training: 7 normal play sessions (automatic frame pacing), each ended with Exit:
+#   Luigi's Mansion 2 (warm cache x2, and cold without the shader cache), Castlevania Mirror of
+#   Fate, Kid Icarus Uprising, Super Smash Bros, Metroid Samus Returns. Renderer: Vulkan.
+#   OpenGL-specific code is not in the profile (compiled as cold code).
 #
-# Mesures (Pi 5, 3 GHz, travail fixe, temps CPU du thread d'emulation, binaire PGO contre
-# binaire standard -march=armv8.2-a+crc+crypto) :
-#   Luigi's Mansion 2   -11 %  (35,0 % -> 31,1 %, 3 passes de chaque cote)
-#   Zelda (non entraine) -17 %  (40,4 % -> 33,3 et 33,8 %)
-#   Sonic Lost World (non entraine) -8,5 %  (13,0 % -> 11,9 %)
+# Measurements (Pi 5 at 3 GHz, fixed workload, CPU time of the emulation thread, PGO binary
+# against the standard -march=armv8.2-a+crc+crypto binary):
+#   Luigi's Mansion 2                  -11 %   (35.0 % -> 31.1 %, 3 runs each)
+#   Zelda (not in the profile)         -17 %   (40.4 % -> 33.3 % and 33.8 %)
+#   Sonic Lost World (not in profile)  -8.5 %  (13.0 % -> 11.9 %)
 #
-# Regenerer le profil (apres de gros changements de code) :
-#   1. build instrumente : memes options + -fprofile-generate, installe a la place du binaire ;
-#   2. jouer quelques sessions avec LLVM_PROFILE_FILE=<dossier>/borked3ds-%m.profraw sur la
-#      ligne de lancement, et quitter par Exit ou Ctrl+Q (jamais par un signal : main.cpp
-#      intercepte SIGINT/SIGTERM et le profil ne serait pas ecrit) ;
-#   3. llvm-profdata merge -o borked3ds.profdata <dossier>/*.profraw
+# Regenerating the profile (after large code changes):
+#   1. instrumented build: same options plus -fprofile-generate, installed in place of the
+#      normal binary;
+#   2. play a few sessions with LLVM_PROFILE_FILE=<folder>/borked3ds-%m.profraw on the launch
+#      line, and quit with Exit or Ctrl+Q (never with a signal: main.cpp intercepts SIGINT and
+#      SIGTERM, and the profile would not be written);
+#   3. llvm-profdata merge -o borked3ds.profdata <folder>/*.profraw
 #      llvm-profdata merge --text -o borked3ds.proftext borked3ds.profdata
 #      xz -9 borked3ds.proftext ; sha256sum borked3ds.proftext.xz > borked3ds.proftext.xz.sha256
-#   4. remplacer les fichiers de ce dossier et mettre a jour commit_profil, prefixe_sources
-#      (racine de l'arbre de sources, avec / final) et prefixe_build (dossier de build).
+#   4. replace the files in this folder and update commit_profil, prefixe_sources (root of the
+#      source tree, with a trailing /) and prefixe_build (build folder).
