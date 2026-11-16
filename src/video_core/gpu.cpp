@@ -293,6 +293,20 @@ bool IsV415CadenceEnabled() {
 
 u64 g_v415_draws_image = 0; // compteur de draws au dernier envoi compte comme image
 
+// v420 (MESURE SEULE) : BORKED3DS_V3DV_V415_K=1, 2 ou 3 fige k des l'engagement (aucun changement,
+// aucun essai). Sert aux comparaisons A/B (PGO) : sans cela, k depend des essais reussis ou non, et
+// la charge mesuree change d'une passe a l'autre (PGO_REF1 : k=2 puis k=1 au meme endroit).
+u32 V415KForce() {
+    static const u32 k = [] {
+        const char* value = std::getenv("BORKED3DS_V3DV_V415_K");
+        if (value == nullptr || value[0] < '1' || value[0] > '3' || value[1] != '\0') {
+            return 0u;
+        }
+        return static_cast<u32>(value[0] - '0');
+    }();
+    return k;
+}
+
 struct V415Etat {
     bool actif = false;
     u32 k = 1;
@@ -348,13 +362,16 @@ void V415Fenetre(s64 maintenant) {
         v415.surprod_suite = surprod ? v415.surprod_suite + 1 : 0;
         if (v415.surprod_suite >= 2) {
             v415.actif = true;
-            v415.k = 1;
+            v415.k = V415KForce() != 0 ? V415KForce() : 1;
             v415.fin_visee = maintenant;
             LOG_WARNING(HW_GPU,
                         "V415_CADENCE v419 engage calculees_par_s={:.1f} affichees_par_s={:.1f} "
-                        "vitesse={:.1f}% k=1",
-                        ips, eps, vitesse * 100.0);
+                        "vitesse={:.1f}% k={}{}",
+                        ips, eps, vitesse * 100.0, v415.k,
+                        V415KForce() != 0 ? " (k_force v420)" : "");
         }
+    } else if (V415KForce() != 0) {
+        // v420 : k fige, aucune decision.
     } else if (v415.essai_k != 0) {
         ++v415.essai_fenetres;
         if (vitesse < 0.97) {
