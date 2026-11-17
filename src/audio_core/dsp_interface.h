@@ -114,6 +114,8 @@ protected:
 private:
     void FlushResidualStretcherAudio();
     void OutputCallback(s16* buffer, std::size_t num_frames);
+    /// v422: audio latency control, called at the end of each OutputCallback (sink thread).
+    void V422Tick(std::size_t num_frames, std::size_t frames_written, bool stretching);
 
     Core::System& system;
 
@@ -122,6 +124,18 @@ private:
     std::atomic<bool> flushing_time_stretcher = false;
     Common::RingBuffer<s16, 0x2000, 2> fifo;
     std::array<s16, 2> last_frame{};
+
+    // v422: audio left in the FIFO delays all later audio by its length. Speed bursts (loading,
+    // speed above 100 %) fill it and nothing drained it while time stretching is off, so the
+    // sound could stay up to 250 ms late for the rest of the session. These track one second
+    // of output at a time (sink thread only, except v422_overflow_frames).
+    std::atomic<u64> v422_overflow_frames{0};
+    std::size_t v422_low_fill = ~std::size_t(0);
+    std::size_t v422_high_fill = 0;
+    std::size_t v422_window_frames = 0;
+    u64 v422_underrun_frames = 0;
+    u64 v422_stretch_frames = 0;
+    bool v422_announced = false;
     TimeStretcher time_stretcher;
     std::unique_ptr<Sink> sink;
 
