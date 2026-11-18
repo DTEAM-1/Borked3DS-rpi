@@ -85,9 +85,23 @@ private:
         u32 out_of_order = 0;     ///< buffer played with a lower id than the previous one
         u32 partial = 0;          ///< partial embedded buffer updates
         u32 loops = 0;            ///< looping buffers dequeued
+        u64 refreshed = 0;        ///< samples that changed in memory after being decoded (v425)
         u16 last_id = 0;
         bool has_last_id = false;
     } v424;
+
+    /// v425: the buffer being played, to read its samples again from memory just before they
+    /// are played (PCM8 and PCM16 only).
+    struct {
+        bool valid = false;
+        PAddr address = 0;
+        u32 length = 0; ///< samples
+        SourceConfiguration::Configuration::Format format =
+            SourceConfiguration::Configuration::Format::PCM16;
+        SourceConfiguration::Configuration::MonoOrStereo mono_or_stereo =
+            SourceConfiguration::Configuration::MonoOrStereo::Mono;
+    } v425;
+    void V425Refresh();
 
     using Format = SourceConfiguration::Configuration::Format;
     using InterpolationMode = SourceConfiguration::Configuration::InterpolationMode;

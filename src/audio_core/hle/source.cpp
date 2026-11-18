@@ -25,6 +25,12 @@ bool V424SansTrou() {
     return on;
 }
 
+/// v425: BORKED3DS_V425_LECTURE_OFF=1 turns off the just-in-time read of PCM buffers.
+bool V425Off() {
+    static const bool off = std::getenv("BORKED3DS_V425_LECTURE_OFF") != nullptr;
+    return off;
+}
+
 } // namespace
 
 SourceStatus::Status Source::Tick(SourceConfiguration::Configuration& config,
@@ -57,6 +63,7 @@ void Source::Reset() {
     state = {};
     v424.backlog = 0;
     v424.has_last_id = false;
+    v425.valid = false;
 }
 
 void Source::V424Log() {
@@ -71,12 +78,12 @@ void Source::V424Log() {
         LOG_WARNING(Audio_DSP,
                     "V424_HLE src={} fmt={} canaux={} taux={:.3f} tampons={} recus_ms={:.0f} "
                     "joues_ms={:.0f} attente_ms={:.0f} muettes={} famines={} desordre={} "
-                    "partiels={} boucles={}",
+                    "partiels={} boucles={} rafraichis_ms={:.0f}",
                     source_id, static_cast<u32>(state.format),
                     state.mono_or_stereo == MonoOrStereo::Stereo ? 2 : 1, rate, v424.buffers,
                     static_cast<double>(v424.received) * ms, v424.played * ms, v424.backlog * ms,
                     v424.silent_frames, v424.starved, v424.out_of_order, v424.partial,
-                    v424.loops);
+                    v424.loops, static_cast<double>(v424.refreshed) * ms);
     }
     v424.buffers = 0;
     v424.received = 0;
@@ -86,6 +93,46 @@ void Source::V424Log() {
     v424.out_of_order = 0;
     v424.partial = 0;
     v424.loops = 0;
+    v424.refreshed = 0;
+}
+
+void Source::V425Refresh() {
+    // The DSP reads a buffer from memory as it plays it; HLE decodes the whole buffer when it
+    // starts. A game that streams into a looping buffer, writing ahead of the play position,
+    // then hears stale data: the previous pass of the loop. Read the samples of this frame again
+    // from memory just before playing them. PCM only (ADPCM decoding depends on the previous
+    // samples).
+    if (V425Off() || !v425.valid || state.current_buffer.empty()) {
+        return;
+    }
+    if (v425.format != Format::PCM16 && v425.format != Format::PCM8) {
+        return;
+    }
+    const std::size_t remaining = state.current_buffer.size();
+    if (remaining > v425.length) {
+        return;
+    }
+    const std::size_t offset = v425.length - remaining; // samples already consumed
+    const std::size_t wanted = std::min<std::size_t>(
+        remaining,
+        static_cast<std::size_t>(samples_per_frame * static_cast<double>(state.rate_multiplier)) +
+            16);
+    const unsigned num_channels = v425.mono_or_stereo == MonoOrStereo::Stereo ? 2 : 1;
+    const std::size_t bytes_per_sample = (v425.format == Format::PCM16 ? 2 : 1) * num_channels;
+    const u8* const memory = memory_system->GetPhysicalPointer(v425.address & 0xFFFFFFFC);
+    if (!memory) {
+        return;
+    }
+    const u8* const data = memory + offset * bytes_per_sample;
+    const AudioInterp::StereoBuffer16 fresh =
+        v425.format == Format::PCM16 ? Codec::DecodePCM16(num_channels, data, wanted)
+                                     : Codec::DecodePCM8(num_channels, data, wanted);
+    for (std::size_t i = 0; i < fresh.size() && i < remaining; i++) {
+        if (state.current_buffer[i] != fresh[i]) {
+            state.current_buffer[i] = fresh[i];
+            v424.refreshed++;
+        }
+    }
 }
 
 void Source::SetMemory(Memory::MemorySystem& memory) {
@@ -244,6 +291,7 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
             case Format::PCM16:
                 state.current_buffer = Codec::DecodePCM16(num_channels, memory, config.length);
                 valid = true;
+                v425.length = static_cast<u32>(config.length);
                 break;
             case Format::ADPCM:
                 // TODO(xperia64): Are partial embedded buffer updates even valid for ADPCM? What
@@ -391,6 +439,8 @@ void Source::GenerateFrame() {
         }
     }
 
+    V425Refresh();
+
     std::size_t frame_position = 0;
     while (frame_position < current_frame.size()) {
         if (state.current_buffer.empty() && !DequeueBuffer()) {
@@ -484,6 +534,12 @@ bool Source::DequeueBuffer() {
         state.current_buffer.clear();
         return true;
     }
+
+    v425.valid = true;
+    v425.address = buf.physical_address;
+    v425.length = buf.length;
+    v425.format = buf.format;
+    v425.mono_or_stereo = buf.mono_or_stereo;
 
     // the first playthrough starts at play_position, loops start at the beginning of the buffer
     state.current_sample_number = (!buf.has_played) ? buf.play_position : 0;
