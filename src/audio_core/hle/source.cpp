@@ -9,11 +9,23 @@
 #include "audio_core/hle/common.h"
 #include "audio_core/hle/source.h"
 #include "audio_core/interpolate.h"
+#include <cstdlib>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "core/memory.h"
 
 namespace AudioCore::HLE {
+
+namespace {
+
+/// v424: BORKED3DS_V424_SANS_TROU=1 (test): when a new buffer starts on a frame edge, play it in
+/// the same frame instead of leaving that 5 ms frame silent.
+bool V424SansTrou() {
+    static const bool on = std::getenv("BORKED3DS_V424_SANS_TROU") != nullptr;
+    return on;
+}
+
+} // namespace
 
 SourceStatus::Status Source::Tick(SourceConfiguration::Configuration& config,
                                   const s16_le (&adpcm_coeffs)[16]) {
@@ -43,6 +55,37 @@ void Source::MixInto(QuadFrame32& dest, std::size_t intermediate_mix_id) const {
 void Source::Reset() {
     current_frame.fill({});
     state = {};
+    v424.backlog = 0;
+    v424.has_last_id = false;
+}
+
+void Source::V424Log() {
+    const bool active = v424.buffers != 0 || v424.played != 0 || v424.silent_frames != 0 ||
+                        v424.starved != 0;
+    if (active) {
+        // Input samples are read at native_sample_rate * rate_multiplier.
+        const double rate = static_cast<double>(state.rate_multiplier) > 0
+                                ? static_cast<double>(state.rate_multiplier)
+                                : 1.0;
+        const double ms = 1000.0 / (native_sample_rate * rate);
+        LOG_WARNING(Audio_DSP,
+                    "V424_HLE src={} fmt={} canaux={} taux={:.3f} tampons={} recus_ms={:.0f} "
+                    "joues_ms={:.0f} attente_ms={:.0f} muettes={} famines={} desordre={} "
+                    "partiels={} boucles={}",
+                    source_id, static_cast<u32>(state.format),
+                    state.mono_or_stereo == MonoOrStereo::Stereo ? 2 : 1, rate, v424.buffers,
+                    static_cast<double>(v424.received) * ms, v424.played * ms, v424.backlog * ms,
+                    v424.silent_frames, v424.starved, v424.out_of_order, v424.partial,
+                    v424.loops);
+    }
+    v424.buffers = 0;
+    v424.received = 0;
+    v424.played = 0;
+    v424.silent_frames = 0;
+    v424.starved = 0;
+    v424.out_of_order = 0;
+    v424.partial = 0;
+    v424.loops = 0;
 }
 
 void Source::SetMemory(Memory::MemorySystem& memory) {
@@ -64,6 +107,7 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
     if (config.partial_reset_flag) {
         config.partial_reset_flag.Assign(0);
         state.input_queue = std::priority_queue<Buffer, std::vector<Buffer>, BufferOrder>{};
+        v424.backlog = 0;
         LOG_TRACE(Audio_DSP, "source_id={} partial_reset", source_id);
     }
 
@@ -173,6 +217,7 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
     // TODO(xperia64): Is this in the correct spot in terms of the bit handling order?
     if (config.partial_embedded_buffer_dirty) {
         config.partial_embedded_buffer_dirty.Assign(0);
+        v424.partial++;
 
         // As this bit is set by the game, three config options are also updated:
         // buffer_id (after a check comparing the buffer_id to something, probably to make sure it's
@@ -266,6 +311,9 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
                 play_position,
                 false,
             });
+            v424.buffers++;
+            v424.received += static_cast<u32>(config.length);
+            v424.backlog += static_cast<u32>(config.length);
         }
         LOG_TRACE(Audio_DSP, "enqueuing embedded addr={:#010x} len={} id={} start={}",
                   static_cast<u32>(config.physical_address), static_cast<u32>(config.length),
@@ -303,6 +351,9 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
                         0,     // play_position
                         false, // has_played
                     });
+                    v424.buffers++;
+                    v424.received += static_cast<u32>(b.length);
+                    v424.backlog += static_cast<u32>(b.length);
                 }
                 LOG_TRACE(Audio_DSP, "enqueuing queued {} addr={:#010x} len={} id={}", i,
                           static_cast<u32>(b.physical_address), static_cast<u32>(b.length),
@@ -325,13 +376,19 @@ void Source::GenerateFrame() {
     if (state.current_buffer.empty()) {
         // TODO(SachinV): Should dequeue happen at the end of the frame generation?
         if (DequeueBuffer()) {
+            if (!V424SansTrou()) {
+                v424.silent_frames++;
+                return;
+            }
+            // v424 test: go on and play the new buffer in this frame.
+        } else {
+            v424.starved++;
+            state.enabled = false;
+            state.buffer_update = true;
+            state.last_buffer_id = state.current_buffer_id;
+            state.current_buffer_id = 0;
             return;
         }
-        state.enabled = false;
-        state.buffer_update = true;
-        state.last_buffer_id = state.current_buffer_id;
-        state.current_buffer_id = 0;
-        return;
     }
 
     std::size_t frame_position = 0;
@@ -362,6 +419,8 @@ void Source::GenerateFrame() {
     // TODO(jroweboy): Keep track of frame_position independently so that it doesn't lose precision
     // over time
     state.current_sample_number += static_cast<u32>(frame_position * state.rate_multiplier);
+    v424.played += frame_position * static_cast<double>(state.rate_multiplier);
+    v424.backlog -= frame_position * static_cast<double>(state.rate_multiplier);
 
     state.filters.ProcessFrame(current_frame);
 }
@@ -375,6 +434,22 @@ bool Source::DequeueBuffer() {
 
     Buffer buf = state.input_queue.top();
     state.input_queue.pop();
+
+    // v424: a buffer played with a lower id than the previous one (not a loop replay, not a
+    // 16-bit wrap) means the queue order differs from the order the game sent them in.
+    if (!buf.has_played) {
+        if (v424.has_last_id) {
+            const u16 back = static_cast<u16>(v424.last_id - buf.buffer_id);
+            if (back != 0 && back < 0x8000) {
+                v424.out_of_order++;
+            }
+        }
+        v424.last_id = buf.buffer_id;
+        v424.has_last_id = true;
+    }
+    if (buf.is_looping) {
+        v424.loops++;
+    }
 
     if (buf.adpcm_dirty) {
         state.adpcm_state.yn1 = buf.adpcm_yn[0];

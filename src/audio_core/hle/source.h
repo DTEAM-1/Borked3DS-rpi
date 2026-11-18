@@ -65,10 +65,29 @@ public:
      */
     void MixInto(QuadFrame32& dest, std::size_t intermediate_mix_id) const;
 
+    /// v424: logs this source's buffer activity of the last second (probe
+    /// BORKED3DS_V424_HLE_SONDE=1) and resets the counters. Called by DspHle about once per second.
+    void V424Log();
+
 private:
     const std::size_t source_id;
     Memory::MemorySystem* memory_system{};
     StereoFrame16 current_frame;
+
+    /// v424: probe counters (not saved in savestates). Samples are input samples of the buffers.
+    struct {
+        u32 buffers = 0;          ///< buffers received (queue + embedded)
+        u64 received = 0;         ///< samples received
+        double played = 0;        ///< samples consumed by the interpolator
+        double backlog = 0;       ///< received - played since the last reset (samples waiting)
+        u32 silent_frames = 0;    ///< frames left silent because a buffer started on a frame edge
+        u32 starved = 0;          ///< queue ran dry: the source was disabled
+        u32 out_of_order = 0;     ///< buffer played with a lower id than the previous one
+        u32 partial = 0;          ///< partial embedded buffer updates
+        u32 loops = 0;            ///< looping buffers dequeued
+        u16 last_id = 0;
+        bool has_last_id = false;
+    } v424;
 
     using Format = SourceConfiguration::Configuration::Format;
     using InterpolationMode = SourceConfiguration::Configuration::InterpolationMode;

@@ -3,6 +3,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdlib>
 #include <algorithm>
 
 #include <boost/serialization/array.hpp>
@@ -371,6 +372,17 @@ HLE::SharedMemory& DspHle::Impl::WriteRegion() {
 StereoFrame16 DspHle::Impl::GenerateCurrentFrame() {
     HLE::SharedMemory& read = ReadRegion();
     HLE::SharedMemory& write = WriteRegion();
+
+    // v424: BORKED3DS_V424_HLE_SONDE=1 logs each active source's buffer activity once per second
+    // of emulated audio (205 frames of 160 samples at 32728 Hz).
+    static const bool v424_sonde = std::getenv("BORKED3DS_V424_HLE_SONDE") != nullptr;
+    static u32 v424_frames = 0;
+    if (v424_sonde && ++v424_frames >= 205) {
+        v424_frames = 0;
+        for (auto& source : sources) {
+            source.V424Log();
+        }
+    }
 
     std::array<QuadFrame32, 3> intermediate_mixes = {};
 
