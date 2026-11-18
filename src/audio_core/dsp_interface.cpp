@@ -32,6 +32,12 @@ bool V422Sonde() {
     return on;
 }
 
+/// v423: BORKED3DS_V423_ETIREMENT_TOUJOURS=1 restores the old behaviour (stretch all the time).
+bool V423AlwaysStretch() {
+    static const bool on = std::getenv("BORKED3DS_V423_ETIREMENT_TOUJOURS") != nullptr;
+    return on;
+}
+
 double V422Ms(u64 frames) {
     return static_cast<double>(frames) * 1000.0 / native_sample_rate;
 }
@@ -95,8 +101,23 @@ void DspInterface::OutputSample(std::array<s16, 2> sample) {
 
 void DspInterface::OutputCallback(s16* buffer, std::size_t num_frames) {
     // Determine if we should stretch based on the current emulation speed.
+    // v423: emulation_speed is a ratio (1.0 = 100 %), not a percentage. The former test
+    // "emulation_speed <= 95" was always true, so the time stretcher ran all the time, even at
+    // full speed: it keeps about 125 ms of sound in its own backlog (voices late) and runs short
+    // of samples on bursty input (dropouts). Stretch only when the emulation really falls
+    // behind: start below 95 %, stop above 98 % (hysteresis, the speed is measured about once
+    // per second).
     const auto perf_stats = system.GetLastPerfStats();
-    const auto should_stretch = enable_time_stretching && perf_stats.emulation_speed <= 95;
+    bool should_stretch = false;
+    if (enable_time_stretching) {
+        if (V423AlwaysStretch()) {
+            should_stretch = true;
+        } else if (performing_time_stretching) {
+            should_stretch = perf_stats.emulation_speed < 0.98;
+        } else {
+            should_stretch = perf_stats.emulation_speed <= 0.95;
+        }
+    }
     if (performing_time_stretching && !should_stretch) {
         // If we just stopped stretching, flush the stretcher before returning to normal output.
         flushing_time_stretcher = true;
