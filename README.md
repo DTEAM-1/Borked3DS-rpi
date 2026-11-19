@@ -6,6 +6,8 @@
 >
 > Citra and its forks have run 3DS games well on PC (Windows, Linux, macOS) and Android for years; they just did not run properly on the Raspberry Pi. The emulator itself is the work of the Citra, Borked3DS and Azahar developers. The work done here — by [gvx64](https://github.com/gvx64/Borked3DS-rpi) for the Pi 4, and by DTEAM-1 with Claude for the Pi 5 — was to make it build, run and perform well on the Pi: GPU driver issues, the OpenGL ES and Vulkan (V3DV) paths, performance tuning, a few fixes found along the way, and the RetroPie install script.
 
+> **Project status: no longer in active development.** The Pi 5 work is complete and this repository is kept as is: the install script, the build and the documentation stay available, but no new features or optimizations are planned. Fixes useful to other emulators are being offered to Azahar.
+
 Support thread: [3DS emulator for Pi users based on Borked 3DS](https://retropie.org.uk/forum/topic/37122/3ds-emulator-for-pi-users-based-on-borked-3ds) (RetroPie forum).
 
 ---
@@ -185,7 +187,7 @@ The supported way to build is the RetroPie script [`borked3ds.sh`](borked3ds.sh)
 
 ## Feedback
 
-Please tell us whether everything works for you, or not: **board, OS, renderer and game**. On a Pi 5, the result of `cat /opt/retropie/emulators/borked3ds/.borked3ds_pgo` helps too. Post in the [support thread](https://retropie.org.uk/forum/topic/37122/3ds-emulator-for-pi-users-based-on-borked-3ds) or open an issue in this repository.
+Please tell us whether everything works for you, or not: **board, OS, renderer and game**. On a Pi 5, the result of `cat /opt/retropie/emulators/borked3ds/.borked3ds_pgo` helps too. Post in the [support thread](https://retropie.org.uk/forum/topic/37122/3ds-emulator-for-pi-users-based-on-borked-3ds) or open an issue in this repository. As the project is no longer in active development, reports are welcome but may not lead to a fix.
 
 ---
 
@@ -197,7 +199,7 @@ Please tell us whether everything works for you, or not: **board, OS, renderer a
 
 **Borked3DS-rpi** started from Borked3DS's OpenGL ES development branch, adapted by gvx64 for the Raspberry Pi 4 and 5 ([gvx64/Borked3DS-rpi](https://github.com/gvx64/Borked3DS-rpi), OpenGL/GLES). This repository continues from there for the Pi 5's Vulkan driver (V3DV) and for x86-64, and integrates gvx64's improvements rather than the reverse. The Pi 4 keeps gvx64's fork, chosen automatically by the install script.
 
-Changes made here that could be useful upstream are being offered to Azahar.
+This repository is no longer in active development. Changes made here that could be useful upstream are being offered to Azahar.
 
 ---
 
