@@ -3,23 +3,52 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QStandardItemModel>
 #include "borked3ds_qt/configuration/config.h"
 #include "borked3ds_qt/configuration/configure_hotkeys.h"
 #include "borked3ds_qt/hotkeys.h"
+#include "borked3ds_qt/uisettings.h"
 #include "borked3ds_qt/util/sequence_dialog/sequence_dialog.h"
 #include "ui_configure_hotkeys.h"
 #include "borked3ds_qt/util/controller_dialog/controller_dialog.h" // gvx64
 
 constexpr int name_column = 0;
 constexpr int hotkey_column = 1;
+constexpr int controller_column = 2;            // gvx64
+constexpr int controller_binding_role = Qt::UserRole + 1; // v426 : raw/symbolic binding
 
 ConfigureHotkeys::ConfigureHotkeys(QWidget* parent)
     : QWidget(parent), ui(std::make_unique<Ui::ConfigureHotkeys>()) {
     ui->setupUi(this);
     setFocusPolicy(Qt::ClickFocus);
+
+    // v426 : controller hotkey enable button (modifier), RetroPie style ("Select + Start", ...)
+    auto* modifier_layout = new QHBoxLayout();
+    auto* modifier_label = new QLabel(tr("Controller hotkey enable button:"), this);
+    modifier_button = new QPushButton(this);
+    auto* modifier_clear = new QPushButton(tr("None"), this);
+    auto* modifier_default = new QPushButton(tr("Default (Select)"), this);
+    const QString modifier_tooltip =
+        tr("Hold this button, then press the button of a controller hotkey (e.g. Select + Start "
+           "to quit).\n\"(3DS)\" bindings follow the buttons configured in Controls, so they work "
+           "with any controller.\nNone: controller hotkeys trigger on a single button.");
+    modifier_label->setToolTip(modifier_tooltip);
+    modifier_button->setToolTip(modifier_tooltip);
+    modifier_layout->addWidget(modifier_label);
+    modifier_layout->addWidget(modifier_button, 1);
+    modifier_layout->addWidget(modifier_clear);
+    modifier_layout->addWidget(modifier_default);
+    ui->verticalLayout->insertLayout(1, modifier_layout);
+
+    connect(modifier_button, &QPushButton::clicked, this, &ConfigureHotkeys::ConfigureModifier);
+    connect(modifier_clear, &QPushButton::clicked, this, [this] { SetModifier(QString{}); });
+    connect(modifier_default, &QPushButton::clicked, this,
+            [this] { SetModifier(ControllerHotkey::DefaultModifier()); });
 
     model = new QStandardItemModel(this);
     model->setColumnCount(3); // Changed from 2 - gvx64
@@ -38,6 +67,8 @@ ConfigureHotkeys::ConfigureHotkeys(QWidget* parent)
     connect(ui->button_restore_defaults, &QPushButton::clicked, this,
             &ConfigureHotkeys::RestoreDefaults);
     connect(ui->button_clear_all, &QPushButton::clicked, this, &ConfigureHotkeys::ClearAll);
+
+    SetModifier(UISettings::values.controller_hotkey_modifier);
 }
 
 ConfigureHotkeys::~ConfigureHotkeys() = default;
@@ -58,6 +89,54 @@ QList<QKeySequence> ConfigureHotkeys::GetUsedKeyList() const {
     return list;
 }
 
+void ConfigureHotkeys::SetControllerBinding(QStandardItem* item, const QString& binding) {
+    item->setData(binding, controller_binding_role);
+    item->setText(ControllerHotkey::DisplayName(binding));
+    item->setToolTip(binding);
+}
+
+QString ConfigureHotkeys::GetControllerBinding(const QStandardItem* item) const {
+    return item->data(controller_binding_role).toString();
+}
+
+void ConfigureHotkeys::SetModifier(const QString& binding) {
+    modifier_binding = binding;
+    if (binding.isEmpty()) {
+        modifier_button->setText(tr("None (single-button controller hotkeys)"));
+    } else {
+        modifier_button->setText(ControllerHotkey::DisplayName(binding));
+    }
+}
+
+void ConfigureHotkeys::ConfigureModifier() {
+    ControllerDialog controller_dialog{this};
+
+    const int return_code = controller_dialog.exec();
+    const QString raw = controller_dialog.GetButtonString();
+    if (return_code == QDialog::Rejected || raw.isEmpty()) {
+        return;
+    }
+    const QString binding = ControllerHotkey::Symbolize(raw);
+
+    // The enable button cannot also be the button of a hotkey
+    const std::string resolved = ControllerHotkey::Resolve(binding);
+    for (int r = 0; r < model->rowCount(); ++r) {
+        const QStandardItem* const parent = model->item(r, 0);
+        for (int r2 = 0; r2 < parent->rowCount(); ++r2) {
+            const QString other = GetControllerBinding(parent->child(r2, controller_column));
+            if (other == binding ||
+                ControllerHotkey::SameInput(ControllerHotkey::Resolve(other), resolved)) {
+                QMessageBox::warning(
+                    this, tr("Conflicting Button"),
+                    tr("The entered button is already assigned to: %1")
+                        .arg(parent->child(r2, name_column)->text()));
+                return;
+            }
+        }
+    }
+    SetModifier(binding);
+}
+
 void ConfigureHotkeys::Populate(const HotkeyRegistry& registry) {
     model->clear(); // gvx64 - Clear before repopulating
     model->setColumnCount(3); // gvx64
@@ -71,8 +150,8 @@ void ConfigureHotkeys::Populate(const HotkeyRegistry& registry) {
             QStandardItem* action = new QStandardItem(hotkey.first);
             QStandardItem* keyseq =
                 new QStandardItem(hotkey.second.keyseq.toString(QKeySequence::NativeText));
-            QStandardItem* controller_keyseq =
-                new QStandardItem(hotkey.second.controller_keyseq); // gvx64
+            QStandardItem* controller_keyseq = new QStandardItem(); // gvx64
+            SetControllerBinding(controller_keyseq, hotkey.second.controller_keyseq); // v426
 
             action->setEditable(false);
             keyseq->setEditable(false);
@@ -84,6 +163,9 @@ void ConfigureHotkeys::Populate(const HotkeyRegistry& registry) {
     }
 
     ui->hotkey_list->expandAll();
+    ui->hotkey_list->resizeColumnToContents(controller_column);
+
+    SetModifier(UISettings::values.controller_hotkey_modifier); // v426
 }
 
 void ConfigureHotkeys::OnInputKeysChanged(QList<QKeySequence> new_key_list) {
@@ -165,16 +247,33 @@ void ConfigureHotkeys::ConfigureKeyboardHotkey(QModelIndex index) {
 
 void ConfigureHotkeys::ConfigureControllerHotkey(QModelIndex index) { //gvx64
     // Swap to the controller column
-    index = index.sibling(index.row(), 2); // Column 2 = controller - gvx64
+    index = index.sibling(index.row(), controller_column); // Column 2 = controller - gvx64
+    QStandardItem* const item = model->itemFromIndex(index);
+    if (!item) {
+        return;
+    }
 
-    const auto previous_button = model->data(index).toString();
+    const QString previous_button = GetControllerBinding(item);
 
     ControllerDialog controller_dialog{this};
 
     const int return_code = controller_dialog.exec();
-    const QString button_string = controller_dialog.GetButtonString();
+    const QString raw_button = controller_dialog.GetButtonString();
 
-    if (return_code == QDialog::Rejected || button_string.isEmpty()) {
+    if (return_code == QDialog::Rejected || raw_button.isEmpty()) {
+        return;
+    }
+
+    // v426 : store "(3DS)" / L3 / R3 bindings symbolically so they follow the configured controls
+    const QString button_string = ControllerHotkey::Symbolize(raw_button);
+
+    // v426 : the hotkey enable button cannot also be a hotkey button
+    if (!modifier_binding.isEmpty() &&
+        (button_string == modifier_binding ||
+         ControllerHotkey::SameInput(ControllerHotkey::Resolve(button_string),
+                                     ControllerHotkey::Resolve(modifier_binding)))) {
+        QMessageBox::warning(this, tr("Conflicting Button"),
+                             tr("This button is the controller hotkey enable button."));
         return;
     }
 
@@ -186,7 +285,7 @@ void ConfigureHotkeys::ConfigureControllerHotkey(QModelIndex index) { //gvx64
             this, tr("Conflicting Button"),
             tr("The entered button is already assigned to: %1").arg(used_action));
     } else {
-        model->setData(index, button_string);
+        SetControllerBinding(item, button_string);
     }
 }
 
@@ -194,15 +293,18 @@ std::pair<bool, QString> ConfigureHotkeys::IsUsedControllerButton(const QString&
     if (button_string.isEmpty()) {
         return std::make_pair(false, QString());
     }
+    const std::string resolved = ControllerHotkey::Resolve(button_string); // v426
 
     for (int r = 0; r < model->rowCount(); ++r) {
         const QStandardItem* const parent = model->item(r, 0);
 
         for (int r2 = 0; r2 < parent->rowCount(); ++r2) {
-            const QStandardItem* const controller_item = parent->child(r2, 2); // Column 2
-            const auto controller_str = controller_item->text();
+            const QStandardItem* const controller_item = parent->child(r2, controller_column);
+            const auto controller_str = GetControllerBinding(controller_item);
 
-            if (button_string == controller_str) {
+            if (button_string == controller_str ||
+                ControllerHotkey::SameInput(ControllerHotkey::Resolve(controller_str),
+                                            resolved)) {
                 return std::make_pair(true, parent->child(r2, 0)->text());
             }
         }
@@ -252,12 +354,13 @@ void ConfigureHotkeys::ApplyConfiguration(HotkeyRegistry& registry) {
                     if (action_name != action->text())
                         continue;
                     hotkey.keyseq = QKeySequence(keyseq->text());
-                    hotkey.controller_keyseq = controller_keyseq->text(); // gvx64
+                    hotkey.controller_keyseq = GetControllerBinding(controller_keyseq); // v426
                 }
             }
         }
     }
 
+    UISettings::values.controller_hotkey_modifier = modifier_binding; // v426
     registry.SaveHotkeys();
 }
 
@@ -266,14 +369,16 @@ void ConfigureHotkeys::RestoreDefaults() {
         const QStandardItem* parent = model->item(r, 0);
 
         for (int r2 = 0; r2 < parent->rowCount(); ++r2) {
-            // Restore keyboard defaults
-            model->item(r, 0)
-                ->child(r2, 1)
-                ->setText(Config::default_hotkeys[r2].shortcut.keyseq);
-            // Clear controller bindings (no defaults) - gvx64
-            model->item(r, 0)->child(r2, 2)->setText(QString{});
+            // v426 : defaults looked up by name (the array order used to be relied upon)
+            const UISettings::Shortcut* default_hotkey =
+                Config::FindDefaultHotkey(parent->text(), parent->child(r2, name_column)->text());
+            model->item(r, 0)->child(r2, 1)->setText(
+                default_hotkey ? default_hotkey->shortcut.keyseq : QString{});
+            SetControllerBinding(model->item(r, 0)->child(r2, controller_column),
+                                 default_hotkey ? default_hotkey->controller_shortcut : QString{});
         }
     }
+    SetModifier(ControllerHotkey::DefaultModifier()); // v426
 }
 
 void ConfigureHotkeys::ClearAll() {
@@ -282,7 +387,8 @@ void ConfigureHotkeys::ClearAll() {
 
         for (int r2 = 0; r2 < parent->rowCount(); ++r2) {
             model->item(r, 0)->child(r2, 1)->setText(QString{}); // Keyboard
-            model->item(r, 0)->child(r2, 2)->setText(QString{}); // Controller - gvx64
+            SetControllerBinding(model->item(r, 0)->child(r2, controller_column),
+                                 QString{}); // Controller - gvx64
         }
     }
 }
@@ -321,18 +427,31 @@ void ConfigureHotkeys::ShowKeyboardContextMenu(QModelIndex index, const QPoint& 
 
 void ConfigureHotkeys::ShowControllerContextMenu(QModelIndex index, const QPoint& menu_location) {
     QMenu context_menu;
+    QAction* restore_default = context_menu.addAction(tr("Restore Default")); // v426
     QAction* clear = context_menu.addAction(tr("Clear"));
 
-    const auto controller_index = index.sibling(index.row(), 2); // Controller column
-    connect(clear, &QAction::triggered, this,
-            [this, controller_index] { model->setData(controller_index, QString{}); });
+    const auto controller_index = index.sibling(index.row(), controller_column); // Controller column
+    connect(restore_default, &QAction::triggered, this,
+            [this, controller_index] { RestoreControllerHotkey(controller_index); });
+    connect(clear, &QAction::triggered, this, [this, controller_index] {
+        if (QStandardItem* item = model->itemFromIndex(controller_index)) {
+            SetControllerBinding(item, QString{});
+        }
+    });
 
     context_menu.exec(ui->hotkey_list->viewport()->mapToGlobal(menu_location));
 }
 
 void ConfigureHotkeys::RestoreHotkey(QModelIndex index) {
-    const QKeySequence& default_key_sequence = QKeySequence::fromString(
-        Config::default_hotkeys[index.row()].shortcut.keyseq, QKeySequence::NativeText);
+    // v426 : default looked up by group/action name instead of the row index
+    const QString group = index.parent().data().toString();
+    const QString action = index.sibling(index.row(), name_column).data().toString();
+    const UISettings::Shortcut* default_hotkey = Config::FindDefaultHotkey(group, action);
+    if (!default_hotkey) {
+        return;
+    }
+    const QKeySequence& default_key_sequence =
+        QKeySequence::fromString(default_hotkey->shortcut.keyseq, QKeySequence::NativeText);
     const auto [key_sequence_used, used_action] = IsUsedKey(default_key_sequence);
 
     if (key_sequence_used && default_key_sequence != QKeySequence(model->data(index).toString())) {
@@ -341,6 +460,26 @@ void ConfigureHotkeys::RestoreHotkey(QModelIndex index) {
             tr("The default key sequence is already assigned to: %1").arg(used_action));
     } else {
         model->setData(index, default_key_sequence.toString(QKeySequence::NativeText));
+    }
+}
+
+void ConfigureHotkeys::RestoreControllerHotkey(QModelIndex index) { // v426
+    QStandardItem* const item = model->itemFromIndex(index);
+    if (!item) {
+        return;
+    }
+    const QString group = index.parent().data().toString();
+    const QString action = index.sibling(index.row(), name_column).data().toString();
+    const UISettings::Shortcut* default_hotkey = Config::FindDefaultHotkey(group, action);
+    const QString binding = default_hotkey ? default_hotkey->controller_shortcut : QString{};
+
+    const auto [button_used, used_action] = IsUsedControllerButton(binding);
+    if (button_used && binding != GetControllerBinding(item)) {
+        QMessageBox::warning(
+            this, tr("Conflicting Button"),
+            tr("The default button is already assigned to: %1").arg(used_action));
+    } else {
+        SetControllerBinding(item, binding);
     }
 }
 

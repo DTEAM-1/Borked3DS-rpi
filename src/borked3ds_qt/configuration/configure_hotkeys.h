@@ -13,6 +13,8 @@ class ConfigureHotkeys;
 }
 
 class HotkeyRegistry;
+class QPushButton;
+class QStandardItem;
 class QStandardItemModel;
 
 class ConfigureHotkeys : public QWidget {
@@ -54,6 +56,16 @@ private:
     void ShowKeyboardContextMenu(QModelIndex index, const QPoint& menu_location); // gvx64
     void ShowControllerContextMenu(QModelIndex index, const QPoint& menu_location); // gvx64
     void RestoreHotkey(QModelIndex index);
+
+    // v426 : controller hotkey enable button (modifier) + symbolic controller bindings
+    void SetControllerBinding(QStandardItem* item, const QString& binding);
+    QString GetControllerBinding(const QStandardItem* item) const;
+    void ConfigureModifier();
+    void SetModifier(const QString& binding);
+    void RestoreControllerHotkey(QModelIndex index);
+
+    QString modifier_binding;
+    QPushButton* modifier_button = nullptr;
 
     /**
      * List of keyboard keys currently registered to any of the 3DS inputs.

@@ -27,7 +27,9 @@ public:
 
     static const std::array<int, Settings::NativeButton::NumButtons> default_buttons;
     static const std::array<std::array<int, 9>, Settings::NativeAnalog::NumAnalogs> default_analogs;
-    static const std::array<UISettings::Shortcut, 38> default_hotkeys;
+    static const std::array<UISettings::Shortcut, 40> default_hotkeys;
+    /// v426 : default hotkey looked up by group and action name (nullptr if unknown)
+    static const UISettings::Shortcut* FindDefaultHotkey(const QString& group, const QString& name);
 
 private:
     void Initialize(const std::string& config_name);

@@ -62,17 +62,22 @@ const std::array<std::array<int, 9>, Settings::NativeAnalog::NumAnalogs> Config:
 // QKeySequence(...).toString() is NOT ALLOWED HERE.
 // This must be in alphabetical order according to action name as it must have the same order as
 // UISetting::values.shortcuts, which is alphabetically ordered.
+// v426 : 4th field = default controller hotkey (symbolic, see ControllerHotkey in hotkeys.h). With
+// the default hotkey enable button (3DS Select) this gives the RetroPie combos:
+// Select+Start quit, Select+R quick save, Select+L quick load, Select+X menu, Select+B reset,
+// Select+L3 screenshot, Select+R3 video dumping. "Toggle Turbo Mode" moved back to its
+// alphabetical place (the restore-default code now looks defaults up by name anyway).
 // clang-format off
-const std::array<UISettings::Shortcut, 38> Config::default_hotkeys {{
+const std::array<UISettings::Shortcut, 40> Config::default_hotkeys {{
      {QStringLiteral("Advance Frame"),            QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::ApplicationShortcut}},
      {QStringLiteral("Audio Mute/Unmute"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+M"), Qt::WindowShortcut}},
      {QStringLiteral("Audio Volume Down"),        QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}},
      {QStringLiteral("Audio Volume Up"),          QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}},
-     {QStringLiteral("Capture Screenshot"),       QStringLiteral("Main Window"), {QStringLiteral("Ctrl+P"), Qt::WidgetWithChildrenShortcut}},
+     {QStringLiteral("Capture Screenshot"),       QStringLiteral("Main Window"), {QStringLiteral("Ctrl+P"), Qt::WidgetWithChildrenShortcut}, QStringLiteral("engine:hotkey_pad,button:leftstick")},
      {QStringLiteral("Continue/Pause Emulation"), QStringLiteral("Main Window"), {QStringLiteral("F4"),     Qt::WindowShortcut}},
      {QStringLiteral("Decrease 3D Factor"),       QStringLiteral("Main Window"), {QStringLiteral("Ctrl+-"), Qt::ApplicationShortcut}},
      {QStringLiteral("Decrease Speed Limit"),     QStringLiteral("Main Window"), {QStringLiteral("-"),      Qt::ApplicationShortcut}},
-     {QStringLiteral("Exit Borked3DS"),               QStringLiteral("Main Window"), {QStringLiteral("Ctrl+Q"), Qt::WindowShortcut}},
+     {QStringLiteral("Exit Borked3DS"),               QStringLiteral("Main Window"), {QStringLiteral("Ctrl+Q"), Qt::WindowShortcut}, QStringLiteral("engine:hotkey_3ds,button:start")},
      {QStringLiteral("Exit Fullscreen"),          QStringLiteral("Main Window"), {QStringLiteral("Esc"),    Qt::WindowShortcut}},
      {QStringLiteral("Fullscreen"),               QStringLiteral("Main Window"), {QStringLiteral("F11"),    Qt::WindowShortcut}},
      {QStringLiteral("Increase 3D Factor"),       QStringLiteral("Main Window"), {QStringLiteral("Ctrl++"), Qt::ApplicationShortcut}},
@@ -85,25 +90,36 @@ const std::array<UISettings::Shortcut, 38> Config::default_hotkeys {{
      {QStringLiteral("Multiplayer Direct Connect to Room"),   QStringLiteral("Main Window"), {QStringLiteral("Ctrl+Shift"), Qt::ApplicationShortcut}},
      {QStringLiteral("Multiplayer Leave Room"),               QStringLiteral("Main Window"), {QStringLiteral("Ctrl+L"), Qt::ApplicationShortcut}},
      {QStringLiteral("Multiplayer Show Current Room"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+R"), Qt::ApplicationShortcut}},
-     {QStringLiteral("Quick Save"),                QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}},
-     {QStringLiteral("Quick Load"),               QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}},
+     {QStringLiteral("Quick Load"),               QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}, QStringLiteral("engine:hotkey_3ds,button:l")},
+     {QStringLiteral("Quick Save"),                QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}, QStringLiteral("engine:hotkey_3ds,button:r")},
      {QStringLiteral("Remove Amiibo"),            QStringLiteral("Main Window"), {QStringLiteral("F3"),     Qt::ApplicationShortcut}},
-     {QStringLiteral("Restart Emulation"),        QStringLiteral("Main Window"), {QStringLiteral("F6"),     Qt::WindowShortcut}},
+     {QStringLiteral("Restart Emulation"),        QStringLiteral("Main Window"), {QStringLiteral("F6"),     Qt::WindowShortcut}, QStringLiteral("engine:hotkey_3ds,button:b")},
      {QStringLiteral("Rotate Screens Upright"),   QStringLiteral("Main Window"), {QStringLiteral("F8"),     Qt::WindowShortcut}},
      {QStringLiteral("Save to Oldest Non-Quick Slot"),      QStringLiteral("Main Window"), {QStringLiteral("Ctrl+C"), Qt::WindowShortcut}},
      {QStringLiteral("Stop Emulation"),           QStringLiteral("Main Window"), {QStringLiteral("F5"),     Qt::WindowShortcut}},
      {QStringLiteral("Swap Screens"),             QStringLiteral("Main Window"), {QStringLiteral("F9"),     Qt::WindowShortcut}},
      {QStringLiteral("Toggle 3D"),                QStringLiteral("Main Window"), {QStringLiteral("Ctrl+3"), Qt::ApplicationShortcut}},
-     {QStringLiteral("Toggle Turbo Mode"),     QStringLiteral("Main Window"), {QStringLiteral(""),      Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Custom Textures"),   QStringLiteral("Main Window"), {QStringLiteral("F7"),     Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Filter Bar"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+F"), Qt::WindowShortcut}},
      {QStringLiteral("Toggle Frame Advancing"),   QStringLiteral("Main Window"), {QStringLiteral("Ctrl+A"), Qt::ApplicationShortcut}},
+     {QStringLiteral("Toggle Menu"),              QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}, QStringLiteral("engine:hotkey_3ds,button:x")},
      {QStringLiteral("Toggle Per-Game Speed"),    QStringLiteral("Main Window"), {QStringLiteral("Ctrl+Z"), Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Screen Layout"),     QStringLiteral("Main Window"), {QStringLiteral("F10"),    Qt::WindowShortcut}},
      {QStringLiteral("Toggle Status Bar"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+S"), Qt::WindowShortcut}},
      {QStringLiteral("Toggle Texture Dumping"),   QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::ApplicationShortcut}},
+     {QStringLiteral("Toggle Turbo Mode"),     QStringLiteral("Main Window"), {QStringLiteral(""),      Qt::ApplicationShortcut}},
+     {QStringLiteral("Toggle Video Dumping"),     QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}, QStringLiteral("engine:hotkey_pad,button:rightstick")},
     }};
 // clang-format on
+
+const UISettings::Shortcut* Config::FindDefaultHotkey(const QString& group, const QString& name) {
+    for (const auto& hotkey : default_hotkeys) {
+        if (hotkey.group == group && hotkey.name == name) {
+            return &hotkey;
+        }
+    }
+    return nullptr;
+}
 
 void Config::Initialize(const std::string& config_name) {
     const std::string fs_config_loc = FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir);
@@ -742,11 +758,17 @@ void Config::ReadShortcutValues() {
              group,
              {ReadSetting(QStringLiteral("KeySeq"), shortcut.keyseq).toString(),
               shortcut.context},
-             ReadSetting(QStringLiteral("Controller"), QString{}).toString()}); // gvx64
+             ReadSetting(QStringLiteral("Controller"), controller_shortcut).toString()}); // gvx64, v426 default
 
         qt_config->endGroup();
         qt_config->endGroup();
     }
+
+    // v426 : controller hotkey enable button (modifier), default = 3DS Select
+    UISettings::values.controller_hotkey_modifier =
+        ReadSetting(QStringLiteral("ControllerHotkeyModifier"),
+                    QStringLiteral("engine:hotkey_3ds,button:select"))
+            .toString();
 
     qt_config->endGroup();
 }
@@ -1283,22 +1305,29 @@ void Config::SaveRendererValues() {
 void Config::SaveShortcutValues() {
     qt_config->beginGroup(QStringLiteral("Shortcuts"));
 
-    // Lengths of UISettings::values.shortcuts & default_hotkeys are same.
-    // However, their ordering must also be the same.
-    for (std::size_t i = 0; i < default_hotkeys.size(); i++) {
-        const auto& [name, group, shortcut, controller_shortcut] = UISettings::values.shortcuts[i]; // gvx64
-        const auto& default_hotkey = default_hotkeys[i].shortcut;
+    // v426 : defaults are looked up by name, the ordering of UISettings::values.shortcuts (registry
+    // map order) and default_hotkeys no longer has to match.
+    for (const auto& [name, group, shortcut, controller_shortcut] : UISettings::values.shortcuts) {
+        const UISettings::Shortcut* default_hotkey = FindDefaultHotkey(group, name);
+        if (!default_hotkey) {
+            continue;
+        }
 
         qt_config->beginGroup(group);
         qt_config->beginGroup(name);
 
-        WriteSetting(QStringLiteral("KeySeq"), shortcut.keyseq, default_hotkey.keyseq);
-        WriteSetting(QStringLiteral("Context"), shortcut.context, default_hotkey.context);
-        WriteSetting(QStringLiteral("Controller"), controller_shortcut, QString{}); // gvx64
+        WriteSetting(QStringLiteral("KeySeq"), shortcut.keyseq, default_hotkey->shortcut.keyseq);
+        WriteSetting(QStringLiteral("Context"), shortcut.context, default_hotkey->shortcut.context);
+        WriteSetting(QStringLiteral("Controller"), controller_shortcut,
+                     default_hotkey->controller_shortcut); // gvx64, v426 default
 
         qt_config->endGroup();
         qt_config->endGroup();
     }
+
+    WriteSetting(QStringLiteral("ControllerHotkeyModifier"),
+                 UISettings::values.controller_hotkey_modifier,
+                 QStringLiteral("engine:hotkey_3ds,button:select")); // v426
 
     qt_config->endGroup();
 }
