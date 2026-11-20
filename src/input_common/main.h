@@ -41,6 +41,14 @@ std::string GenerateAnalogParamFromKeys(int key_up, int key_down, int key_left, 
 Common::ParamPackage GetControllerButtonBinds(const Common::ParamPackage& params, int button);
 Common::ParamPackage GetControllerAnalogBinds(const Common::ParamPackage& params, int analog);
 
+/**
+ * v426 : resolves a named SDL_GameController button ("leftstick", "rightstick", "guide", ...) on
+ * the controller identified by params (engine/guid/port). Used by the controller hotkeys for
+ * buttons the 3DS does not have (L3/R3). Returns an empty package if it cannot be resolved.
+ */
+Common::ParamPackage GetControllerNamedButtonBind(const Common::ParamPackage& params,
+                                                  const std::string& button_name);
+
 /// Reloads the input devices
 void ReloadInputDevices();
 
