@@ -981,6 +981,10 @@ void GMainWindow::InitializeHotkeys() {
     connect_shortcut(QStringLiteral("Audio Volume Down"), &GMainWindow::OnDecreaseVolume);
     connect_shortcut(QStringLiteral("Audio Volume Up"), &GMainWindow::OnIncreaseVolume);
 
+    // v426 : new actions, mainly meant for the controller hotkeys (no keyboard default)
+    connect_shortcut(QStringLiteral("Toggle Menu"), &GMainWindow::ToggleHotkeyMenu);
+    connect_shortcut(QStringLiteral("Toggle Video Dumping"), &GMainWindow::ToggleVideoDumpingHotkey);
+
     // We use "static" here in order to avoid capturing by lambda due to a MSVC bug, which makes the
     // variable hold a garbage value after this function exits
     static constexpr u16 FACTOR_3D_STEP = 5;
@@ -1024,8 +1028,13 @@ void GMainWindow::InitializeHotkeys() {
                                 SLOT(ToggleSecondaryFullscreen()));
 
     // Initialize gamepad hotkey polling - gvx64
-    connect(&gamepad_hotkey_poll_timer, &QTimer::timeout, this, &GMainWindow::PollGamepadHotkeys);
+    // v426 : UniqueConnection, InitializeHotkeys() runs again after each Configure dialog and the
+    // poll used to be connected once more every time.
+    connect(&gamepad_hotkey_poll_timer, &QTimer::timeout, this, &GMainWindow::PollGamepadHotkeys,
+            Qt::UniqueConnection);
     gamepad_hotkey_poll_timer.setInterval(16); // Poll at ~60Hz (16ms)
+    // v426 : bindings / input profile may have changed, rebuild the devices on the next poll
+    gamepad_hotkeys_built = false;
 
     // Start polling when emulation starts
     // Timer will be started/stopped in OnStartGame/OnStopGame
@@ -1098,53 +1107,101 @@ void GMainWindow::OnAppFocusStateChanged(Qt::ApplicationState state) {
     }
 }
 
-void GMainWindow::PollGamepadHotkeys() {
-    if (!emulation_running) {
-        return;
+void GMainWindow::ClearGamepadHotkeys() { // v426
+    gamepad_hotkey_bindings.clear();
+    gamepad_hotkey_modifier.reset();
+    gamepad_hotkey_modifier_required = false;
+    gamepad_hotkeys_built = false;
+}
+
+void GMainWindow::BuildGamepadHotkeys() { // v426
+    ClearGamepadHotkeys();
+    gamepad_hotkeys_built = true;
+
+    std::string modifier_params;
+    const QString& modifier = UISettings::values.controller_hotkey_modifier;
+    if (!modifier.isEmpty()) {
+        gamepad_hotkey_modifier_required = true;
+        modifier_params = ControllerHotkey::Resolve(modifier);
+        if (!modifier_params.empty()) {
+            gamepad_hotkey_modifier = Input::CreateDevice<Input::ButtonDevice>(modifier_params);
+        }
+        if (!gamepad_hotkey_modifier) {
+            // Never fall back to single-button hotkeys: Start alone would quit the game.
+            LOG_WARNING(Frontend,
+                        "V426_HOTKEY modifier '{}' unresolved (not bound in Controls?) - "
+                        "controller hotkeys disabled",
+                        modifier.toStdString());
+            return;
+        }
     }
 
-    // Check each configured hotkey's controller binding
+    std::size_t unresolved = 0;
     for (const auto& [group_name, group] : hotkey_registry.hotkey_groups) {
         for (const auto& [action_name, hotkey] : group) {
             if (hotkey.controller_keyseq.isEmpty()) {
                 continue;
             }
-
-            QString hotkey_id = group_name + QStringLiteral("::") + action_name;
-
-            // Create device on first use and cache it - gvx64
-            if (hotkey_button_devices.find(hotkey_id) == hotkey_button_devices.end()) {
-                Common::ParamPackage params(hotkey.controller_keyseq.toStdString());
-                if (!params.Has("engine") || !params.Has("button")) {
-                    continue;
-                }
-
-                auto button_device = Input::CreateDevice<Input::ButtonDevice>(params.Serialize());
-                if (!button_device) {
-                    // Cache nullptr to avoid trying again
-                    hotkey_button_devices[hotkey_id] = nullptr;
-                    continue;
-                }
-
-                hotkey_button_devices[hotkey_id] = std::move(button_device);
-            }
-
-            // Skip if device creation failed
-            if (!hotkey_button_devices[hotkey_id]) {
+            const std::string params = ControllerHotkey::Resolve(hotkey.controller_keyseq);
+            if (params.empty()) {
+                ++unresolved;
+                LOG_WARNING(Frontend, "V426_HOTKEY '{}' -> '{}' unresolved",
+                            action_name.toStdString(), hotkey.controller_keyseq.toStdString());
                 continue;
             }
-
-            // Check if button is currently pressed
-            bool is_pressed = hotkey_button_devices[hotkey_id]->GetStatus();
-
-            // Trigger on new press (not held)
-            if (is_pressed && !gamepad_hotkey_pressed[hotkey_id]) {
-                gamepad_hotkey_pressed[hotkey_id] = true;
-                TriggerHotkeyAction(group_name, action_name);
-            } else if (!is_pressed && gamepad_hotkey_pressed[hotkey_id]) {
-                gamepad_hotkey_pressed[hotkey_id] = false;
+            if (gamepad_hotkey_modifier_required &&
+                ControllerHotkey::SameInput(params, modifier_params)) {
+                LOG_WARNING(Frontend, "V426_HOTKEY '{}' uses the enable button itself, ignored",
+                            action_name.toStdString());
+                continue;
             }
+            auto device = Input::CreateDevice<Input::ButtonDevice>(params);
+            if (!device) {
+                ++unresolved;
+                continue;
+            }
+            gamepad_hotkey_bindings.push_back({group_name, action_name, std::move(device), true});
         }
+    }
+
+    LOG_WARNING(Frontend, "V426_HOTKEY ready: modifier='{}' ({}) active={} unresolved={}",
+                ControllerHotkey::DisplayName(modifier).toStdString(), modifier_params,
+                gamepad_hotkey_bindings.size(), unresolved);
+}
+
+void GMainWindow::PollGamepadHotkeys() {
+    if (!emulation_running) {
+        return;
+    }
+    if (!gamepad_hotkeys_built) {
+        BuildGamepadHotkeys();
+    }
+    if (gamepad_hotkey_modifier_required && !gamepad_hotkey_modifier) {
+        return; // unresolved enable button, see BuildGamepadHotkeys()
+    }
+
+    // v426 : RetroPie style, the hotkey button only counts while the enable button is held
+    const bool modifier_held =
+        !gamepad_hotkey_modifier_required || gamepad_hotkey_modifier->GetStatus();
+    // Never act behind an open dialog (nested event loop: Configure, message boxes...)
+    const bool blocked = QApplication::activeModalWidget() != nullptr;
+
+    const GamepadHotkeyBinding* triggered = nullptr;
+    for (auto& binding : gamepad_hotkey_bindings) {
+        const bool is_pressed = binding.device->GetStatus();
+        // Trigger on new press (not held)
+        if (is_pressed && !binding.was_pressed && modifier_held && !blocked && !triggered) {
+            triggered = &binding;
+        }
+        binding.was_pressed = is_pressed;
+    }
+
+    if (triggered) {
+        // Copy: the action may stop the game and clear gamepad_hotkey_bindings
+        const QString group = triggered->group;
+        const QString action = triggered->action;
+        LOG_WARNING(Frontend, "V426_HOTKEY trigger '{}'", action.toStdString());
+        TriggerHotkeyAction(group, action);
     }
 }
 
@@ -1258,6 +1315,10 @@ void GMainWindow::TriggerHotkeyAction(const QString& group, const QString& actio
     } else if (action == QStringLiteral("Quick Load")) {
         // Trigger the QAction directly - gvx64
         ui->action_Quick_Load->trigger();
+    } else if (action == QStringLiteral("Toggle Menu")) { // v426
+        ToggleHotkeyMenu();
+    } else if (action == QStringLiteral("Toggle Video Dumping")) { // v426
+        ToggleVideoDumpingHotkey();
     }
     // Add more hotkey mappings as needed
 }
@@ -2842,6 +2903,9 @@ void GMainWindow::OnStartGame() {
     if (has_controller_hotkeys) {
         // Don't use pollers - just start the timer
         // Pollers consume input and break game controls - gvx64
+        // v426 : devices are (re)built on the first poll; already-held buttons must be released
+        // first, so a combo held across a restart/resume cannot fire again.
+        gamepad_hotkeys_built = false;
         gamepad_hotkey_poll_timer.start();
     }
 }
@@ -2911,9 +2975,8 @@ void GMainWindow::OnStopGame() {
 
     // Stop gamepad hotkey polling - gvx64
     gamepad_hotkey_poll_timer.stop();
-    gamepad_hotkey_pressed.clear();
-    // Don't need to manage pollers anymore
-    hotkey_button_devices.clear(); // Clear cached devices - gvx64
+    ClearGamepadHotkeys(); // v426
+    hotkey_menu_open = false;
 }
 
 void GMainWindow::OnLoadComplete() {
@@ -3422,6 +3485,10 @@ void GMainWindow::OnCaptureScreenshot() {
             OnPauseGame();
         }
         std::string path = UISettings::values.screenshot_path.GetValue();
+        if (path.empty()) {
+            // v426 : an empty path used to write "/<title>.png" (root, fails silently)
+            path = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "screenshots/";
+        }
         if (!FileUtil::IsDirectory(path)) {
             if (!FileUtil::CreateFullPath(path)) {
                 QMessageBox::information(
@@ -3545,6 +3612,85 @@ void GMainWindow::OnOpenFFmpeg() {
     }
 }
 #endif
+
+// v426 : controller "menu" hotkey (Select + X by default). The Qt menus are only reachable
+// outside fullscreen, so: pause + leave fullscreen; pressed again: back to fullscreen + resume.
+void GMainWindow::ToggleHotkeyMenu() {
+    if (!emulation_running || !emu_thread) {
+        return;
+    }
+    if (hotkey_menu_open) {
+        hotkey_menu_open = false;
+        if (hotkey_menu_restore_fullscreen && !ui->action_Fullscreen->isChecked()) {
+            ui->action_Fullscreen->setChecked(true);
+            ToggleFullscreen();
+        }
+        if (hotkey_menu_resume && !emu_thread->IsRunning()) {
+            OnStartGame();
+        }
+        return;
+    }
+    hotkey_menu_open = true;
+    hotkey_menu_resume = emu_thread->IsRunning();
+    hotkey_menu_restore_fullscreen = ui->action_Fullscreen->isChecked();
+    if (hotkey_menu_resume) {
+        OnPauseGame();
+    }
+    if (hotkey_menu_restore_fullscreen) {
+        ui->action_Fullscreen->setChecked(false);
+        ToggleFullscreen();
+    }
+}
+
+// v426 : controller video dump hotkey (Select + R3 by default). Starts dumping without the
+// file dialog, using the format/encoders chosen in Emulation > Dump Video; pressed again stops.
+void GMainWindow::ToggleVideoDumpingHotkey() {
+    if (!emulation_running) {
+        return;
+    }
+    const auto current = system.GetVideoDumper();
+    if (current && current->IsDumping()) {
+        OnStopVideoDumping();
+        return;
+    }
+    if (!DynamicLibrary::FFmpeg::LoadFFmpeg()) {
+        LOG_ERROR(Frontend, "V426_HOTKEY video dumping: FFmpeg could not be loaded");
+        return;
+    }
+
+    QString dir = UISettings::values.video_dumping_path;
+    if (dir.isEmpty() || !QDir().mkpath(dir)) {
+        dir = QString::fromStdString(FileUtil::GetUserPath(FileUtil::UserPath::UserDir)) +
+              QStringLiteral("videos");
+        QDir().mkpath(dir);
+    }
+
+    // Extension of the chosen muxer (ffmpeg format name -> usual file extension)
+    const QString format = QString::fromStdString(Settings::values.output_format);
+    QString extension = format.isEmpty() ? QStringLiteral("webm") : format;
+    if (format == QStringLiteral("matroska")) {
+        extension = QStringLiteral("mkv");
+    } else if (format == QStringLiteral("mpegts")) {
+        extension = QStringLiteral("ts");
+    } else if (format == QStringLiteral("ogg")) {
+        extension = QStringLiteral("ogv");
+    }
+
+    static const QRegularExpression invalid_chars(QStringLiteral("[\\/:?\"<>|*]"));
+    QString title = game_title; // copy, game_title must stay intact
+    title.remove(invalid_chars);
+    if (title.isEmpty()) {
+        title = QStringLiteral("borked3ds");
+    }
+    const QString timestamp =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd_hh.mm.ss"));
+    const QString path =
+        QStringLiteral("%1/%2_%3.%4").arg(dir, title, timestamp, extension);
+
+    LOG_WARNING(Frontend, "V426_HOTKEY video dumping to '{}'", path.toStdString());
+    ui->action_Dump_Video->setChecked(true);
+    StartVideoDumping(path);
+}
 
 void GMainWindow::OnStartVideoDumping() {
     DumpingDialog dialog(this, system);

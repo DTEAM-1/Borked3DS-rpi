@@ -6,6 +6,7 @@
 #pragma once
 
 #include <map>
+#include <string>
 #include <QKeySequence>
 #include <QString>
 
@@ -82,3 +83,37 @@ private:
 
     HotkeyGroupMap hotkey_groups;
 };
+
+/**
+ * v426 - Controller hotkeys "a la RetroPie" (hotkey enable button + button).
+ *
+ * A controller hotkey binding is either a raw input ParamPackage recorded by ControllerDialog
+ * (engine:sdl,guid:...,port:...,button:N) or one of two symbolic forms that never hard-code a
+ * controller, so the defaults work with whatever gamepad the player configured:
+ *   engine:hotkey_3ds,button:<name>  -> the input bound to that 3DS button in the current input
+ *                                       profile (name = select, start, l, r, x, b, ...)
+ *   engine:hotkey_pad,button:<name>  -> a named gamepad button the 3DS does not have
+ *                                       (leftstick = L3, rightstick = R3, guide), looked up on the
+ *                                       controller of the current input profile through its
+ *                                       SDL_GameController mapping, then EmulationStation's
+ *                                       es_input.cfg (leftthumb/rightthumb) as a fallback.
+ */
+namespace ControllerHotkey {
+
+/// Default hotkey enable button (modifier): the button mapped to 3DS Select.
+QString DefaultModifier();
+
+/// Resolves a binding (raw or symbolic) to a concrete input ParamPackage string; empty on failure.
+std::string Resolve(const QString& binding);
+
+/// Converts a raw binding to its symbolic form when it matches a 3DS button of the current input
+/// profile (or L3/R3), so it keeps working with another controller. Returns the input otherwise.
+QString Symbolize(const QString& raw_binding);
+
+/// True when both resolved ParamPackage strings designate the same physical input.
+bool SameInput(const std::string& a, const std::string& b);
+
+/// Human readable name of a binding for the configuration UI.
+QString DisplayName(const QString& binding);
+
+} // namespace ControllerHotkey

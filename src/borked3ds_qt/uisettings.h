@@ -126,6 +126,8 @@ struct Values {
 
     // Shortcut name <Shortcut, context>
     std::vector<Shortcut> shortcuts;
+    // v426 : controller hotkey enable button (modifier). Empty = single-button controller hotkeys.
+    QString controller_hotkey_modifier;
 
     Settings::Setting<u32> callout_flags{0, "calloutFlags"};
 

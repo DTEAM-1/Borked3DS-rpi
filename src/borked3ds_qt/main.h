@@ -364,11 +364,29 @@ private:
 
     // Gamepad hotkey polling - gvx64
     QTimer gamepad_hotkey_poll_timer;
-    std::map<QString, bool> gamepad_hotkey_pressed; // Track button states
-    std::map<QString, std::unique_ptr<Input::ButtonDevice>> hotkey_button_devices; // Cache devices - gvx64
+    // v426 : hotkey enable button (modifier) + per-hotkey button, RetroPie style
+    struct GamepadHotkeyBinding {
+        QString group;
+        QString action;
+        std::unique_ptr<Input::ButtonDevice> device;
+        bool was_pressed = true; // must be seen released once before it can trigger
+    };
+    std::vector<GamepadHotkeyBinding> gamepad_hotkey_bindings;
+    std::unique_ptr<Input::ButtonDevice> gamepad_hotkey_modifier;
+    bool gamepad_hotkey_modifier_required = false;
+    bool gamepad_hotkeys_built = false;
 
     void PollGamepadHotkeys(); // gvx64
+    void BuildGamepadHotkeys(); // v426
+    void ClearGamepadHotkeys(); // v426
     void TriggerHotkeyAction(const QString& group, const QString& action); // gvx64
+
+    // v426 : "Toggle Menu" (pause + leave fullscreen / resume + fullscreen) and quick video dump
+    void ToggleHotkeyMenu();
+    void ToggleVideoDumpingHotkey();
+    bool hotkey_menu_open = false;
+    bool hotkey_menu_resume = false;
+    bool hotkey_menu_restore_fullscreen = false;
 
     // Whether emulation is currently running in Borked3DS.
     bool emulation_running = false;
