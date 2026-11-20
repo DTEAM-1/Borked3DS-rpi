@@ -881,10 +881,14 @@ void GMainWindow::InitializeSaveStateMenuActions() {
     // Quick save / load uses slot
     connect(ui->action_Quick_Save, &QAction::triggered, this, [this] {
         UpdateSaveStates();
+        ShowOsdMessage(tr("Saving state...")); // v427
         actions_save_state[0]->trigger();
     });
     connect(ui->action_Quick_Load, &QAction::triggered, this, [this] {
         UpdateSaveStates();
+        // v427 : a disabled slot action ignores trigger(), say so instead of "Loading"
+        ShowOsdMessage(actions_load_state[0]->isEnabled() ? tr("Loading state...")
+                                                          : tr("No quick save to load"));
         actions_load_state[0]->trigger();
     });
 
@@ -2976,6 +2980,10 @@ void GMainWindow::OnStopGame() {
     // Stop gamepad hotkey polling - gvx64
     gamepad_hotkey_poll_timer.stop();
     ClearGamepadHotkeys(); // v426
+    if (osd_label) { // v427
+        osd_hide_timer.stop();
+        osd_label->hide();
+    }
     hotkey_menu_open = false;
 }
 
@@ -3514,6 +3522,7 @@ void GMainWindow::OnCaptureScreenshot() {
             UISettings::values.screenshot_resolution_factor.GetValue(),
             QString::fromStdString(path));
         OnStartGame();
+        ShowOsdMessage(tr("Screenshot taken")); // v427
     }
 }
 
@@ -3692,6 +3701,44 @@ void GMainWindow::ToggleVideoDumpingHotkey() {
     StartVideoDumping(path);
 }
 
+// v427 : RetroArch-style on-screen message. A frameless tool-tip window (override-redirect on X11,
+// so it stays above the fullscreen Vulkan window without a compositor) at the bottom left of the
+// game, white text on dark blue, hidden after 2 s. Not part of screenshots or video dumps, which are
+// taken from the renderer.
+void GMainWindow::ShowOsdMessage(const QString& text) {
+    if (!emulation_running || !render_window) {
+        return;
+    }
+    QWidget* const target =
+        render_window->isVisible() ? static_cast<QWidget*>(render_window) : static_cast<QWidget*>(this);
+
+    if (!osd_label) {
+        osd_label = new QLabel(this, Qt::ToolTip | Qt::FramelessWindowHint |
+                                         Qt::WindowStaysOnTopHint | Qt::WindowDoesNotAcceptFocus);
+        osd_label->setAttribute(Qt::WA_ShowWithoutActivating);
+        osd_label->setAttribute(Qt::WA_TransparentForMouseEvents);
+        osd_label->setStyleSheet(QStringLiteral(
+            "QLabel { color: #ffffff; background-color: #0b1f4d; padding: 6px 14px; }"));
+        osd_hide_timer.setSingleShot(true);
+        connect(&osd_hide_timer, &QTimer::timeout, osd_label, &QWidget::hide);
+    }
+
+    // Size relative to the game area (480 px high -> 20 px text)
+    const int height = std::max(target->height(), 1);
+    QFont font = osd_label->font();
+    font.setPixelSize(std::max(14, height / 24));
+    osd_label->setFont(font);
+    osd_label->setText(text);
+    osd_label->adjustSize();
+
+    const int margin = std::max(8, height / 40);
+    const QPoint origin = target->mapToGlobal(QPoint(0, 0));
+    osd_label->move(origin.x() + margin, origin.y() + height - osd_label->height() - margin);
+    osd_label->show();
+    osd_label->raise();
+    osd_hide_timer.start(2000);
+}
+
 void GMainWindow::OnStartVideoDumping() {
     DumpingDialog dialog(this, system);
     if (dialog.exec() != QDialog::DialogCode::Accepted) {
@@ -3714,6 +3761,7 @@ void GMainWindow::StartVideoDumping(const QString& path) {
     auto dumper = std::make_shared<VideoDumper::FFmpegBackend>(renderer);
     if (dumper->StartDumping(path.toStdString(), layout)) {
         system.RegisterVideoDumper(dumper);
+        ShowOsdMessage(tr("Video recording started")); // v427
     } else {
         QMessageBox::critical(
             this, tr("Borked3DS"),
@@ -3735,6 +3783,7 @@ void GMainWindow::OnStopVideoDumping() {
             return;
         }
 
+        ShowOsdMessage(tr("Video recording stopped")); // v427
         game_paused_for_dumping = emu_thread->IsRunning();
         OnPauseGame();
 

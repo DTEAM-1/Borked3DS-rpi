@@ -388,6 +388,12 @@ private:
     bool hotkey_menu_resume = false;
     bool hotkey_menu_restore_fullscreen = false;
 
+    // v427 : RetroArch-style on-screen message (2 s, white on dark blue) for quick save/load,
+    // video recording start/stop and screenshots
+    void ShowOsdMessage(const QString& text);
+    QLabel* osd_label = nullptr;
+    QTimer osd_hide_timer;
+
     // Whether emulation is currently running in Borked3DS.
     bool emulation_running = false;
     std::unique_ptr<EmuThread> emu_thread;
