@@ -374,34 +374,13 @@ std::shared_ptr<SDLJoystick> SDLState::GetSDLJoystickBySDLID(SDL_JoystickID sdl_
     return *vec_it;
 }
 
-Common::ParamPackage SDLState::GetSDLControllerButtonBindByGUID(
-    const std::string& guid, int port, Settings::NativeButton::Values button) {
-    Common::ParamPackage params({{"engine", "sdl"}});
-    params.Set("guid", guid);
-    params.Set("port", port);
-    SDL_GameController* controller = GetSDLJoystickByGUID(guid, port)->GetSDLGameController();
-    SDL_GameControllerButtonBind button_bind;
-
-    if (!controller) {
-        LOG_WARNING(Input, "failed to open controller {}", guid);
-        return {{}};
-    }
-
-    auto mapped_button = xinput_to_3ds_mapping[static_cast<int>(button)];
-    if (mapped_button == SDL_CONTROLLER_BUTTON_INVALID) {
-        if (button == Settings::NativeButton::Values::ZL) {
-            button_bind =
-                SDL_GameControllerGetBindForAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-        } else if (button == Settings::NativeButton::Values::ZR) {
-            button_bind =
-                SDL_GameControllerGetBindForAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
-        } else {
-            return {{}};
-        }
-    } else {
-        button_bind = SDL_GameControllerGetBindForButton(controller, mapped_button);
-    }
-
+// v426 : conversion d'un bind SDL_GameController en ParamPackage, partagee entre le mapping
+// automatique des boutons 3DS et la resolution des boutons manette nommes (L3/R3) des hotkeys.
+static Common::ParamPackage SDLButtonBindToParams(Common::ParamPackage params,
+                                                  SDL_GameController* controller,
+                                                  SDL_GameControllerButton mapped_button,
+                                                  const SDL_GameControllerButtonBind& button_bind,
+                                                  const char* label) {
     switch (button_bind.bindType) {
     case SDL_CONTROLLER_BINDTYPE_BUTTON:
         params.Set("button", button_bind.value.button);
@@ -450,7 +429,7 @@ Common::ParamPackage SDLState::GetSDLControllerButtonBindByGUID(
 #endif
         break;
     case SDL_CONTROLLER_BINDTYPE_NONE:
-        LOG_WARNING(Input, "Button not bound: {}", Settings::NativeButton::mapping[button]);
+        LOG_WARNING(Input, "Button not bound: {}", label);
         return {{}};
     default:
         LOG_WARNING(Input, "unknown SDL bind type {}", button_bind.bindType);
@@ -458,6 +437,63 @@ Common::ParamPackage SDLState::GetSDLControllerButtonBindByGUID(
     }
 
     return params;
+}
+
+Common::ParamPackage SDLState::GetSDLControllerButtonBindByGUID(
+    const std::string& guid, int port, Settings::NativeButton::Values button) {
+    Common::ParamPackage params({{"engine", "sdl"}});
+    params.Set("guid", guid);
+    params.Set("port", port);
+    SDL_GameController* controller = GetSDLJoystickByGUID(guid, port)->GetSDLGameController();
+    SDL_GameControllerButtonBind button_bind;
+
+    if (!controller) {
+        LOG_WARNING(Input, "failed to open controller {}", guid);
+        return {{}};
+    }
+
+    auto mapped_button = xinput_to_3ds_mapping[static_cast<int>(button)];
+    if (mapped_button == SDL_CONTROLLER_BUTTON_INVALID) {
+        if (button == Settings::NativeButton::Values::ZL) {
+            button_bind =
+                SDL_GameControllerGetBindForAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+        } else if (button == Settings::NativeButton::Values::ZR) {
+            button_bind =
+                SDL_GameControllerGetBindForAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+        } else {
+            return {{}};
+        }
+    } else {
+        button_bind = SDL_GameControllerGetBindForButton(controller, mapped_button);
+    }
+
+    return SDLButtonBindToParams(std::move(params), controller, mapped_button, button_bind,
+                                 Settings::NativeButton::mapping[button]);
+}
+
+// v426 : bouton manette designe par son nom SDL_GameController ("leftstick", "rightstick",
+// "guide", ...). Sert aux hotkeys manette pour les boutons absents de la 3DS (L3/R3).
+// Retourne un ParamPackage vide si la manette n'a pas de mapping SDL_GameController.
+Common::ParamPackage SDLState::GetSDLControllerButtonBindByName(const std::string& guid, int port,
+                                                                const std::string& button_name) {
+    Common::ParamPackage params({{"engine", "sdl"}});
+    params.Set("guid", guid);
+    params.Set("port", port);
+    SDL_GameController* controller = GetSDLJoystickByGUID(guid, port)->GetSDLGameController();
+    if (!controller) {
+        return {{}};
+    }
+
+    const SDL_GameControllerButton sdl_button =
+        SDL_GameControllerGetButtonFromString(button_name.c_str());
+    if (sdl_button == SDL_CONTROLLER_BUTTON_INVALID) {
+        return {{}};
+    }
+
+    const SDL_GameControllerButtonBind button_bind =
+        SDL_GameControllerGetBindForButton(controller, sdl_button);
+    return SDLButtonBindToParams(std::move(params), controller, sdl_button, button_bind,
+                                 button_name.c_str());
 }
 
 Common::ParamPackage SDLState::GetSDLControllerAnalogBindByGUID(

@@ -44,6 +44,9 @@ public:
                                                           Settings::NativeButton::Values button);
     Common::ParamPackage GetSDLControllerAnalogBindByGUID(const std::string& guid, int port,
                                                           Settings::NativeAnalog::Values analog);
+    // v426 : bouton nomme SDL_GameController ("leftstick", "rightstick", ...) pour les hotkeys
+    Common::ParamPackage GetSDLControllerButtonBindByName(const std::string& guid, int port,
+                                                          const std::string& button_name);
 
     /// Get all DevicePoller that use the SDL backend for a specific device type
     Pollers GetPollers(Polling::DeviceType type) override;
