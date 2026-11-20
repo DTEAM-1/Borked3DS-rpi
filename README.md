@@ -24,6 +24,8 @@ The Pi 5 build is now heavily optimized and debugged. The biggest find: **the em
 
 Also new: the invisible right eye is no longer drawn when 3D is off (detected automatically, only when it is safe), and the sound of LEGO Ninjago: Shadow of Ronin cut-scenes is fixed (streamed audio buffers are now read as they play, as on the real DSP).
 
+**RetroArch-style hotkeys (Pi 5 and x86-64).** Hold **Select** and press a second button (Select + Start to quit, Select + R1 to quick save, etc.), with a short on-screen message confirming the action. It works out of the box on a new install; see [Controller and hotkeys](#controller-and-hotkeys). Already installed? `borked3ds.sh` is unchanged, just rebuild borked3ds from source.
+
 ---
 
 ## Supported systems
@@ -55,7 +57,7 @@ One install script, three targets. It detects the machine and builds the right e
    cat /opt/retropie/emulators/borked3ds/.borked3ds_pgo
    ```
    A Pi 5 with less than 6 GB of RAM builds without LTO (PGO still applies). If anything prevents PGO, the script says why and builds without it: PGO can never break a build.
-3. **Already a user?** Back up, then delete, your **`qt-config.ini`** (`~/.config/borked3ds-emu/`) and your **`emulators.cfg`** (`/opt/retropie/configs/3ds/`) before updating, so you start from the built-in optimal settings. The Vulkan shader cache is kept across updates.
+3. **Already a user?** Back up, then delete, your **`qt-config.ini`** (`~/.config/borked3ds-emu/`) and your **`emulators.cfg`** (`/opt/retropie/configs/3ds/`) before updating, so you start from the built-in optimal settings and the new default hotkeys. The Vulkan shader cache is kept across updates.
 4. Add decrypted 3DS ROMs to your ROM folder (`~/RetroPie/roms/3ds`).
 5. **OpenGL/GLES (Pi 4):** modify the `<command>` line of the 3ds system entry to declare the following environment variable, in `/etc/emulationstation/es_systems.cfg` or `/opt/retropie/configs/all/emulationstation/es_systems.cfg` (it is harmless with Vulkan):
 
@@ -97,7 +99,32 @@ One install script, three targets. It detects the machine and builds the right e
 
 ## Controller and hotkeys
 
-Set up your controller first. Then map the Borked3DS hotkeys from the UI launch line.
+Set up your controller first (**Emulation → Configure… → Controls**). The hotkeys follow this mapping.
+
+### Default hotkeys (Pi 5 and x86-64)
+
+Like RetroArch / RetroPie: hold **Select** (the hotkey enable button), then press the second button.
+
+| Combo | Action |
+|---|---|
+| Select + Start | Exit Borked3DS (back to EmulationStation) |
+| Select + R1 | Quick Save |
+| Select + L1 | Quick Load |
+| Select + X | Menu: pauses and leaves fullscreen so the menus can be used with the mouse; press again to go back to fullscreen and resume |
+| Select + B | Reset (restarts the game) |
+| Select + L3 | Screenshot |
+| Select + R3 | Start / stop video recording |
+
+- A small RetroArch-style message (white text on dark blue, bottom left, 2 seconds) confirms each action: *Saving state...*, *Loading state...* (or *No quick save to load*), *Screenshot taken*, *Video recording started*, *Video recording stopped*. It is not included in screenshots or videos.
+- "Select", "Start", "R1"… mean the buttons mapped to the 3DS Select, Start, R… in Controls, so the defaults work with any controller; nothing is hard-coded for a specific gamepad. L3 / R3 (absent on a 3DS) are found through SDL's controller database, or else through EmulationStation's input configuration (*left thumb* / *right thumb*). If Select + L3 / R3 does nothing, assign them manually (step 2 below).
+- As in RetroArch, the game also receives the combo buttons (for example Select and R1).
+- Go to **Emulation → Configure… → General → General** and **uncheck** "Confirm Exit While Emulation is Running", so Select + Start quits without a confirmation window.
+- **New install, or no `qt-config.ini` yet:** everything is automatic.
+- **Existing `qt-config.ini`:** hotkeys you set yourself in the past are kept and take priority over the new defaults (a rebuild never changes your settings). Either delete `qt-config.ini` as explained in [Installation](#installation-retropie), or switch to the new defaults from the UI (steps below).
+
+The Pi 4 builds [gvx64's fork](https://github.com/gvx64/Borked3DS-rpi), which keeps its own hotkey behaviour (single buttons) unless it adopts this change.
+
+### Changing the hotkeys from the UI launch line
 
 **1. Open Borked3DS in UI mode (before playing)**
 
@@ -111,17 +138,12 @@ Set up your controller first. Then map the Borked3DS hotkeys from the UI launch 
 
 - In the menu bar, open **Emulation → Configure…**
 - In the left panel, select **Hotkeys** (in the Controls group).
-- Each action has two columns: **Hotkey** for the keyboard, **Controller Hotkey** for the gamepad.
-- To assign a gamepad button, double-click the action's cell in the Controller Hotkey column. When the cell waits for input, press the button (or button combination) on the gamepad. The cell then shows the button number. To clear a mapping, right-click the cell and choose Clear.
+- The line at the top, **Controller hotkey enable button**, sets the button to hold: **Default (Select)**, **None** (old behaviour, each hotkey is a single button), or click the button field and press another gamepad button.
+- Each action has two columns: **Hotkey** for the keyboard, **Controller** for the gamepad. To assign a gamepad button, double-click the action's cell in the Controller column and press **only the second button** of the combo (not the enable button). To reset or clear a mapping, right-click the cell and choose **Restore Default** or **Clear**.
+- To switch an existing configuration to the new defaults: click **Default (Select)**, then **Restore Defaults** (this also resets the keyboard shortcuts), or right-click each Controller cell → **Restore Default**.
+- If Select + L3 / R3 does nothing: double-click the Controller cell of **Capture Screenshot** and press L3; same with **Toggle Video Dumping** and R3.
 
-Recommended hotkeys:
-
-| Button | Action |
-|---|---|
-| L2 | Quick Load |
-| R2 | Quick Save |
-| Right thumb button | Exit Borked3DS (also go to Emulation → Configure… → General → General and **uncheck** "Confirm Exit While Emulation is Running") |
-| Left thumb button | Toggle screen layout |
+**3. Other settings**
 
 - You can set a **gamepad touch cursor** (per game only): in the UI, right-click a game, open **Properties**, last tab (**Controls**), and check **Enable Gamepad Touch Cursor**. You can then set the sensitivity and more.
 - Finally, open **View** (top menu) and select **Fullscreen**.
@@ -182,12 +204,18 @@ The supported way to build is the RetroPie script [`borked3ds.sh`](borked3ds.sh)
 | Log | `~/.local/share/borked3ds-emu/log/borked3ds_log.txt` |
 | Vulkan shader cache | `~/.local/share/borked3ds-emu/shaders/vulkan` |
 | Launch lines | `/opt/retropie/configs/3ds/emulators.cfg` |
+| Savestates | `~/.local/share/borked3ds-emu/states/` (`<TitleID>.00.cst` is the quick save) |
+| In-game saves | `~/.local/share/borked3ds-emu/sdmc/Nintendo 3DS/` |
+| Screenshots | `~/.local/share/borked3ds-emu/screenshots/` (unless another folder is set in the settings) |
+| Videos | `~/.local/share/borked3ds-emu/videos/` (or the last folder used in **Emulation → Dump Video**), named `<game>_<date_time>.<ext>` |
+
+The default video format (webm / VP9) is heavy for a Pi 5; a lighter format can be chosen once in **Emulation → Dump Video** and is remembered.
 
 ---
 
 ## Feedback
 
-Please tell us whether everything works for you, or not: **board, OS, renderer and game**. On a Pi 5, the result of `cat /opt/retropie/emulators/borked3ds/.borked3ds_pgo` helps too. Post in the [support thread](https://retropie.org.uk/forum/topic/37122/3ds-emulator-for-pi-users-based-on-borked-3ds) or open an issue in this repository. As the project is no longer in active development, reports are welcome but may not lead to a fix.
+Please tell us whether everything works for you, or not: **board, OS, renderer and game**. On a Pi 5, the result of `cat /opt/retropie/emulators/borked3ds/.borked3ds_pgo` helps too, and for the hotkeys, your controller model. Post in the [support thread](https://retropie.org.uk/forum/topic/37122/3ds-emulator-for-pi-users-based-on-borked-3ds) or open an issue in this repository. As the project is no longer in active development, reports are welcome but may not lead to a fix.
 
 ---
 
