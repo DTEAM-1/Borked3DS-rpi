@@ -496,6 +496,35 @@ Common::ParamPackage SDLState::GetSDLControllerButtonBindByName(const std::strin
                                  button_name.c_str());
 }
 
+// v428 : pair of named SDL_GameController axes ("leftx"/"lefty", "rightx"/"righty") as an analog
+// ParamPackage, for the gamepad cursor when the stick is not bound in the input profile.
+Common::ParamPackage SDLState::GetSDLControllerAxesBindByName(const std::string& guid, int port,
+                                                              const std::string& axis_x_name,
+                                                              const std::string& axis_y_name) {
+    SDL_GameController* controller = GetSDLJoystickByGUID(guid, port)->GetSDLGameController();
+    if (!controller) {
+        return {{}};
+    }
+    const SDL_GameControllerAxis axis_x = SDL_GameControllerGetAxisFromString(axis_x_name.c_str());
+    const SDL_GameControllerAxis axis_y = SDL_GameControllerGetAxisFromString(axis_y_name.c_str());
+    if (axis_x == SDL_CONTROLLER_AXIS_INVALID || axis_y == SDL_CONTROLLER_AXIS_INVALID) {
+        return {{}};
+    }
+    const SDL_GameControllerButtonBind bind_x = SDL_GameControllerGetBindForAxis(controller, axis_x);
+    const SDL_GameControllerButtonBind bind_y = SDL_GameControllerGetBindForAxis(controller, axis_y);
+    if (bind_x.bindType != SDL_CONTROLLER_BINDTYPE_AXIS ||
+        bind_y.bindType != SDL_CONTROLLER_BINDTYPE_AXIS) {
+        return {{}};
+    }
+    Common::ParamPackage params({{"engine", "sdl"}});
+    params.Set("guid", guid);
+    params.Set("port", port);
+    params.Set("axis_x", bind_x.value.axis);
+    params.Set("axis_y", bind_y.value.axis);
+    params.Set("deadzone", 0.1f);
+    return params;
+}
+
 Common::ParamPackage SDLState::GetSDLControllerAnalogBindByGUID(
     const std::string& guid, int port, Settings::NativeAnalog::Values analog) {
     Common::ParamPackage params({{"engine", "sdl"}});

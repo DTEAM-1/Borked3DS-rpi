@@ -47,6 +47,10 @@ public:
     // v426 : bouton nomme SDL_GameController ("leftstick", "rightstick", ...) pour les hotkeys
     Common::ParamPackage GetSDLControllerButtonBindByName(const std::string& guid, int port,
                                                           const std::string& button_name);
+    // v428 : named SDL_GameController axes ("rightx"/"righty", ...) for the gamepad cursor
+    Common::ParamPackage GetSDLControllerAxesBindByName(const std::string& guid, int port,
+                                                        const std::string& axis_x_name,
+                                                        const std::string& axis_y_name);
 
     /// Get all DevicePoller that use the SDL backend for a specific device type
     Pollers GetPollers(Polling::DeviceType type) override;
