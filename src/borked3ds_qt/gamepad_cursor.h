@@ -21,12 +21,19 @@ class QWidget;
  *
  * Moves the real mouse pointer with a stick, everywhere: menus, game list, dialogs and the game
  * window (where a click is a touch of the 3DS bottom screen, through the normal mouse path, so it
- * works with every renderer). L3 or R3 clicks, held = drag; double click opens a game in the list.
+ * works with every renderer). A click button held down keeps the button pressed: drag a scroll
+ * bar or a slider in the interface, slide on the touch screen in a game. Double click opens a
+ * game in the list.
+ *
+ * v431 : two independent sets, chosen automatically:
+ *  - Interface (no game running, or the game paused, e.g. with the Select + X menu):
+ *    left stick and A by default.
+ *  - Game (a game running, if "Also in games" is checked): right stick, L3 and R3 by default.
+ *
  * In a game, the pointer hides after 1 s without stick activity and comes back as soon as the
- * stick moves; it never shows for the touch screen there. In the interface it stays visible. The real mouse and the touch screen keep working: a real
- * mouse movement shows the pointer again and the gamepad never hides a pointer it did not move.
- * "Also in games" off: inactive while a game is running (active again when it is paused, e.g.
- * with the Select + X menu).
+ * stick moves; it never shows for the touch screen there. In the interface it stays visible.
+ * The real mouse and the touch screen keep working: a real mouse movement shows the pointer again
+ * and the gamepad never hides a pointer it did not move.
  *
  * Built on gvx64's per-game touch cursor (sub-pixel accumulation, sensitivity), improved with a
  * radial dead zone and a quadratic response curve (precise near the centre, fast at full tilt,
@@ -40,14 +47,26 @@ public:
     /// Settings or input profile changed: devices are rebuilt on the next poll.
     void Reload();
 
-    /// Returns true while a game is running (not paused), for the "Also in games" option.
+    /// Returns true while a game is running (not paused): selects the game set.
     void SetGameRunningCallback(std::function<bool()> callback);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    /// One set of stick + click buttons (interface or game)
+    struct Controls {
+        std::unique_ptr<Input::AnalogDevice> stick;
+        bool invert_x = false;
+        bool invert_y = false;
+        std::array<std::unique_ptr<Input::ButtonDevice>, 2> clicks;
+
+        void Reset();
+    };
+
     void Build();
+    void BuildControls(Controls& controls, bool right_stick, const std::string& click1,
+                       const std::string& click2, const char* name);
     bool InGame() const;
     void Poll();
     void Press(const QPoint& global);
@@ -69,10 +88,9 @@ private:
     bool in_games = true;
     std::function<bool()> game_running;
 
-    std::unique_ptr<Input::AnalogDevice> stick;
-    bool invert_x = false;
-    bool invert_y = false;
-    std::array<std::unique_ptr<Input::ButtonDevice>, 2> clicks;
+    Controls interface_controls;
+    Controls game_controls;
+    bool using_game_controls = false;
     std::unique_ptr<Input::ButtonDevice> modifier;
     bool click_was_pressed = true; // must be seen released once before it can click
 

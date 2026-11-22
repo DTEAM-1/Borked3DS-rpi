@@ -84,23 +84,59 @@ void GamepadCursor::Reload() {
         if (pressed) {
             Release(QCursor::pos());
         }
-        stick.reset();
-        for (auto& click : clicks) {
-            click.reset();
-        }
+        interface_controls.Reset();
+        game_controls.Reset();
         modifier.reset();
         ShowPointer();
     }
+}
+
+void GamepadCursor::Controls::Reset() {
+    stick.reset();
+    invert_x = false;
+    invert_y = false;
+    for (auto& click : clicks) {
+        click.reset();
+    }
+}
+
+void GamepadCursor::BuildControls(Controls& controls, bool right_stick, const std::string& click1,
+                                  const std::string& click2, const char* name) {
+    controls.Reset();
+    const std::string stick_params =
+        ControllerHotkey::ResolveStick(right_stick, controls.invert_x, controls.invert_y);
+    if (!stick_params.empty()) {
+        controls.stick = Input::CreateDevice<Input::AnalogDevice>(stick_params);
+    }
+
+    const std::array<std::string, 2> bindings{click1, click2};
+    std::array<const char*, 2> state{"none", "none"};
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+        if (bindings[i].empty()) {
+            continue;
+        }
+        const std::string params = ControllerHotkey::Resolve(QString::fromStdString(bindings[i]));
+        if (params.empty()) {
+            state[i] = "NOT FOUND";
+            continue;
+        }
+        controls.clicks[i] = Input::CreateDevice<Input::ButtonDevice>(params);
+        state[i] = "found";
+    }
+
+    LOG_WARNING(Frontend, "V431_CURSOR {}: stick={} ({}{}) click1={} click2={}", name,
+                right_stick ? "right" : "left", controls.stick ? "found" : "NOT FOUND",
+                (controls.invert_x || controls.invert_y) ? ", inverted from EmulationStation"
+                                                         : "",
+                state[0], state[1]);
 }
 
 void GamepadCursor::Build() {
     built = true;
     enabled = Settings::values.gamepad_cursor_enabled.GetValue();
     in_games = Settings::values.gamepad_cursor_in_games.GetValue();
-    stick.reset();
-    for (auto& click : clicks) {
-        click.reset();
-    }
+    interface_controls.Reset();
+    game_controls.Reset();
     modifier.reset();
     click_was_pressed = true;
     accumulated_x = 0.0f;
@@ -109,25 +145,13 @@ void GamepadCursor::Build() {
         return;
     }
 
-    const bool right = Settings::values.gamepad_cursor_stick.GetValue() != 0;
-    const std::string stick_params = ControllerHotkey::ResolveStick(right, invert_x, invert_y);
-    if (!stick_params.empty()) {
-        stick = Input::CreateDevice<Input::AnalogDevice>(stick_params);
-    }
-
-    const std::array<std::string, 2> click_bindings{
-        Settings::values.gamepad_cursor_click1.GetValue(),
-        Settings::values.gamepad_cursor_click2.GetValue(),
-    };
-    std::array<bool, 2> click_found{};
-    for (std::size_t i = 0; i < clicks.size(); ++i) {
-        const std::string params =
-            ControllerHotkey::Resolve(QString::fromStdString(click_bindings[i]));
-        if (!params.empty()) {
-            clicks[i] = Input::CreateDevice<Input::ButtonDevice>(params);
-            click_found[i] = true;
-        }
-    }
+    // Interface: left stick and A by default. Game: right stick, L3 and R3 by default.
+    BuildControls(interface_controls, Settings::values.gamepad_cursor_ui_stick.GetValue() != 0,
+                  Settings::values.gamepad_cursor_ui_click1.GetValue(),
+                  Settings::values.gamepad_cursor_ui_click2.GetValue(), "interface");
+    BuildControls(game_controls, Settings::values.gamepad_cursor_stick.GetValue() != 0,
+                  Settings::values.gamepad_cursor_click1.GetValue(),
+                  Settings::values.gamepad_cursor_click2.GetValue(), "game");
 
     // The hotkey enable button (Select) + L3/R3 are hotkeys: no click while it is held
     const QString& modifier_binding = UISettings::values.controller_hotkey_modifier;
@@ -138,16 +162,8 @@ void GamepadCursor::Build() {
         }
     }
 
-    const auto click_state = [&](std::size_t i) {
-        return click_bindings[i].empty() ? "none" : (click_found[i] ? "found" : "NOT FOUND");
-    };
-    LOG_WARNING(Frontend,
-                "V428_CURSOR ready: stick={} ({}{}) click1={} click2={} sensitivity={}% in_games={}",
-                right ? "right" : "left", stick ? "found" : "NOT FOUND",
-                (invert_x || invert_y) ? ", inverted from EmulationStation" : "",
-                click_state(0), click_state(1),
-                Settings::values.gamepad_cursor_sensitivity.GetValue(),
-                in_games ? "yes" : "no");
+    LOG_WARNING(Frontend, "V428_CURSOR ready: sensitivity={}% in_games={}",
+                Settings::values.gamepad_cursor_sensitivity.GetValue(), in_games ? "yes" : "no");
 }
 
 void GamepadCursor::Poll() {
@@ -160,23 +176,37 @@ void GamepadCursor::Poll() {
         return;
     }
 
-    QWidget* const modal = QApplication::activeModalWidget();
-    // "Also in games" off: nothing while a game runs (the stick belongs to the game)
-    const bool game_blocked = !in_games && InGame();
-    const bool capturing = IsInputCaptureDialog(modal) || game_blocked;
-    if (game_blocked && pressed) {
-        Release(QCursor::pos());
-    }
-
     QPoint pos = QCursor::pos();
 
+    // v431 : interface set or game set. Switching (game starts, pauses, resumes) ends a click in
+    // progress, and the new set's buttons must be released before they can click.
+    const bool in_game = InGame();
+    if (in_game != using_game_controls) {
+        using_game_controls = in_game;
+        if (pressed) {
+            Release(pos);
+        }
+        click_was_pressed = true;
+        accumulated_x = 0.0f;
+        accumulated_y = 0.0f;
+    }
+    const Controls& controls = in_game ? game_controls : interface_controls;
+
+    QWidget* const modal = QApplication::activeModalWidget();
+    // "Also in games" off: nothing while a game runs (the stick belongs to the game)
+    const bool game_blocked = !in_games && in_game;
+    const bool capturing = IsInputCaptureDialog(modal) || game_blocked;
+    if (game_blocked && pressed) {
+        Release(pos);
+    }
+
     // --- Movement -------------------------------------------------------------------------
-    if (stick && !capturing) {
-        auto [x, y] = stick->GetStatus();
-        if (invert_x) {
+    if (controls.stick && !capturing) {
+        auto [x, y] = controls.stick->GetStatus();
+        if (controls.invert_x) {
             x = -x;
         }
-        if (invert_y) {
+        if (controls.invert_y) {
             y = -y;
         }
         const float r = std::sqrt(x * x + y * y);
@@ -205,6 +235,7 @@ void GamepadCursor::Poll() {
                 QCursor::setPos(pos);
                 NoteActivity();
                 if (pressed && press_target) {
+                    // Button held: drag (scroll bar, slider, list selection, touch slide)
                     SendMouse(QEvent::MouseMove, pos, Qt::NoButton, Qt::LeftButton,
                               press_target.data());
                 }
@@ -215,9 +246,9 @@ void GamepadCursor::Poll() {
         }
     }
 
-    // --- Clicks (L3 or R3) ----------------------------------------------------------------
+    // --- Click buttons: press on push, held while held, release on release -------------------
     bool click_now = false;
-    for (const auto& click : clicks) {
+    for (const auto& click : controls.clicks) {
         if (click && click->GetStatus()) {
             click_now = true;
         }
@@ -233,7 +264,6 @@ void GamepadCursor::Poll() {
     click_was_pressed = click_now;
 
     // --- Auto-hide, only while a game runs (v430: always visible in the interface) --------
-    const bool in_game = InGame();
     if (in_game && !was_in_game) {
         // A game starts or resumes: the arrow hides 1 s later, as after a stick movement
         gamepad_moved_pointer = true;
