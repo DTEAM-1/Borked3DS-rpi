@@ -10,6 +10,7 @@
 #include "borked3ds_qt/configuration/configure_debug.h"
 #include "borked3ds_qt/configuration/configure_dialog.h"
 #include "borked3ds_qt/configuration/configure_enhancements.h"
+#include "borked3ds_qt/configuration/configure_gamepad_cursor.h" // v428
 #include "borked3ds_qt/configuration/configure_general.h"
 #include "borked3ds_qt/configuration/configure_graphics.h"
 #include "borked3ds_qt/configuration/configure_hotkeys.h"
@@ -47,6 +48,7 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_, Cor
       system_tab{std::make_unique<ConfigureSystem>(system, this)},
       input_tab{std::make_unique<ConfigureInput>(system, this)},
       hotkeys_tab{std::make_unique<ConfigureHotkeys>(this)},
+      gamepad_cursor_tab{std::make_unique<ConfigureGamepadCursor>(this)}, // v428
       graphics_tab{
           std::make_unique<ConfigureGraphics>(gl_renderer, physical_devices, is_powered_on, this)},
       enhancements_tab{std::make_unique<ConfigureEnhancements>(this)},
@@ -66,6 +68,7 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_, Cor
     ui->tabWidget->addTab(MakeScrollable(system_tab.get()), tr("System"));
     ui->tabWidget->addTab(MakeScrollable(input_tab.get()), tr("Input"));
     ui->tabWidget->addTab(MakeScrollable(hotkeys_tab.get()), tr("Hotkeys"));
+    ui->tabWidget->addTab(MakeScrollable(gamepad_cursor_tab.get()), tr("Gamepad Cursor")); // v428
     ui->tabWidget->addTab(MakeScrollable(graphics_tab.get()), tr("Graphics"));
     ui->tabWidget->addTab(MakeScrollable(enhancements_tab.get()), tr("Enhancements"));
     ui->tabWidget->addTab(MakeScrollable(layout_tab.get()), tr("Layout"));
@@ -80,6 +83,7 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_, Cor
     ui->tabWidget->addTab(system_tab.get(), tr("System"));
     ui->tabWidget->addTab(input_tab.get(), tr("Input"));
     ui->tabWidget->addTab(hotkeys_tab.get(), tr("Hotkeys"));
+    ui->tabWidget->addTab(gamepad_cursor_tab.get(), tr("Gamepad Cursor")); // v428
     ui->tabWidget->addTab(graphics_tab.get(), tr("Graphics"));
     ui->tabWidget->addTab(enhancements_tab.get(), tr("Enhancements"));
     ui->tabWidget->addTab(layout_tab.get(), tr("Layout"));
@@ -118,6 +122,7 @@ void ConfigureDialog::SetConfiguration() {
     general_tab->SetConfiguration();
     system_tab->SetConfiguration();
     input_tab->LoadConfiguration();
+    gamepad_cursor_tab->SetConfiguration(); // v428
     graphics_tab->SetConfiguration();
     enhancements_tab->SetConfiguration();
     layout_tab->SetConfiguration();
@@ -135,6 +140,7 @@ void ConfigureDialog::ApplyConfiguration() {
     input_tab->ApplyConfiguration();
     input_tab->ApplyProfile();
     hotkeys_tab->ApplyConfiguration(registry);
+    gamepad_cursor_tab->ApplyConfiguration(); // v428
     graphics_tab->ApplyConfiguration();
     enhancements_tab->ApplyConfiguration();
     layout_tab->ApplyConfiguration();
@@ -158,7 +164,7 @@ void ConfigureDialog::PopulateSelectionList() {
          {tr("System"), {system_tab.get(), camera_tab.get(), storage_tab.get()}},
          {tr("Graphics"), {enhancements_tab.get(), layout_tab.get(), graphics_tab.get()}},
          {tr("Audio"), {audio_tab.get()}},
-         {tr("Controls"), {input_tab.get(), hotkeys_tab.get()}}}};
+         {tr("Controls"), {input_tab.get(), hotkeys_tab.get(), gamepad_cursor_tab.get()}}}};
 
     for (const auto& entry : items) {
         auto* const item = new QListWidgetItem(entry.first);
@@ -189,6 +195,7 @@ void ConfigureDialog::RetranslateUI() {
     system_tab->RetranslateUI();
     input_tab->RetranslateUI();
     hotkeys_tab->RetranslateUI();
+    gamepad_cursor_tab->RetranslateUI(); // v428
     graphics_tab->RetranslateUI();
     enhancements_tab->RetranslateUI();
     layout_tab->RetranslateUI();
@@ -209,6 +216,7 @@ void ConfigureDialog::UpdateVisibleTabs() {
                                                  {system_tab.get(), tr("System")},
                                                  {input_tab.get(), tr("Input")},
                                                  {hotkeys_tab.get(), tr("Hotkeys")},
+                                                 {gamepad_cursor_tab.get(), tr("Gamepad Cursor")},
                                                  {enhancements_tab.get(), tr("Enhancements")},
                                                  {layout_tab.get(), tr("Layout")},
                                                  {graphics_tab.get(), tr("Advanced")},

@@ -111,6 +111,20 @@ void ConfigureControls::ApplyConfiguration() {
 }
 
 void ConfigureControls::UpdateUIState() {
+    // v428 : the global gamepad cursor (Configure > Controls > Gamepad Cursor) works in every game
+    // and replaces this per-game touch cursor while it is enabled.
+    const bool global_cursor = Settings::values.gamepad_cursor_enabled.GetValue();
+    ui->touchCursorGroupBox->setEnabled(!global_cursor);
+    if (global_cursor) {
+        ui->description_label->setText(
+            tr("The global gamepad cursor is enabled (Configure > Controls > Gamepad Cursor): it "
+               "works in every game and in the interface, so this per-game cursor is not used."));
+    } else {
+        ui->description_label->setText(
+            tr("Control the touchscreen cursor with your gamepad's analog stick. A cursor will "
+               "appear on the bottom screen."));
+    }
+
     bool enabled = ui->enable_touch_cursor->isChecked();
     ui->analog_stick_label->setEnabled(enabled);
     ui->analog_stick_combobox->setEnabled(enabled);

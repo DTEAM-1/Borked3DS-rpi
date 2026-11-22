@@ -65,7 +65,7 @@ const std::array<std::array<int, 9>, Settings::NativeAnalog::NumAnalogs> Config:
 // v426 : 4th field = default controller hotkey (symbolic, see ControllerHotkey in hotkeys.h). With
 // the default hotkey enable button (3DS Select) this gives the RetroPie combos:
 // Select+Start quit, Select+R quick save, Select+L quick load, Select+X menu, Select+B reset,
-// Select+L3 screenshot, Select+R3 video dumping. "Toggle Turbo Mode" moved back to its
+// Select+L3 screenshot, Select+R3 video dumping. v428 : Select+L2 (3DS ZL) = Toggle Screen Layout. "Toggle Turbo Mode" moved back to its
 // alphabetical place (the restore-default code now looks defaults up by name anyway).
 // clang-format off
 const std::array<UISettings::Shortcut, 40> Config::default_hotkeys {{
@@ -104,7 +104,7 @@ const std::array<UISettings::Shortcut, 40> Config::default_hotkeys {{
      {QStringLiteral("Toggle Frame Advancing"),   QStringLiteral("Main Window"), {QStringLiteral("Ctrl+A"), Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Menu"),              QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::WindowShortcut}, QStringLiteral("engine:hotkey_3ds,button:x")},
      {QStringLiteral("Toggle Per-Game Speed"),    QStringLiteral("Main Window"), {QStringLiteral("Ctrl+Z"), Qt::ApplicationShortcut}},
-     {QStringLiteral("Toggle Screen Layout"),     QStringLiteral("Main Window"), {QStringLiteral("F10"),    Qt::WindowShortcut}},
+     {QStringLiteral("Toggle Screen Layout"),     QStringLiteral("Main Window"), {QStringLiteral("F10"),    Qt::WindowShortcut}, QStringLiteral("engine:hotkey_3ds,button:zl")},
      {QStringLiteral("Toggle Status Bar"),        QStringLiteral("Main Window"), {QStringLiteral("Ctrl+S"), Qt::WindowShortcut}},
      {QStringLiteral("Toggle Texture Dumping"),   QStringLiteral("Main Window"), {QStringLiteral(""),       Qt::ApplicationShortcut}},
      {QStringLiteral("Toggle Turbo Mode"),     QStringLiteral("Main Window"), {QStringLiteral(""),      Qt::ApplicationShortcut}},
@@ -359,6 +359,13 @@ void Config::ReadControlValues() {
     qt_config->beginGroup(QStringLiteral("Controls"));
 
     ReadBasicSetting(Settings::values.use_artic_base_controller);
+
+    // v428 : global gamepad cursor (enabled by default)
+    ReadBasicSetting(Settings::values.gamepad_cursor_enabled);
+    ReadBasicSetting(Settings::values.gamepad_cursor_stick);
+    ReadBasicSetting(Settings::values.gamepad_cursor_speed);
+    ReadBasicSetting(Settings::values.gamepad_cursor_click1);
+    ReadBasicSetting(Settings::values.gamepad_cursor_click2);
 
     int num_touch_from_button_maps =
         qt_config->beginReadArray(QStringLiteral("touch_from_button_maps"));
@@ -1013,6 +1020,13 @@ void Config::SaveControlValues() {
     qt_config->beginGroup(QStringLiteral("Controls"));
 
     WriteBasicSetting(Settings::values.use_artic_base_controller);
+
+    // v428 : global gamepad cursor
+    WriteBasicSetting(Settings::values.gamepad_cursor_enabled);
+    WriteBasicSetting(Settings::values.gamepad_cursor_stick);
+    WriteBasicSetting(Settings::values.gamepad_cursor_speed);
+    WriteBasicSetting(Settings::values.gamepad_cursor_click1);
+    WriteBasicSetting(Settings::values.gamepad_cursor_click2);
 
     WriteSetting(QStringLiteral("profile"), Settings::values.current_input_profile_index, 0);
     qt_config->beginWriteArray(QStringLiteral("profiles"));

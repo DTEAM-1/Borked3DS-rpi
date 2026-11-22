@@ -24,6 +24,7 @@ class ConfigureGeneral;
 class ConfigureSystem;
 class ConfigureInput;
 class ConfigureHotkeys;
+class ConfigureGamepadCursor; // v428
 class ConfigureGraphics;
 class ConfigureLayout;
 class ConfigureEnhancements;
@@ -66,6 +67,7 @@ private:
     std::unique_ptr<ConfigureSystem> system_tab;
     std::unique_ptr<ConfigureInput> input_tab;
     std::unique_ptr<ConfigureHotkeys> hotkeys_tab;
+    std::unique_ptr<ConfigureGamepadCursor> gamepad_cursor_tab; // v428
     std::unique_ptr<ConfigureGraphics> graphics_tab;
     std::unique_ptr<ConfigureEnhancements> enhancements_tab;
     std::unique_ptr<ConfigureLayout> layout_tab;
