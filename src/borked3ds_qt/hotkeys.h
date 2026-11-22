@@ -110,6 +110,12 @@ std::string Resolve(const QString& binding);
 /// profile (or L3/R3), so it keeps working with another controller. Returns the input otherwise.
 QString Symbolize(const QString& raw_binding);
 
+/// v428 : analog ParamPackage of the left or right stick for the gamepad cursor: the 3DS Circle
+/// Pad / C-Stick binding of the current input profile, else the SDL_GameController mapping, else
+/// EmulationStation's es_input.cfg (leftanalog* / rightanalog*). invert_x / invert_y are set
+/// when es_input.cfg declares an inverted axis. Empty on failure.
+std::string ResolveStick(bool right, bool& invert_x, bool& invert_y);
+
 /// True when both resolved ParamPackage strings designate the same physical input.
 bool SameInput(const std::string& a, const std::string& b);
 

@@ -65,6 +65,7 @@
 #include "borked3ds_qt/discord.h"
 #include "borked3ds_qt/dumping/dumping_dialog.h"
 #include "borked3ds_qt/game_list.h"
+#include "borked3ds_qt/gamepad_cursor.h" // v428
 #include "borked3ds_qt/hotkeys.h"
 #include "borked3ds_qt/infrared/skylanderportal/skylander_dialog.h"
 #include "borked3ds_qt/loading_screen.h"
@@ -1039,6 +1040,12 @@ void GMainWindow::InitializeHotkeys() {
     gamepad_hotkey_poll_timer.setInterval(16); // Poll at ~60Hz (16ms)
     // v426 : bindings / input profile may have changed, rebuild the devices on the next poll
     gamepad_hotkeys_built = false;
+
+    // v428 : global gamepad cursor, interface and games (settings re-read after Configure)
+    if (!gamepad_cursor) {
+        gamepad_cursor = new GamepadCursor(this);
+    }
+    gamepad_cursor->Reload();
 
     // Start polling when emulation starts
     // Timer will be started/stopped in OnStartGame/OnStopGame
@@ -2892,6 +2899,11 @@ void GMainWindow::OnStartGame() {
     UpdateSaveStates();
     UpdateStatusButtons();
 
+    // v428 : the game may switch the input profile (per-game profile), re-resolve the stick
+    if (gamepad_cursor) {
+        gamepad_cursor->Reload();
+    }
+
     // Only start gamepad hotkey polling if there are controller hotkeys - gvx64
     bool has_controller_hotkeys = false;
     for (const auto& [group_name, group] : hotkey_registry.hotkey_groups) {
@@ -2980,6 +2992,9 @@ void GMainWindow::OnStopGame() {
     // Stop gamepad hotkey polling - gvx64
     gamepad_hotkey_poll_timer.stop();
     ClearGamepadHotkeys(); // v426
+    if (gamepad_cursor) { // v428 : back to the global input profile
+        gamepad_cursor->Reload();
+    }
     if (osd_label) { // v427
         osd_hide_timer.stop();
         osd_label->hide();

@@ -41,6 +41,7 @@ class GraphicsBreakPointsWidget;
 class GraphicsTracingWidget;
 class GraphicsVertexShaderWidget;
 class GRenderWindow;
+class GamepadCursor; // v428
 class IPCRecorderWidget;
 class LLEServiceModulesWidget;
 class LoadingScreen;
@@ -387,6 +388,9 @@ private:
     bool hotkey_menu_open = false;
     bool hotkey_menu_resume = false;
     bool hotkey_menu_restore_fullscreen = false;
+
+    // v428 : global gamepad cursor (stick moves the mouse pointer, L3/R3 click)
+    GamepadCursor* gamepad_cursor = nullptr;
 
     // v427 : RetroArch-style on-screen message (2 s, white on dark blue) for quick save/load,
     // video recording start/stop and screenshots

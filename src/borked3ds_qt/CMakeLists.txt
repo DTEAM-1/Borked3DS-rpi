@@ -59,6 +59,8 @@ add_executable(borked3ds-qt
     configuration/configure_graphics.cpp
     configuration/configure_graphics.h
     configuration/configure_graphics.ui
+    configuration/configure_gamepad_cursor.cpp
+    configuration/configure_gamepad_cursor.h
     configuration/configure_hotkeys.cpp
     configuration/configure_hotkeys.h
     configuration/configure_hotkeys.ui
@@ -138,6 +140,8 @@ add_executable(borked3ds-qt
     game_list_p.h
     game_list_worker.cpp
     game_list_worker.h
+    gamepad_cursor.cpp
+    gamepad_cursor.h
     hotkeys.cpp
     hotkeys.h
     infrared/skylanderportal/skylander_dialog.cpp

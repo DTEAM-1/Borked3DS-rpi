@@ -137,8 +137,10 @@ bool FindProfileController(Common::ParamPackage& out) {
 }
 
 // EmulationStation (RetroPie) fallback: es_input.cfg uses SDL joystick indices and the same GUID
-// string format as the SDL backend, so its "leftthumb"/"rightthumb" entries map directly.
-std::string FromEmulationStation(const std::string& guid, int port, const QString& es_name) {
+// string format as the SDL backend, so its entries map directly. Finds input `es_name` of the
+// joystick `guid` and returns its type ("button", "hat", "axis"), id and value.
+bool FindEmulationStationInput(const std::string& guid, const QString& es_name, QString& type,
+                               int& id, int& value) {
     const std::array<QString, 2> candidates{{
         QDir::homePath() + QStringLiteral("/.emulationstation/es_input.cfg"),
         QStringLiteral("/opt/retropie/configs/all/emulationstation/es_input.cfg"),
@@ -162,49 +164,59 @@ std::string FromEmulationStation(const std::string& guid, int port, const QStrin
                         attrs.value(QStringLiteral("deviceGUID")).toString().toStdString() == guid;
                 } else if (in_target && xml.name() == QStringLiteral("input") &&
                            attrs.value(QStringLiteral("name")) == es_name) {
-                    const QString type = attrs.value(QStringLiteral("type")).toString();
-                    const int id = attrs.value(QStringLiteral("id")).toInt();
-                    const int value = attrs.value(QStringLiteral("value")).toInt();
-
-                    Common::ParamPackage params;
-                    params.Set("engine", "sdl");
-                    params.Set("guid", guid);
-                    params.Set("port", port);
-                    if (type == QStringLiteral("button")) {
-                        params.Set("button", id);
-                    } else if (type == QStringLiteral("hat")) {
-                        params.Set("hat", id);
-                        switch (value) {
-                        case 1:
-                            params.Set("direction", "up");
-                            break;
-                        case 2:
-                            params.Set("direction", "right");
-                            break;
-                        case 4:
-                            params.Set("direction", "down");
-                            break;
-                        case 8:
-                            params.Set("direction", "left");
-                            break;
-                        default:
-                            return {};
-                        }
-                    } else if (type == QStringLiteral("axis")) {
-                        params.Set("axis", id);
-                        params.Set("direction", value < 0 ? "-" : "+");
-                        params.Set("threshold", value < 0 ? -0.5f : 0.5f);
-                    } else {
-                        return {};
-                    }
-                    return params.Serialize();
+                    type = attrs.value(QStringLiteral("type")).toString();
+                    id = attrs.value(QStringLiteral("id")).toInt();
+                    value = attrs.value(QStringLiteral("value")).toInt();
+                    return true;
                 }
             } else if (xml.isEndElement() && xml.name() == QStringLiteral("inputConfig")) {
                 in_target = false;
             }
         }
     }
-    return {};
+    return false;
+}
+
+std::string FromEmulationStation(const std::string& guid, int port, const QString& es_name) {
+    QString type;
+    int id = 0;
+    int value = 0;
+    if (!FindEmulationStationInput(guid, es_name, type, id, value)) {
+        return {};
+    }
+
+    Common::ParamPackage params;
+    params.Set("engine", "sdl");
+    params.Set("guid", guid);
+    params.Set("port", port);
+    if (type == QStringLiteral("button")) {
+        params.Set("button", id);
+    } else if (type == QStringLiteral("hat")) {
+        params.Set("hat", id);
+        switch (value) {
+        case 1:
+            params.Set("direction", "up");
+            break;
+        case 2:
+            params.Set("direction", "right");
+            break;
+        case 4:
+            params.Set("direction", "down");
+            break;
+        case 8:
+            params.Set("direction", "left");
+            break;
+        default:
+            return {};
+        }
+    } else if (type == QStringLiteral("axis")) {
+        params.Set("axis", id);
+        params.Set("direction", value < 0 ? "-" : "+");
+        params.Set("threshold", value < 0 ? -0.5f : 0.5f);
+    } else {
+        return {};
+    }
+    return params.Serialize();
 }
 
 std::string ResolvePadButton(const std::string& name) {
@@ -272,6 +284,55 @@ std::string Resolve(const QString& binding) {
         return ResolvePadButton(params.Get("button", ""));
     }
     return binding.toStdString();
+}
+
+std::string ResolveStick(bool right, bool& invert_x, bool& invert_y) {
+    invert_x = false;
+    invert_y = false;
+
+    // 1. The stick bound in Controls: right = 3DS C-Stick, left = 3DS Circle Pad
+    const auto& analogs = Settings::values.current_input_profile.analogs;
+    const std::string& bound =
+        analogs[right ? Settings::NativeAnalog::CStick : Settings::NativeAnalog::CirclePad];
+    if (!Common::ParamPackage(bound).Get("engine", "").empty()) {
+        return bound;
+    }
+
+    Common::ParamPackage controller;
+    if (!FindProfileController(controller)) {
+        return {};
+    }
+
+    // 2. SDL's controller database
+    const Common::ParamPackage axes = InputCommon::GetControllerNamedAxesBind(
+        controller, right ? "rightx" : "leftx", right ? "righty" : "lefty");
+    if (axes.Has("engine")) {
+        return axes.Serialize();
+    }
+
+    // 3. EmulationStation: <side>analogleft / <side>analogup, value -1 when not inverted
+    const QString side = right ? QStringLiteral("right") : QStringLiteral("left");
+    const std::string guid = controller.Get("guid", "0");
+    QString type_x, type_y;
+    int id_x = 0, id_y = 0, value_x = 0, value_y = 0;
+    if (!FindEmulationStationInput(guid, side + QStringLiteral("analogleft"), type_x, id_x,
+                                   value_x) ||
+        !FindEmulationStationInput(guid, side + QStringLiteral("analogup"), type_y, id_y,
+                                   value_y) ||
+        type_x != QStringLiteral("axis") || type_y != QStringLiteral("axis")) {
+        return {};
+    }
+    invert_x = value_x > 0;
+    invert_y = value_y > 0;
+
+    Common::ParamPackage params;
+    params.Set("engine", "sdl");
+    params.Set("guid", guid);
+    params.Set("port", controller.Get("port", 0));
+    params.Set("axis_x", id_x);
+    params.Set("axis_y", id_y);
+    params.Set("deadzone", 0.1f);
+    return params.Serialize();
 }
 
 bool SameInput(const std::string& a, const std::string& b) {
