@@ -22,8 +22,8 @@ class QWidget;
  * Moves the real mouse pointer with a stick, everywhere: menus, game list, dialogs and the game
  * window (where a click is a touch of the 3DS bottom screen, through the normal mouse path, so it
  * works with every renderer). L3 or R3 clicks, held = drag; double click opens a game in the list.
- * The pointer hides after 1 s without stick activity and comes back as soon as the stick moves;
- * it never shows for the touch screen. The real mouse and the touch screen keep working: a real
+ * In a game, the pointer hides after 1 s without stick activity and comes back as soon as the
+ * stick moves; it never shows for the touch screen there. In the interface it stays visible. The real mouse and the touch screen keep working: a real
  * mouse movement shows the pointer again and the gamepad never hides a pointer it did not move.
  * "Also in games" off: inactive while a game is running (active again when it is paused, e.g.
  * with the Select + X menu).
@@ -48,6 +48,7 @@ protected:
 
 private:
     void Build();
+    bool InGame() const;
     void Poll();
     void Press(const QPoint& global);
     void Release(const QPoint& global);
@@ -84,5 +85,6 @@ private:
 
     bool gamepad_moved_pointer = false; // the pointer was last moved by the stick
     bool hidden = false;                // override cursor (blank) installed by us
+    bool was_in_game = false;
     QPoint last_warp_pos;
 };

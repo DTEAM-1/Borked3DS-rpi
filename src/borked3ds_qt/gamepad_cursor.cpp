@@ -50,8 +50,8 @@ GamepadCursor::GamepadCursor(QObject* parent) : QObject(parent) {
     poll_timer.setInterval(POLL_INTERVAL_MS);
     connect(&poll_timer, &QTimer::timeout, this, [this] { Poll(); });
     qApp->installEventFilter(this);
-    // At startup the arrow is hidden after 1 s like after a stick movement; a real mouse
-    // movement brings it back (and then it is never hidden by the gamepad cursor).
+    // The arrow is hidden after 1 s only while a game runs (from the first poll in a game, like
+    // after a stick movement); in the interface it stays visible.
     gamepad_moved_pointer = true;
     last_warp_pos = QCursor::pos(); // events at the starting position are not "real mouse"
     activity_clock.start();
@@ -60,6 +60,10 @@ GamepadCursor::GamepadCursor(QObject* parent) : QObject(parent) {
 
 void GamepadCursor::SetGameRunningCallback(std::function<bool()> callback) {
     game_running = std::move(callback);
+}
+
+bool GamepadCursor::InGame() const {
+    return game_running && game_running();
 }
 
 GamepadCursor::~GamepadCursor() {
@@ -158,7 +162,7 @@ void GamepadCursor::Poll() {
 
     QWidget* const modal = QApplication::activeModalWidget();
     // "Also in games" off: nothing while a game runs (the stick belongs to the game)
-    const bool game_blocked = !in_games && game_running && game_running();
+    const bool game_blocked = !in_games && InGame();
     const bool capturing = IsInputCaptureDialog(modal) || game_blocked;
     if (game_blocked && pressed) {
         Release(QCursor::pos());
@@ -228,9 +232,18 @@ void GamepadCursor::Poll() {
     }
     click_was_pressed = click_now;
 
-    // --- Auto-hide ------------------------------------------------------------------------
-    if (gamepad_moved_pointer && !hidden && !pressed &&
-        activity_clock.isValid() && activity_clock.elapsed() >= HIDE_DELAY_MS) {
+    // --- Auto-hide, only while a game runs (v430: always visible in the interface) --------
+    const bool in_game = InGame();
+    if (in_game && !was_in_game) {
+        // A game starts or resumes: the arrow hides 1 s later, as after a stick movement
+        gamepad_moved_pointer = true;
+        activity_clock.start();
+    }
+    was_in_game = in_game;
+    if (!in_game) {
+        ShowPointer();
+    } else if (gamepad_moved_pointer && !hidden && !pressed && activity_clock.isValid() &&
+               activity_clock.elapsed() >= HIDE_DELAY_MS) {
         HidePointer();
     }
 }
@@ -251,10 +264,14 @@ void GamepadCursor::SendMouse(QEvent::Type type, const QPoint& global, Qt::Mouse
     if (!target) {
         return;
     }
+    // v430 : posted, never sent from inside the poll timer. A click that opens a dialog or a
+    // menu with exec() runs a nested event loop in its handler; Qt never re-fires a timer whose
+    // slot has not returned, so a click delivered from Poll() froze the stick and the clicks
+    // until that dialog closed. Posted events are delivered by the event loop after Poll().
     const QPointF global_f(global);
-    QMouseEvent event(type, target->mapFromGlobal(global_f), global_f, button, buttons,
-                      Qt::NoModifier);
-    QApplication::sendEvent(target, &event);
+    QCoreApplication::postEvent(target, new QMouseEvent(type, target->mapFromGlobal(global_f),
+                                                        global_f, button, buttons,
+                                                        Qt::NoModifier));
 }
 
 void GamepadCursor::Press(const QPoint& global) {
@@ -316,20 +333,20 @@ bool GamepadCursor::eventFilter(QObject* watched, QEvent* event) {
     if (!enabled) {
         return QObject::eventFilter(watched, event);
     }
-    // Touch screen: the arrow never shows (the X server moves the pointer to the touch point)
+    // Touch screen in a game: the arrow never shows (the X server moves the pointer to the touch
+    // point). In the interface the arrow stays visible.
     const QEvent::Type type = event->type();
-    if (type == QEvent::TouchBegin || type == QEvent::TouchUpdate || type == QEvent::TouchEnd) {
-        gamepad_moved_pointer = false;
-        HidePointer();
-        return QObject::eventFilter(watched, event);
-    }
-    if (type == QEvent::MouseMove || type == QEvent::MouseButtonPress ||
-        type == QEvent::MouseButtonRelease) {
-        if (IsFromTouchScreen(static_cast<QMouseEvent*>(event))) {
+    const bool touch_event =
+        type == QEvent::TouchBegin || type == QEvent::TouchUpdate || type == QEvent::TouchEnd ||
+        ((type == QEvent::MouseMove || type == QEvent::MouseButtonPress ||
+          type == QEvent::MouseButtonRelease) &&
+         IsFromTouchScreen(static_cast<QMouseEvent*>(event)));
+    if (touch_event) {
+        if (InGame()) {
             gamepad_moved_pointer = false;
             HidePointer();
-            return QObject::eventFilter(watched, event);
         }
+        return QObject::eventFilter(watched, event);
     }
 
     // A real mouse movement (not one of our warps): the mouse is in use, never hide its pointer
