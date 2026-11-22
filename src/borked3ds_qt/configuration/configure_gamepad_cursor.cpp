@@ -39,11 +39,13 @@ ConfigureGamepadCursor::ConfigureGamepadCursor(QWidget* parent) : QWidget(parent
     stick_combobox->addItem(QString{}, 1u);
     form->addRow(stick_label, stick_combobox);
 
-    // Sensitivity 0.1x - 5.0x mapped to 1 - 50, as gvx64's per-game cursor
+    // v429 : sensitivity 1 - 100 %, default 50 % (interface and games)
     speed_label = new QLabel(options_group);
     speed_slider = new QSlider(Qt::Horizontal, options_group);
-    speed_slider->setRange(1, 50);
-    speed_slider->setTickInterval(5);
+    speed_slider->setRange(1, 100);
+    speed_slider->setSingleStep(1);
+    speed_slider->setPageStep(10);
+    speed_slider->setTickInterval(10);
     speed_slider->setTickPosition(QSlider::TicksBelow);
     speed_value_label = new QLabel(options_group);
     speed_value_label->setMinimumWidth(40);
@@ -80,7 +82,8 @@ ConfigureGamepadCursor::ConfigureGamepadCursor(QWidget* parent) : QWidget(parent
     connect(defaults_button, &QPushButton::clicked, this, [this] {
         stick_combobox->setCurrentIndex(stick_combobox->findData(1u));
         in_games_checkbox->setChecked(true);
-        speed_slider->setValue(10);
+        speed_slider->setValue(
+            static_cast<int>(Settings::values.gamepad_cursor_sensitivity.GetDefault()));
         SetClick(0, QString::fromStdString(Settings::values.gamepad_cursor_click1.GetDefault()));
         SetClick(1, QString::fromStdString(Settings::values.gamepad_cursor_click2.GetDefault()));
     });
@@ -106,8 +109,8 @@ void ConfigureGamepadCursor::ApplyTexts() {
     stick_label->setText(tr("Stick:"));
     stick_combobox->setItemText(0, tr("Left stick"));
     stick_combobox->setItemText(1, tr("Right stick"));
-    speed_label->setText(tr("Speed:"));
-    speed_slider->setToolTip(tr("Pointer speed at full tilt (0.1x - 5.0x)"));
+    speed_label->setText(tr("Sensitivity:"));
+    speed_slider->setToolTip(tr("Pointer speed, in the interface and in games (default 50 %)"));
     click_labels[0]->setText(tr("Click button 1:"));
     click_labels[1]->setText(tr("Click button 2:"));
     for (QPushButton* const button : click_buttons) {
@@ -118,8 +121,8 @@ void ConfigureGamepadCursor::ApplyTexts() {
     for (QPushButton* const button : clear_buttons) {
         button->setText(tr("Clear"));
     }
-    defaults_button->setText(tr("Restore Defaults (right stick, also in games, automatic L3 and "
-                                "R3)"));
+    defaults_button->setText(tr("Restore Defaults (right stick, also in games, 50 %, automatic "
+                                "L3 and R3)"));
     for (std::size_t i = 0; i < click_buttons.size(); ++i) {
         SetClick(i, click_bindings[i]);
     }
@@ -133,8 +136,7 @@ void ConfigureGamepadCursor::SetConfiguration() {
     const int stick_index =
         stick_combobox->findData(Settings::values.gamepad_cursor_stick.GetValue() != 0 ? 1u : 0u);
     stick_combobox->setCurrentIndex(stick_index < 0 ? 1 : stick_index);
-    speed_slider->setValue(
-        static_cast<int>(Settings::values.gamepad_cursor_speed.GetValue() * 10.0f + 0.5f));
+    speed_slider->setValue(static_cast<int>(Settings::values.gamepad_cursor_sensitivity.GetValue()));
     SetClick(0, QString::fromStdString(Settings::values.gamepad_cursor_click1.GetValue()));
     SetClick(1, QString::fromStdString(Settings::values.gamepad_cursor_click2.GetValue()));
     UpdateState();
@@ -144,7 +146,7 @@ void ConfigureGamepadCursor::ApplyConfiguration() {
     Settings::values.gamepad_cursor_enabled = enable_checkbox->isChecked();
     Settings::values.gamepad_cursor_in_games = in_games_checkbox->isChecked();
     Settings::values.gamepad_cursor_stick = stick_combobox->currentData().toUInt();
-    Settings::values.gamepad_cursor_speed = static_cast<float>(speed_slider->value()) / 10.0f;
+    Settings::values.gamepad_cursor_sensitivity = static_cast<u32>(speed_slider->value());
     Settings::values.gamepad_cursor_click1 = click_bindings[0].toStdString();
     Settings::values.gamepad_cursor_click2 = click_bindings[1].toStdString();
 }
@@ -159,8 +161,7 @@ void ConfigureGamepadCursor::UpdateState() {
 }
 
 void ConfigureGamepadCursor::UpdateSpeedLabel() {
-    speed_value_label->setText(
-        QStringLiteral("%1x").arg(static_cast<double>(speed_slider->value()) / 10.0, 0, 'f', 1));
+    speed_value_label->setText(QStringLiteral("%1 %").arg(speed_slider->value()));
 }
 
 void ConfigureGamepadCursor::SetClick(std::size_t index, const QString& binding) {
