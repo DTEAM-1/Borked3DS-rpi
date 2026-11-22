@@ -21,8 +21,15 @@ namespace {
 constexpr int POLL_INTERVAL_MS = 16;  // ~60 Hz, like the controller hotkeys
 constexpr qint64 HIDE_DELAY_MS = 1000; // pointer hidden after 1 s without stick activity
 constexpr float DEAD_ZONE = 0.20f;     // radial, on top of the device's own dead zone
-// Full tilt at speed 1.0: 1.6 screen heights per second (about 770 px/s on a 480 px screen)
+// Full tilt at 80 % sensitivity (the v428 speed): 1.6 screen heights per second, about
+// 770 px/s on a 480 px screen. The default 50 % gives 1.0 screen height per second.
 constexpr float FULL_TILT_SCREENS_PER_SECOND = 1.6f;
+constexpr float REFERENCE_SENSITIVITY = 80.0f;
+
+float SensitivityFactor() {
+    return static_cast<float>(Settings::values.gamepad_cursor_sensitivity.GetValue()) /
+           REFERENCE_SENSITIVITY;
+}
 
 // Dialogs that read the gamepad themselves: never click behind them
 bool IsInputCaptureDialog(const QWidget* widget) {
@@ -131,10 +138,11 @@ void GamepadCursor::Build() {
         return click_bindings[i].empty() ? "none" : (click_found[i] ? "found" : "NOT FOUND");
     };
     LOG_WARNING(Frontend,
-                "V428_CURSOR ready: stick={} ({}{}) click1={} click2={} speed={:.1f} in_games={}",
+                "V428_CURSOR ready: stick={} ({}{}) click1={} click2={} sensitivity={}% in_games={}",
                 right ? "right" : "left", stick ? "found" : "NOT FOUND",
                 (invert_x || invert_y) ? ", inverted from EmulationStation" : "",
-                click_state(0), click_state(1), Settings::values.gamepad_cursor_speed.GetValue(),
+                click_state(0), click_state(1),
+                Settings::values.gamepad_cursor_sensitivity.GetValue(),
                 in_games ? "yes" : "no");
 }
 
@@ -176,8 +184,7 @@ void GamepadCursor::Poll() {
             }
             const QRect area = screen ? screen->geometry() : QRect(0, 0, 800, 480);
             const float pixels_per_second = static_cast<float>(area.height()) *
-                                            FULL_TILT_SCREENS_PER_SECOND *
-                                            Settings::values.gamepad_cursor_speed.GetValue();
+                                            FULL_TILT_SCREENS_PER_SECOND * SensitivityFactor();
             const float step = t * t * pixels_per_second * dt;
             // 3DS convention: y > 0 is up, the screen goes down
             accumulated_x += x / r * step;
