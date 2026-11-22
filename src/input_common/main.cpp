@@ -129,6 +129,20 @@ Common::ParamPackage GetControllerNamedButtonBind(const Common::ParamPackage& pa
                                                        params.Get("port", 0), button_name);
 }
 
+Common::ParamPackage GetControllerNamedAxesBind(const Common::ParamPackage& params,
+                                                const std::string& axis_x_name,
+                                                const std::string& axis_y_name) {
+    if (params.Get("engine", "") != "sdl") {
+        return {};
+    }
+    auto* const sdl_state = dynamic_cast<SDL::SDLState*>(sdl.get());
+    if (!sdl_state) {
+        return {};
+    }
+    return sdl_state->GetSDLControllerAxesBindByName(params.Get("guid", "0"), params.Get("port", 0),
+                                                     axis_x_name, axis_y_name);
+}
+
 Common::ParamPackage GetControllerAnalogBinds(const Common::ParamPackage& params, int analog) {
     const auto native_analog{static_cast<Settings::NativeAnalog::Values>(analog)};
     const auto engine{params.Get("engine", "")};

@@ -49,6 +49,15 @@ Common::ParamPackage GetControllerAnalogBinds(const Common::ParamPackage& params
 Common::ParamPackage GetControllerNamedButtonBind(const Common::ParamPackage& params,
                                                   const std::string& button_name);
 
+/**
+ * v428 : resolves a pair of named SDL_GameController axes ("leftx"/"lefty", "rightx"/"righty") on
+ * the controller identified by params (engine/guid/port) as an analog ParamPackage. Used by the
+ * gamepad cursor. Returns an empty package if it cannot be resolved.
+ */
+Common::ParamPackage GetControllerNamedAxesBind(const Common::ParamPackage& params,
+                                                const std::string& axis_x_name,
+                                                const std::string& axis_y_name);
+
 /// Reloads the input devices
 void ReloadInputDevices();
 
