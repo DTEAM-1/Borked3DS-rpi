@@ -1044,6 +1044,9 @@ void GMainWindow::InitializeHotkeys() {
     // v428 : global gamepad cursor, interface and games (settings re-read after Configure)
     if (!gamepad_cursor) {
         gamepad_cursor = new GamepadCursor(this);
+        // "Also in games" off: the cursor sleeps while a game runs (active again when paused)
+        gamepad_cursor->SetGameRunningCallback(
+            [this] { return emulation_running && emu_thread && emu_thread->IsRunning(); });
     }
     gamepad_cursor->Reload();
 

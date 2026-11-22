@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <QElapsedTimer>
 #include <QObject>
@@ -21,9 +22,11 @@ class QWidget;
  * Moves the real mouse pointer with a stick, everywhere: menus, game list, dialogs and the game
  * window (where a click is a touch of the 3DS bottom screen, through the normal mouse path, so it
  * works with every renderer). L3 or R3 clicks, held = drag; double click opens a game in the list.
- * The pointer hides after 3 s without stick activity and comes back as soon as the stick moves.
- * The real mouse and the touch screen keep working: a real mouse movement shows the pointer again
- * and the gamepad never hides a pointer it did not move.
+ * The pointer hides after 1 s without stick activity and comes back as soon as the stick moves;
+ * it never shows for the touch screen. The real mouse and the touch screen keep working: a real
+ * mouse movement shows the pointer again and the gamepad never hides a pointer it did not move.
+ * "Also in games" off: inactive while a game is running (active again when it is paused, e.g.
+ * with the Select + X menu).
  *
  * Built on gvx64's per-game touch cursor (sub-pixel accumulation, sensitivity), improved with a
  * radial dead zone and a quadratic response curve (precise near the centre, fast at full tilt,
@@ -36,6 +39,9 @@ public:
 
     /// Settings or input profile changed: devices are rebuilt on the next poll.
     void Reload();
+
+    /// Returns true while a game is running (not paused), for the "Also in games" option.
+    void SetGameRunningCallback(std::function<bool()> callback);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -59,6 +65,8 @@ private:
 
     bool built = false;
     bool enabled = false;
+    bool in_games = true;
+    std::function<bool()> game_running;
 
     std::unique_ptr<Input::AnalogDevice> stick;
     bool invert_x = false;
