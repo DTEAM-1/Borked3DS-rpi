@@ -476,6 +476,17 @@ struct Values {
     SwitchableSetting<u32> touch_cursor_button{0, "touch_cursor_button"}; //gvx64
     SwitchableSetting<float, true> touch_cursor_sensitivity{1.0f, 0.1f, 5.0f, "touch_cursor_sensitivity"}; //gvx64
 
+    // v428 : global gamepad cursor (Configure > Controls > Gamepad Cursor). Moves the real mouse
+    // pointer with a stick, in the interface and in games; L3/R3 click (touch the 3DS screen).
+    // When enabled, the per-game touch cursor above is ignored. Global only, not per game.
+    Setting<bool> gamepad_cursor_enabled{true, "gamepad_cursor_enabled"};
+    Setting<u32> gamepad_cursor_stick{1, "gamepad_cursor_stick"}; // 0 = left stick, 1 = right stick
+    Setting<float, true> gamepad_cursor_speed{1.0f, 0.1f, 5.0f, "gamepad_cursor_speed"};
+    Setting<std::string> gamepad_cursor_click1{"engine:hotkey_pad,button:leftstick",
+                                               "gamepad_cursor_click1"};
+    Setting<std::string> gamepad_cursor_click2{"engine:hotkey_pad,button:rightstick",
+                                               "gamepad_cursor_click2"};
+
     std::vector<InputProfile> input_profiles; ///< The list of input profiles
     std::vector<TouchFromButtonMap> touch_from_button_maps;
     Setting<bool> use_artic_base_controller{false, "use_artic_base_controller"};
