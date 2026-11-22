@@ -482,7 +482,8 @@ struct Values {
     Setting<bool> gamepad_cursor_enabled{true, "gamepad_cursor_enabled"};
     Setting<bool> gamepad_cursor_in_games{true, "gamepad_cursor_in_games"}; // also while playing
     Setting<u32> gamepad_cursor_stick{1, "gamepad_cursor_stick"}; // 0 = left stick, 1 = right stick
-    Setting<float, true> gamepad_cursor_speed{1.0f, 0.1f, 5.0f, "gamepad_cursor_speed"};
+    // v429 : sensitivity in percent, interface and games (80 % = v428 speed, default 50 %)
+    Setting<u32, true> gamepad_cursor_sensitivity{50, 1, 100, "gamepad_cursor_sensitivity"};
     Setting<std::string> gamepad_cursor_click1{"engine:hotkey_pad,button:leftstick",
                                                "gamepad_cursor_click1"};
     Setting<std::string> gamepad_cursor_click2{"engine:hotkey_pad,button:rightstick",
