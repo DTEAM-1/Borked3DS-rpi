@@ -719,7 +719,9 @@ Module::Module(Core::System& system) : system(system) {
 
     // Configure touch cursor controller from settings - gvx64
     Service::HID::TouchCursorConfig cursor_config; //gvx64
-    cursor_config.enabled = Settings::values.touch_cursor_enabled.GetValue(); //gvx64
+    // v428 : the global gamepad cursor (real mouse pointer) replaces the per-game touch cursor
+    cursor_config.enabled = Settings::values.touch_cursor_enabled.GetValue() &&
+                            !Settings::values.gamepad_cursor_enabled.GetValue(); //gvx64
     cursor_config.analog_stick_button = Settings::values.touch_cursor_analog_stick.GetValue(); //gvx64
     cursor_config.touch_button = Settings::values.touch_cursor_button.GetValue(); //gvx64
     cursor_config.sensitivity = Settings::values.touch_cursor_sensitivity.GetValue(); //gvx64
@@ -750,7 +752,8 @@ void Module::ReloadInputDevices() {
     // Reload touch cursor settings - gvx64
     if (touch_cursor_controller) {
         Service::HID::TouchCursorConfig cursor_config;
-        cursor_config.enabled = Settings::values.touch_cursor_enabled.GetValue();
+        cursor_config.enabled = Settings::values.touch_cursor_enabled.GetValue() &&
+                                !Settings::values.gamepad_cursor_enabled.GetValue(); // v428
         cursor_config.analog_stick_button = Settings::values.touch_cursor_analog_stick.GetValue();
         cursor_config.touch_button = Settings::values.touch_cursor_button.GetValue();
         cursor_config.sensitivity = Settings::values.touch_cursor_sensitivity.GetValue();
