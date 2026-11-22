@@ -367,6 +367,9 @@ void Config::ReadControlValues() {
     ReadBasicSetting(Settings::values.gamepad_cursor_sensitivity);
     ReadBasicSetting(Settings::values.gamepad_cursor_click1);
     ReadBasicSetting(Settings::values.gamepad_cursor_click2);
+    ReadBasicSetting(Settings::values.gamepad_cursor_ui_stick);
+    ReadBasicSetting(Settings::values.gamepad_cursor_ui_click1);
+    ReadBasicSetting(Settings::values.gamepad_cursor_ui_click2);
 
     int num_touch_from_button_maps =
         qt_config->beginReadArray(QStringLiteral("touch_from_button_maps"));
@@ -1029,6 +1032,9 @@ void Config::SaveControlValues() {
     WriteBasicSetting(Settings::values.gamepad_cursor_sensitivity);
     WriteBasicSetting(Settings::values.gamepad_cursor_click1);
     WriteBasicSetting(Settings::values.gamepad_cursor_click2);
+    WriteBasicSetting(Settings::values.gamepad_cursor_ui_stick);
+    WriteBasicSetting(Settings::values.gamepad_cursor_ui_click1);
+    WriteBasicSetting(Settings::values.gamepad_cursor_ui_click2);
 
     WriteSetting(QStringLiteral("profile"), Settings::values.current_input_profile_index, 0);
     qt_config->beginWriteArray(QStringLiteral("profiles"));
