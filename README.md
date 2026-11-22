@@ -26,6 +26,8 @@ Also new: the invisible right eye is no longer drawn when 3D is off (detected au
 
 **RetroArch-style hotkeys (Pi 5 and x86-64).** Hold **Select** and press a second button (Select + Start to quit, Select + R1 to quick save, etc.), with a short on-screen message confirming the action. It works out of the box on a new install; see [Controller and hotkeys](#controller-and-hotkeys). Already installed? `borked3ds.sh` is unchanged, just rebuild borked3ds from source.
 
+**Gamepad cursor (Pi 5 and x86-64).** The interface and the 3DS touch screen can now be used with the gamepad: a stick moves the mouse pointer and a button clicks (real mouse clicks: drag, double-click, even the window's close button). On by default; see [Gamepad cursor](#gamepad-cursor-pi-5-and-x86-64).
+
 ---
 
 ## Supported systems
@@ -44,14 +46,14 @@ One install script, three targets. It detects the machine and builds the right e
 ### You also need
 
 - Decrypted 3DS ROMs. No BIOS needed.
-- A mouse for navigating the user interface when needed. A touchscreen works too.
+- For the user interface: the gamepad cursor (on by default), a mouse or a touchscreen.
 - On the Pi 5, a good power supply (the official 27 W one is what the measurements were made with).
 
 ---
 
 ## Installation (RetroPie)
 
-1. Use [RetroPie-Extra](https://github.com/Exarkuniv/RetroPie-Extra) and install [`borked3ds.sh`](borked3ds.sh) **from source**. The script detects your board, installs the dependencies, builds the right emulator and writes the optimal settings for your board. There is nothing else to configure for performance.
+1. Use [RetroPie-Extra](https://github.com/Exarkuniv/RetroPie-Extra) and install [`borked3ds.sh`](borked3ds.sh) **from source**. **Important:** always make sure you have the latest version of RetroPie-Extra first; if you are not sure, update it. The script detects your board, installs the dependencies, builds the right emulator and writes the optimal settings for your board. There is nothing else to configure for performance.
 2. **Pi 5:** the build is automatically optimized with PGO and LTO (about 45 min on a Pi 5 8 GB). At the end of the install you should see `PGO : actif`. To check later:
    ```
    cat /opt/retropie/emulators/borked3ds/.borked3ds_pgo
@@ -112,11 +114,12 @@ Like RetroArch / RetroPie: hold **Select** (the hotkey enable button), then pres
 | Select + L1 | Quick Load |
 | Select + X | Menu: pauses and leaves fullscreen so the menus can be used with the mouse; press again to go back to fullscreen and resume |
 | Select + B | Reset (restarts the game) |
+| Select + L2 | Change the screen layout |
 | Select + L3 | Screenshot |
 | Select + R3 | Start / stop video recording |
 
 - A small RetroArch-style message (white text on dark blue, bottom left, 2 seconds) confirms each action: *Saving state...*, *Loading state...* (or *No quick save to load*), *Screenshot taken*, *Video recording started*, *Video recording stopped*. It is not included in screenshots or videos.
-- "Select", "Start", "R1"… mean the buttons mapped to the 3DS Select, Start, R… in Controls, so the defaults work with any controller; nothing is hard-coded for a specific gamepad. L3 / R3 (absent on a 3DS) are found through SDL's controller database, or else through EmulationStation's input configuration (*left thumb* / *right thumb*). If Select + L3 / R3 does nothing, assign them manually (step 2 below).
+- "Select", "Start", "R1", "L2"… mean the buttons mapped to the 3DS Select, Start, R, ZL… in Controls, so the defaults work with any controller; nothing is hard-coded for a specific gamepad. L3 / R3 (absent on a 3DS) are found through SDL's controller database, or else through EmulationStation's input configuration (*left thumb* / *right thumb*). If Select + L3 / R3 does nothing, assign them manually (step 2 below).
 - As in RetroArch, the game also receives the combo buttons (for example Select and R1).
 - Go to **Emulation → Configure… → General → General** and **uncheck** "Confirm Exit While Emulation is Running", so Select + Start quits without a confirmation window.
 - **New install, or no `qt-config.ini` yet:** everything is automatic.
@@ -145,10 +148,28 @@ The Pi 4 builds [gvx64's fork](https://github.com/gvx64/Borked3DS-rpi), which ke
 
 **3. Other settings**
 
-- You can set a **gamepad touch cursor** (per game only): in the UI, right-click a game, open **Properties**, last tab (**Controls**), and check **Enable Gamepad Touch Cursor**. You can then set the sensitivity and more.
 - Finally, open **View** (top menu) and select **Fullscreen**.
 
 Once everything is saved, exit the UI and run a game again with the **borked3ds** option (the default) in the runcommand menu. You are now all set for the Nintendo 3DS.
+
+### Gamepad cursor (Pi 5 and x86-64)
+
+On by default, for every game, nothing to set up. Settings in **Emulation → Configure… → Controls → Gamepad Cursor**.
+
+| | Interface (menus, game list, settings, or a paused game) | Games |
+|---|---|---|
+| Moves the pointer | **Left stick** | **Right stick** |
+| Clicks | **A** | **L3 or R3** (touches the 3DS bottom screen) |
+| Arrow | Always visible | Hides after 1 second, never shows when you use the touch screen |
+
+- The clicks are real mouse clicks (X11 XTest, loaded at run time, no extra build dependency): hold the button to drag (scroll bars, sliders, sliding on the touch screen), double-click to open a game, and even the window's close button works.
+- The mouse and the touch screen keep working as before.
+- In the tab you can choose a separate stick and one or two click buttons for the interface and for games (detected automatically, or pick your own), the **sensitivity** (50 % by default), and turn the cursor off during games (**Also in games**).
+- No click while Select is held, so Select + L3 / R3 stay the screenshot and video hotkeys.
+- If a stick or a click button is not detected on your controller, the tab says so: click the button field and press the button you want.
+- When it is on, the old per-game touch cursor (game **Properties → Controls**) is not used.
+
+The Pi 4 builds gvx64's fork, which keeps its per-game touch cursor unless it adopts this change.
 
 ---
 
@@ -215,7 +236,7 @@ The default video format (webm / VP9) is heavy for a Pi 5; a lighter format can 
 
 ## Feedback
 
-Please tell us whether everything works for you, or not: **board, OS, renderer and game**. On a Pi 5, the result of `cat /opt/retropie/emulators/borked3ds/.borked3ds_pgo` helps too, and for the hotkeys, your controller model. Post in the [support thread](https://retropie.org.uk/forum/topic/37122/3ds-emulator-for-pi-users-based-on-borked-3ds) or open an issue in this repository. As the project is no longer in active development, reports are welcome but may not lead to a fix.
+Please tell us whether everything works for you, or not: **board, OS, renderer and game**. On a Pi 5, the result of `cat /opt/retropie/emulators/borked3ds/.borked3ds_pgo` helps too, and for the hotkeys and the gamepad cursor, your controller model. Post in the [support thread](https://retropie.org.uk/forum/topic/37122/3ds-emulator-for-pi-users-based-on-borked-3ds) or open an issue in this repository. As the project is no longer in active development, reports are welcome but may not lead to a fix.
 
 ---
 
