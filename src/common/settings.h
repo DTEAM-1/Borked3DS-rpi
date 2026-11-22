@@ -488,6 +488,12 @@ struct Values {
                                                "gamepad_cursor_click1"};
     Setting<std::string> gamepad_cursor_click2{"engine:hotkey_pad,button:rightstick",
                                                "gamepad_cursor_click2"};
+    // v431 : interface set (no game running, or paused): left stick and A by default. The
+    // settings above (stick, click1, click2) are the game set: right stick, L3 and R3.
+    Setting<u32> gamepad_cursor_ui_stick{0, "gamepad_cursor_ui_stick"}; // 0 = left, 1 = right
+    Setting<std::string> gamepad_cursor_ui_click1{"engine:hotkey_3ds,button:a",
+                                                  "gamepad_cursor_ui_click1"};
+    Setting<std::string> gamepad_cursor_ui_click2{"", "gamepad_cursor_ui_click2"};
 
     std::vector<InputProfile> input_profiles; ///< The list of input profiles
     std::vector<TouchFromButtonMap> touch_from_button_maps;
