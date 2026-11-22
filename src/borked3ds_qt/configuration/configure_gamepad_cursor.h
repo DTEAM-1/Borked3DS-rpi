@@ -36,6 +36,7 @@ private:
     void SetClick(std::size_t index, const QString& binding);
 
     QCheckBox* enable_checkbox = nullptr;
+    QCheckBox* in_games_checkbox = nullptr;
     QLabel* description_label = nullptr;
     QGroupBox* options_group = nullptr;
     QLabel* stick_label = nullptr;
@@ -45,6 +46,7 @@ private:
     QLabel* speed_value_label = nullptr;
     std::array<QLabel*, 2> click_labels{};
     std::array<QPushButton*, 2> click_buttons{};
+    std::array<QPushButton*, 2> clear_buttons{};
     std::array<QString, 2> click_bindings;
     QPushButton* defaults_button = nullptr;
     QLabel* status_label = nullptr;

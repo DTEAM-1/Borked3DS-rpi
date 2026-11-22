@@ -362,6 +362,7 @@ void Config::ReadControlValues() {
 
     // v428 : global gamepad cursor (enabled by default)
     ReadBasicSetting(Settings::values.gamepad_cursor_enabled);
+    ReadBasicSetting(Settings::values.gamepad_cursor_in_games);
     ReadBasicSetting(Settings::values.gamepad_cursor_stick);
     ReadBasicSetting(Settings::values.gamepad_cursor_speed);
     ReadBasicSetting(Settings::values.gamepad_cursor_click1);
@@ -1023,6 +1024,7 @@ void Config::SaveControlValues() {
 
     // v428 : global gamepad cursor
     WriteBasicSetting(Settings::values.gamepad_cursor_enabled);
+    WriteBasicSetting(Settings::values.gamepad_cursor_in_games);
     WriteBasicSetting(Settings::values.gamepad_cursor_stick);
     WriteBasicSetting(Settings::values.gamepad_cursor_speed);
     WriteBasicSetting(Settings::values.gamepad_cursor_click1);

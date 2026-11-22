@@ -30,6 +30,9 @@ ConfigureGamepadCursor::ConfigureGamepadCursor(QWidget* parent) : QWidget(parent
     options_group = new QGroupBox(this);
     auto* const form = new QFormLayout(options_group);
 
+    in_games_checkbox = new QCheckBox(options_group);
+    form->addRow(in_games_checkbox);
+
     stick_label = new QLabel(options_group);
     stick_combobox = new QComboBox(options_group);
     stick_combobox->addItem(QString{}, 0u);
@@ -52,8 +55,13 @@ ConfigureGamepadCursor::ConfigureGamepadCursor(QWidget* parent) : QWidget(parent
     for (std::size_t i = 0; i < click_buttons.size(); ++i) {
         click_labels[i] = new QLabel(options_group);
         click_buttons[i] = new QPushButton(options_group);
-        form->addRow(click_labels[i], click_buttons[i]);
+        clear_buttons[i] = new QPushButton(options_group);
+        auto* const click_layout = new QHBoxLayout();
+        click_layout->addWidget(click_buttons[i], 1);
+        click_layout->addWidget(clear_buttons[i]);
+        form->addRow(click_labels[i], click_layout);
         connect(click_buttons[i], &QPushButton::clicked, this, [this, i] { ConfigureClick(i); });
+        connect(clear_buttons[i], &QPushButton::clicked, this, [this, i] { SetClick(i, {}); });
     }
 
     defaults_button = new QPushButton(options_group);
@@ -71,6 +79,7 @@ ConfigureGamepadCursor::ConfigureGamepadCursor(QWidget* parent) : QWidget(parent
     connect(speed_slider, &QSlider::valueChanged, this, [this] { UpdateSpeedLabel(); });
     connect(defaults_button, &QPushButton::clicked, this, [this] {
         stick_combobox->setCurrentIndex(stick_combobox->findData(1u));
+        in_games_checkbox->setChecked(true);
         speed_slider->setValue(10);
         SetClick(0, QString::fromStdString(Settings::values.gamepad_cursor_click1.GetDefault()));
         SetClick(1, QString::fromStdString(Settings::values.gamepad_cursor_click2.GetDefault()));
@@ -87,9 +96,12 @@ void ConfigureGamepadCursor::ApplyTexts() {
     description_label->setText(
         tr("Moves the mouse pointer with a stick, everywhere: menus, game list, settings and the "
            "3DS touch screen. L3 or R3 clicks (hold to drag, click twice to open a game). The "
-           "pointer hides after 3 seconds and comes back as soon as the stick moves. The mouse "
-           "and the touch screen keep working.\nWhen enabled, the per-game touch cursor (game "
-           "Properties > Controls) is not used."));
+           "arrow hides after 1 second without movement, comes back as soon as the stick moves "
+           "and never shows for the touch screen. The mouse and the touch screen keep "
+           "working.\nWhen enabled, the per-game touch cursor (game Properties > Controls) is "
+           "not used."));
+    in_games_checkbox->setText(tr("Also in games (off: only in the interface and when the game "
+                                  "is paused, e.g. with the Select + X menu)"));
     options_group->setTitle(tr("Cursor"));
     stick_label->setText(tr("Stick:"));
     stick_combobox->setItemText(0, tr("Left stick"));
@@ -99,9 +111,15 @@ void ConfigureGamepadCursor::ApplyTexts() {
     click_labels[0]->setText(tr("Click button 1:"));
     click_labels[1]->setText(tr("Click button 2:"));
     for (QPushButton* const button : click_buttons) {
-        button->setToolTip(tr("Click, then press the gamepad button that clicks"));
+        button->setToolTip(tr("Click, then press the gamepad button that clicks. Choosing one "
+                              "button replaces the automatic L3 / R3 pair: add a second one "
+                              "here if you want two."));
     }
-    defaults_button->setText(tr("Restore Defaults (right stick, L3 and R3)"));
+    for (QPushButton* const button : clear_buttons) {
+        button->setText(tr("Clear"));
+    }
+    defaults_button->setText(tr("Restore Defaults (right stick, also in games, automatic L3 and "
+                                "R3)"));
     for (std::size_t i = 0; i < click_buttons.size(); ++i) {
         SetClick(i, click_bindings[i]);
     }
@@ -111,6 +129,7 @@ void ConfigureGamepadCursor::ApplyTexts() {
 
 void ConfigureGamepadCursor::SetConfiguration() {
     enable_checkbox->setChecked(Settings::values.gamepad_cursor_enabled.GetValue());
+    in_games_checkbox->setChecked(Settings::values.gamepad_cursor_in_games.GetValue());
     const int stick_index =
         stick_combobox->findData(Settings::values.gamepad_cursor_stick.GetValue() != 0 ? 1u : 0u);
     stick_combobox->setCurrentIndex(stick_index < 0 ? 1 : stick_index);
@@ -123,6 +142,7 @@ void ConfigureGamepadCursor::SetConfiguration() {
 
 void ConfigureGamepadCursor::ApplyConfiguration() {
     Settings::values.gamepad_cursor_enabled = enable_checkbox->isChecked();
+    Settings::values.gamepad_cursor_in_games = in_games_checkbox->isChecked();
     Settings::values.gamepad_cursor_stick = stick_combobox->currentData().toUInt();
     Settings::values.gamepad_cursor_speed = static_cast<float>(speed_slider->value()) / 10.0f;
     Settings::values.gamepad_cursor_click1 = click_bindings[0].toStdString();
@@ -145,8 +165,17 @@ void ConfigureGamepadCursor::UpdateSpeedLabel() {
 
 void ConfigureGamepadCursor::SetClick(std::size_t index, const QString& binding) {
     click_bindings[index] = binding;
-    click_buttons[index]->setText(binding.isEmpty() ? tr("[not set]")
-                                                    : ControllerHotkey::DisplayName(binding));
+    const QString automatic =
+        index == 0 ? QString::fromStdString(Settings::values.gamepad_cursor_click1.GetDefault())
+                   : QString::fromStdString(Settings::values.gamepad_cursor_click2.GetDefault());
+    QString text = binding.isEmpty() ? tr("[none]") : ControllerHotkey::DisplayName(binding);
+    if (!binding.isEmpty() && binding == automatic) {
+        text = tr("%1 (automatic)").arg(text);
+    }
+    click_buttons[index]->setText(text);
+    if (clear_buttons[index]) {
+        clear_buttons[index]->setEnabled(!binding.isEmpty());
+    }
     UpdateStatus();
 }
 
@@ -159,6 +188,16 @@ void ConfigureGamepadCursor::ConfigureClick(std::size_t index) {
     }
     // Stored as "L3" / "R3" / "(3DS)" when it matches, so it follows the configured controls
     SetClick(index, ControllerHotkey::Symbolize(raw));
+
+    // A button chosen by the player replaces the automatic pair: the other slot is cleared if it
+    // still holds its automatic value (a second button can then be chosen there).
+    const std::size_t other = index == 0 ? 1 : 0;
+    const QString other_automatic =
+        other == 0 ? QString::fromStdString(Settings::values.gamepad_cursor_click1.GetDefault())
+                   : QString::fromStdString(Settings::values.gamepad_cursor_click2.GetDefault());
+    if (click_bindings[other] == other_automatic && click_bindings[other] != click_bindings[index]) {
+        SetClick(other, {});
+    }
 }
 
 void ConfigureGamepadCursor::UpdateStatus() {
@@ -191,6 +230,9 @@ void ConfigureGamepadCursor::UpdateStatus() {
                          .arg(i + 1)
                          .arg(ControllerHotkey::DisplayName(click_bindings[i]));
         }
+    }
+    if (click_bindings[0].isEmpty() && click_bindings[1].isEmpty()) {
+        lines << tr("No click button: the stick moves the arrow only.");
     }
     lines << tr("No click while the controller hotkey enable button is held (Select + L3 / R3 "
                 "are hotkeys).");
