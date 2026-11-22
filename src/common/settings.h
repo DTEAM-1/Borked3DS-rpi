@@ -480,6 +480,7 @@ struct Values {
     // pointer with a stick, in the interface and in games; L3/R3 click (touch the 3DS screen).
     // When enabled, the per-game touch cursor above is ignored. Global only, not per game.
     Setting<bool> gamepad_cursor_enabled{true, "gamepad_cursor_enabled"};
+    Setting<bool> gamepad_cursor_in_games{true, "gamepad_cursor_in_games"}; // also while playing
     Setting<u32> gamepad_cursor_stick{1, "gamepad_cursor_stick"}; // 0 = left stick, 1 = right stick
     Setting<float, true> gamepad_cursor_speed{1.0f, 0.1f, 5.0f, "gamepad_cursor_speed"};
     Setting<std::string> gamepad_cursor_click1{"engine:hotkey_pad,button:leftstick",
