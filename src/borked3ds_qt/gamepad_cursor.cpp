@@ -10,6 +10,10 @@
 #include <QMouseEvent>
 #include <QScreen>
 #include <QWidget>
+#if defined(__linux__)
+#include <dlfcn.h>
+#include <QtGui/qguiapplication_platform.h>
+#endif
 #include "borked3ds_qt/gamepad_cursor.h"
 #include "borked3ds_qt/hotkeys.h"
 #include "borked3ds_qt/uisettings.h"
@@ -36,6 +40,61 @@ bool IsInputCaptureDialog(const QWidget* widget) {
     return widget &&
            (widget->inherits("ControllerDialog") || widget->inherits("SequenceDialog"));
 }
+
+// v432 : real mouse button through the X server (XTest, as xdotool does), loaded at run time so
+// there is no build dependency. A real button works everywhere a mouse does: window manager
+// buttons (the window's close button), native drags (sliders, scroll bars, title bars), Qt's own
+// double click and popup handling, and the game window. When libXtst or X11 is not available
+// (Wayland, Windows, macOS), the Qt events fallback below is used.
+class XTestButton {
+public:
+    static XTestButton& Get() {
+        static XTestButton instance;
+        return instance;
+    }
+
+    bool Available() const {
+        return fake_button != nullptr;
+    }
+
+    void Set(bool press) const {
+        if (!fake_button) {
+            return;
+        }
+        fake_button(display, 1, press ? 1 : 0, 0);
+        flush(display);
+    }
+
+private:
+    using FakeButtonFn = int (*)(void*, unsigned int, int, unsigned long);
+    using FlushFn = int (*)(void*);
+
+    XTestButton() {
+#if defined(__linux__) && QT_CONFIG(xcb)
+        auto* const x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+        if (!x11 || !x11->display()) {
+            return;
+        }
+        void* const xtst = dlopen("libXtst.so.6", RTLD_NOW | RTLD_LOCAL);
+        void* const xlib = dlopen("libX11.so.6", RTLD_NOW | RTLD_LOCAL);
+        if (!xtst || !xlib) {
+            return;
+        }
+        auto* const button = reinterpret_cast<FakeButtonFn>(dlsym(xtst, "XTestFakeButtonEvent"));
+        auto* const flush_fn = reinterpret_cast<FlushFn>(dlsym(xlib, "XFlush"));
+        if (!button || !flush_fn) {
+            return;
+        }
+        display = x11->display();
+        flush = flush_fn;
+        fake_button = button;
+#endif
+    }
+
+    void* display = nullptr;
+    FakeButtonFn fake_button = nullptr;
+    FlushFn flush = nullptr;
+};
 
 // Mouse events that the touch screen produces (Qt or the X server emulating a pointer)
 bool IsFromTouchScreen(const QMouseEvent* mouse) {
@@ -162,8 +221,10 @@ void GamepadCursor::Build() {
         }
     }
 
-    LOG_WARNING(Frontend, "V428_CURSOR ready: sensitivity={}% in_games={}",
-                Settings::values.gamepad_cursor_sensitivity.GetValue(), in_games ? "yes" : "no");
+    LOG_WARNING(Frontend, "V428_CURSOR ready: sensitivity={}% in_games={} clicks={}",
+                Settings::values.gamepad_cursor_sensitivity.GetValue(), in_games ? "yes" : "no",
+                XTestButton::Get().Available() ? "V432 X11 XTest (real mouse button)"
+                                               : "V432 Qt events (XTest unavailable)");
 }
 
 void GamepadCursor::Poll() {
@@ -305,6 +366,14 @@ void GamepadCursor::SendMouse(QEvent::Type type, const QPoint& global, Qt::Mouse
 }
 
 void GamepadCursor::Press(const QPoint& global) {
+    if (XTestButton::Get().Available()) {
+        // Real button: the X server and Qt do the rest (grab, drag, double click, menus)
+        pressed = true;
+        press_target.clear();
+        XTestButton::Get().Set(true);
+        return;
+    }
+
     QWidget* const target = TargetAt(global);
     if (!target) {
         return;
@@ -333,6 +402,13 @@ void GamepadCursor::Press(const QPoint& global) {
 }
 
 void GamepadCursor::Release(const QPoint& global) {
+    if (XTestButton::Get().Available()) {
+        pressed = false;
+        press_target.clear();
+        XTestButton::Get().Set(false);
+        return;
+    }
+
     pressed = false;
     QWidget* const target = press_target ? press_target.data() : TargetAt(global);
     press_target.clear();
