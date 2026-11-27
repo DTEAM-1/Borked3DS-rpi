@@ -9,7 +9,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
-#include <limits>
 
 #include "common/archives.h"
 #include "common/common_types.h"
@@ -29,7 +28,6 @@
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_software/sw_blitter.h"
 #include "video_core/right_eye_disabler.h"
-#include "video_core/v433_lot_d.h"
 #include "video_core/video_core.h"
 
 namespace Pica {
@@ -539,12 +537,6 @@ GPU::GPU(Core::System& system, Frontend::EmuWindow& emu_window,
                     "TRACE_GPU strict_compat v115d_a7z68 "
                     "constructor_gpu_execute_submit_trace active=1");
     }
-
-    LOG_WARNING(HW_GPU,
-                "V433_AZAHAR_LOT_D actif=stride:{} pump:{} memfill:{} "
-                "(BORKED3DS_V3DV_V433_NO_STRIDE / _NO_FAST_PUMP / _NO_MEMFILL pour couper)",
-                V433::StrideFixEnabled() ? 1 : 0, V433::FastPumpEnabled() ? 1 : 0,
-                V433::MemFillFixEnabled() ? 1 : 0);
 }
 
 GPU::~GPU() = default;
@@ -661,27 +653,19 @@ void GPU::Execute(const Service::GSP::Command& command) {
         auto& memfill = regs.memory_fill_config;
 
         // Write to the memory fill GPU registers.
-        // V433 D3 (Azahar #1218) : si les deux tampons sont demandes, le GSP ne signale que PSC0,
-        // une seule fois, apres le second remplissage. Echappatoire : BORKED3DS_V3DV_V433_NO_MEMFILL=1
-        // (deux interruptions, PSC0 puis PSC1, comme avant).
-        const bool has_both_bufs = params.start1 != 0 && params.start2 != 0;
-        if (has_both_bufs) {
-            V433::g_memfill_paires.fetch_add(1, std::memory_order_relaxed);
-        }
-        const bool v433_memfill = has_both_bufs && V433::MemFillFixEnabled();
         if (params.start1 != 0) {
             memfill[0].address_start = VirtualToPhysicalAddress(params.start1) >> 3;
             memfill[0].address_end = VirtualToPhysicalAddress(params.end1) >> 3;
             memfill[0].value_32bit = params.value1;
             memfill[0].control = params.control1;
-            MemoryFill(0, v433_memfill ? std::numeric_limits<u32>::max() : 0);
+            MemoryFill(0);
         }
         if (params.start2 != 0) {
             memfill[1].address_start = VirtualToPhysicalAddress(params.start2) >> 3;
             memfill[1].address_end = VirtualToPhysicalAddress(params.end2) >> 3;
             memfill[1].value_32bit = params.value2;
             memfill[1].control = params.control2;
-            MemoryFill(1, v433_memfill ? 0 : 1);
+            MemoryFill(1);
         }
         break;
     }
@@ -834,10 +818,10 @@ void GPU::WriteReg(VAddr addr, u32 data) {
         // Handle registers that trigger GPU actions
         switch (index) {
         case GPU_REG_INDEX(memory_fill_config[0].trigger):
-            MemoryFill(0, 0);
+            MemoryFill(0);
             break;
         case GPU_REG_INDEX(memory_fill_config[1].trigger):
-            MemoryFill(1, 1);
+            MemoryFill(1);
             break;
         case GPU_REG_INDEX(display_transfer_config.trigger):
             MemoryTransfer();
@@ -954,7 +938,7 @@ void GPU::SubmitCmdList(u32 index) {
     }
 }
 
-void GPU::MemoryFill(u32 index, u32 intr_index) {
+void GPU::MemoryFill(u32 index) {
     // Check if a memory fill was triggered.
     auto& config = impl->pica.regs.memory_fill_config[index];
     if (!config.trigger) {
@@ -971,9 +955,9 @@ void GPU::MemoryFill(u32 index, u32 intr_index) {
     // It seems that it won't signal interrupt if "address_start" is zero.
     // TODO: hwtest this
     if (config.GetStartAddress() != 0) {
-        if (intr_index == 0) {
+        if (!index) {
             impl->signal_interrupt(Service::GSP::InterruptId::PSC0);
-        } else if (intr_index == 1) {
+        } else {
             impl->signal_interrupt(Service::GSP::InterruptId::PSC1);
         }
     }
@@ -1114,16 +1098,6 @@ void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
     // Signal to GSP that GPU interrupt has occurred
     impl->signal_interrupt(Service::GSP::InterruptId::PDC0);
     impl->signal_interrupt(Service::GSP::InterruptId::PDC1);
-
-    // V433 : une ligne par minute emulee (3600 rafraichissements). Valeurs cumulees depuis le
-    // lancement : 0 = le mecanisme ne sert pas a ce jeu.
-    static u64 v433_vblanks = 0;
-    if (++v433_vblanks % 3600 == 0) {
-        LOG_WARNING(HW_GPU, "V433_COMPTEURS minute={} stride_forcees={} memfill_paires={}",
-                    v433_vblanks / 3600,
-                    V433::g_stride_forcees.load(std::memory_order_relaxed),
-                    V433::g_memfill_paires.load(std::memory_order_relaxed));
-    }
 
     // Reschedule recurrent event
     impl->timing.ScheduleEvent(FRAME_TICKS - cycles_late, impl->vblank_event);

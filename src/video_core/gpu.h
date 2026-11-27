@@ -103,9 +103,7 @@ public:
 private:
     void SubmitCmdList(u32 index);
 
-    // V433 D3 (Azahar #1218) : intr_index 0 ou 1 signale PSC0 ou PSC1 ; toute autre valeur ne
-    // signale rien (premier des deux remplissages demandes ensemble par le GSP).
-    void MemoryFill(u32 index, u32 intr_index);
+    void MemoryFill(u32 index);
 
     void MemoryTransfer();
 
