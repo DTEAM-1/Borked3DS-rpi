@@ -22,6 +22,7 @@
 #include "video_core/rasterizer_cache/surface_base.h"
 #include "video_core/renderer_base.h"
 #include "video_core/texture/texture_decode.h"
+#include "video_core/v433_lot_d.h"
 #include "video_core/renderer_opengl/gl_shader_disk_cache.h" //gvx64
 
 namespace VideoCore {
@@ -1415,8 +1416,31 @@ bool RasterizerCache<T>::ValidateByReinterpretation(Surface& surface, SurfacePar
     // the warping effect when running in dugeons relies on this stride reinterpretation.
     // In the future this transformation should be properly implemented with a GPU shader.
     const auto it = dirty_regions.find(interval);
-    return it != dirty_regions.end() && it->second &&
-           slot_surfaces[it->second].stride != surface.stride;
+    const bool stride_alias = it != dirty_regions.end() && it->second &&
+                              slot_surfaces[it->second].stride != surface.stride;
+    if (!stride_alias || !V433::StrideFixEnabled()) {
+        return stride_alias;
+    }
+
+    // V433 D1 (Azahar #2451, 24 oct. 2026) : le raccourci ci-dessus ne vaut que si toute la plage
+    // demandee est couverte par des regions modifiees par le GPU et qu'aucune surface de format
+    // invalide ne la chevauche. Sinon, le contenu en cache serait perime (cartes et textures
+    // d'interface corrompues dans Inazuma Eleven GO Galaxy) : on valide normalement.
+    // Echappatoire : BORKED3DS_V3DV_V433_NO_STRIDE=1.
+    bool has_invalid = false;
+    ForEachSurfaceInRegion(boost::icl::lower(interval), boost::icl::length(interval),
+                           [&](SurfaceId, Surface& cached_surface) {
+                               if (cached_surface.pixel_format == PixelFormat::Invalid) {
+                                   has_invalid = true;
+                                   return true;
+                               }
+                               return false;
+                           });
+    if (has_invalid || !boost::icl::contains(dirty_regions, interval)) {
+        V433::g_stride_forcees.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    return true;
 }
 
 template <class T>
