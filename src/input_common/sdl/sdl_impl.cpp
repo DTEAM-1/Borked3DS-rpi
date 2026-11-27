@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <iterator>
 #include <mutex>
@@ -920,11 +922,22 @@ SDLState::SDLState() {
 
     initialized = true;
     if (start_thread) {
-        poll_thread = std::thread([this] {
+        // V433 D2 (Azahar #2700, 21 oct. 2026) : avec une manette branchee, les evenements SDL
+        // sont lus toutes les 1 ms au lieu de 10 ms (jusqu'a ~9 ms de latence d'entree en moins,
+        // moins d'appuis courts manques). Sans manette : 10 ms, comme avant.
+        // Echappatoire : BORKED3DS_V3DV_V433_NO_FAST_PUMP=1.
+        const bool v433_fast_pump = [] {
+            const char* value = std::getenv("BORKED3DS_V3DV_V433_NO_FAST_PUMP");
+            return value == nullptr || value[0] == '\0' || value[0] == '0';
+        }();
+        LOG_WARNING(Input, "V433_POMPE_SDL {} (BORKED3DS_V3DV_V433_NO_FAST_PUMP=1 pour couper)",
+                    v433_fast_pump ? "1 ms avec manette, 10 ms sans" : "10 ms (coupee)");
+        poll_thread = std::thread([this, v433_fast_pump] {
             using namespace std::chrono_literals;
             while (initialized) {
                 SDL_PumpEvents();
-                std::this_thread::sleep_for(10ms);
+                std::this_thread::sleep_for(v433_fast_pump && SDL_NumJoysticks() > 0 ? 1ms
+                                                                                      : 10ms);
             }
         });
     }
