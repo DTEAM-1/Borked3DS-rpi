@@ -541,10 +541,9 @@ GPU::GPU(Core::System& system, Frontend::EmuWindow& emu_window,
     }
 
     LOG_WARNING(HW_GPU,
-                "V433_AZAHAR_LOT_D actif=stride:{} pump:{} memfill:{} "
-                "(BORKED3DS_V3DV_V433_NO_STRIDE / _NO_FAST_PUMP / _NO_MEMFILL pour couper)",
-                V433::StrideFixEnabled() ? 1 : 0, V433::FastPumpEnabled() ? 1 : 0,
-                V433::MemFillFixEnabled() ? 1 : 0);
+                "V433_AZAHAR_LOT_D v433b actif=pump:{} memfill:{} "
+                "(BORKED3DS_V3DV_V433_NO_FAST_PUMP / _NO_MEMFILL pour couper)",
+                V433::FastPumpEnabled() ? 1 : 0, V433::MemFillFixEnabled() ? 1 : 0);
 }
 
 GPU::~GPU() = default;
@@ -1119,9 +1118,7 @@ void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
     // lancement : 0 = le mecanisme ne sert pas a ce jeu.
     static u64 v433_vblanks = 0;
     if (++v433_vblanks % 3600 == 0) {
-        LOG_WARNING(HW_GPU, "V433_COMPTEURS minute={} stride_forcees={} memfill_paires={}",
-                    v433_vblanks / 3600,
-                    V433::g_stride_forcees.load(std::memory_order_relaxed),
+        LOG_WARNING(HW_GPU, "V433_COMPTEURS minute={} memfill_paires={}", v433_vblanks / 3600,
                     V433::g_memfill_paires.load(std::memory_order_relaxed));
     }
 
